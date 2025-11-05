@@ -17,7 +17,7 @@
  &savelist
         itsave(1,1)   = 0
         itsave(1,2)   = 0
-        tsavestart(2) = 336.0
+        tsavestart(2) = 240.0
         dtsave_dat    = 3.0
 /
 
@@ -42,8 +42,8 @@
 
 
  &mhd_list
-       typedivbfix = 'linde'
-       divbdiff = 0.9
+       typedivbfix = 'powel'
+       divbdiff = 1.0
        mhd_rotating_frame = .true.
        mhd_n_tracer = 1
        SI_unit = .false.
@@ -70,8 +70,8 @@
  /
 
  &meshlist
-!        stretch_dim(1)='uni'
-!        stretch_uncentered = .false.
+ !       stretch_dim(1)='uni'
+ !       stretch_uncentered = .false.
         refine_criterion=1
         refine_max_level = 1
         nbufferx1=0
@@ -102,7 +102,7 @@
         omega_frame= 0.010692d0
 /
 &bd_list
-        boundary_data_file_name="paper_testcase_innerBCs.vtk"
+        boundary_data_file_name= "solar_wind_2015_single_gong.vtk"
         interp_phy_first_row=.false.
         boundary_data_primitive=.true.
 /
@@ -111,9 +111,8 @@
         amr_criterion = 'tracing'
         cme_flag =1
         num_cmes = 5
-        relaxation = 14
-        cme_insertion = 0
+        relaxation = 10
+        cme_insertion = 7
         cme_parameter_file ='cme_euhforia_formatted.in'
-        magnetogram_time = '2015-08-25T01:04:00'
-        delta_phi =-1.2040994899278814
+        magnetogram_time = '2015-06-25T01:04:00'
 /
