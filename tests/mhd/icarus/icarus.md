@@ -1,4 +1,4 @@
-02/10/24
+05/11/25
 
 Tinatin Baratashvili
 
@@ -7,9 +7,9 @@ Tinatin Baratashvili
 
 To run the Icarus test case, you must follow the standard MPI-AMRVAC procedure. First, you install AMRVAC from https://amrvac.org/md_doc_installation.html.
 
-In order to get the latest version please checkout amrvac3.2 branch:
+In order to get the latest version please checkout amrvac3.3 branch:
 ```
-git checkout amrvac3.2
+git checkout amrvac3.3
 ```
 and
 ```
@@ -18,7 +18,7 @@ git pull
 
 Then, make sure you are in ~/icarus folder and retrieve the makefile by
 ```
-setup.pl -d=3
+setup.pl -d=3 -v=3
 ```
 and compile it with
 ```
@@ -61,7 +61,6 @@ Name | Standard values | Description
 `cme_insertion` | 0 | Duration is given in days
 `cme_parameter_file` | 'cme_parameters.in' | The file containing CME parameters
 `magnetogram_time` |'2015-06-25T01:04:00' | Magnetogram timestamp in 'YYYY-MM-DDTHH:mm:ss' format
-`delta_phi` | 1.2 | The correction longitude from WSA file given in radians, output of the VTK file generation python script
 
 
 # Changing the parameters
