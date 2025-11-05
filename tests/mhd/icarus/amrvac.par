@@ -32,7 +32,7 @@
         time_stepper      = 'twostep'
         flux_scheme       = 20*'tvdlf'
         !typepred1        = 20*'hancock'
-        limiter           = 20*'minmod'
+        limiter           = 20*'woodward'
         dimsplit          = .false.
         check_small_values = .false.
         !fix_small_values = .true.
@@ -44,8 +44,8 @@
 
 
  &mhd_list
-       typedivbfix = 'linde'
-       divbdiff = 0.9
+       typedivbfix = 'powel'
+       divbdiff = 1.0
        mhd_rotating_frame = .true.
        mhd_n_tracer = 1
        SI_unit = .false.
@@ -101,10 +101,10 @@
 /
 
 &rotating_frame_list
-        omega_frame= 0.010692d0
+        omega_frame= 0.0103152d0
 /
 &bd_list
-        boundary_data_file_name="paper_testcase_innerBCs.vtk"
+        boundary_data_file_name="solar_wind_2015_single_gong.vtk"
         interp_phy_first_row=.false.
         boundary_data_primitive=.true.
 /
@@ -113,9 +113,8 @@
         amr_criterion = 'tracing'
         cme_flag =1
         num_cmes = 5
-        relaxation = 14
-        cme_insertion = 0
+        relaxation = 10
+        cme_insertion = 7
         cme_parameter_file = 'cme_euhforia_formatted.in'
         magnetogram_time = '2015-06-25T01:04:00'
-        delta_phi = -1.2040994899278814 
 /
