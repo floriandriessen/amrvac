@@ -99,7 +99,7 @@
 /
 
 &rotating_frame_list
-        omega_frame= 0.010692d0
+        omega_frame= 0.0103152d0
 /
 &bd_list
         boundary_data_file_name= "solar_wind_2015_single_gong.vtk"
