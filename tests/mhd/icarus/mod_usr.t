@@ -25,7 +25,7 @@ module mod_usr
 
   integer, dimension(10)                          :: last_index = (/0, 0, 0, 0, 0, 0, 0, 0, 0, 0/)  ! intended order: earth, mars, mercury, venus, sta, stb, psp, solo, bepi, juno
   integer, dimension(10)                          :: last_index_s = (/0, 0, 0, 0, 0, 0, 0, 0, 0, 0/)
-  double precision                               :: delta_phi
+
   integer, dimension(:,:), allocatable           :: starting_index, cme_index    ! first coordinate: satellite index; second coordinate: cme index
   integer, dimension(10)                          :: magnetogram_index = (/0, 0, 0, 0, 0, 0, 0, 0,0,0/)
 
@@ -51,7 +51,7 @@ contains
 
     namelist /rotating_frame_list/ omega_frame
     namelist /icarus_list/ amr_criterion, cme_flag, num_cmes, relaxation, cme_insertion, &
-    cme_parameter_file, magnetogram_time, delta_phi
+    cme_parameter_file, magnetogram_time 
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -72,7 +72,7 @@ contains
       read (magnetogram_time(12:13),*) magnetogram_timestamp(4)
       read (magnetogram_time(15:16),*) magnetogram_timestamp(5)
       read (magnetogram_time(18:19),*) magnetogram_timestamp(6)
-      delta_phi = -delta_phi
+      
   end subroutine usr_params_read
 
   subroutine usr_init()
@@ -168,7 +168,7 @@ contains
       ALLOCATE(variables_init(nr_colat, nr_lon+4, 4), STAT = AllocateStatus)
       IF (AllocateStatus /= 0) call mpistop('*** Not enough memory ***')
 
-     ! delta_phi=1.19 ! If input from WSA
+     
 
 
       ! read in cme parameters
@@ -204,6 +204,9 @@ contains
 
         ALLOCATE(positions_list(10), STAT=AllocateStatus)
 
+       ! Temporarily only reading out at Earth location until particle sampling is finally fixed
+       ! Remove the line below to read out at all satellites. 
+       which_satellite = (/1, 0, 0, 0, 0, 0, 0, 0, 0, 0/)
       ! for each satellite, read the trajectory data and save in the arrays of time and locations
       do i = 1, 10
         if (which_satellite(i)==1) then
@@ -282,7 +285,7 @@ contains
     x(2) = (dpi/2.0 - positions_list(satellite_index)%positions(8, starting_index(satellite_index,1)))
 
     ! phi_satellite here is at qt = 0, so at the simulation start
-    phi_satellite = delta_phi+positions_list(satellite_index)%positions(9, starting_index(satellite_index,1))&
+    phi_satellite = positions_list(satellite_index)%positions(9, starting_index(satellite_index,1))&
      + ((timestamp(1)-before_cme))*(2.0*dpi)/24.0*(1/2.447d1-1/orbital_period(1))
 
     if (phi_satellite < 0) then
@@ -481,7 +484,7 @@ contains
     ! To Follow Earth location in the domain
 
     before_cme = (cme_index(1,1) - magnetogram_index(1))/60.0
-    phi_satellite = delta_phi + positions_list(1)%positions(9, last_index(1))&
+    phi_satellite =  positions_list(1)%positions(9, last_index(1))&
       - (qt-(timestamp(1)-before_cme))*(2.0*dpi)/24.0*(1/2.447d1-1/365.24)
 
     ! Threshold for negative nabla V
@@ -993,7 +996,7 @@ contains
       read(iUnit,*) cme_type(i), cme_date(i), clt_cme(i), lon_cme(i), w_half(i),  vr_cme(i), rho_cme(i), temperature_cme(i)
       w_half(i) = w_half(i) * dpi/180.0
       clt_cme(i) = (-clt_cme(i) + 90.0) * dpi/180.0
-      lon_cme(i) = lon_cme(i)*dpi/180.0+delta_phi
+      lon_cme(i) = lon_cme(i)*dpi/180.0
       vr_cme(i) = vr_cme(i)*1000.0
     end do
 
