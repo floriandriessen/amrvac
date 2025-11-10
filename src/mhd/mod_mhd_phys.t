@@ -111,7 +111,7 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_radiative_cooling = .false.
   !> Whether thermal conduction is used
   logical, public, protected              :: mhd_hyperbolic_thermal_conduction = .false.
-  !> Wheterh saturation is considered for hyperbolic TC
+  !> Whether saturation is considered for hyperbolic TC
   logical, public, protected              :: mhd_htc_sat = .false.
   !> Whether viscosity is added
   logical, public, protected              :: mhd_viscosity = .false.
@@ -341,7 +341,7 @@ contains
       end if
       if(mhd_thermal_conduction) then
         mhd_hyperbolic_thermal_conduction=.false.
-        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_thermal_conduction=F when mhd_energy=F'
+        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_thermal_conduction=F'
       end if
       if(mhd_radiative_cooling) then
         mhd_radiative_cooling=.false.
@@ -4594,6 +4594,7 @@ contains
       end if
 
       if(mhd_hyperbolic_thermal_conduction) then
+        active = .true.
         call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
 
@@ -4737,6 +4738,32 @@ contains
     Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
     ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
     ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
+   {^IFONED
+    ! assume magnetic field line is along the one dimension
+    do ix1=ixOmin1,ixOmax1
+      if(mhd_trac) then
+        if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
+          sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+          sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
+        else
+          sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+          sigma_T7=sigma_T5*Te(ix^D)
+        end if
+      else
+        sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+        sigma_T7=sigma_T5*Te(ix^D)
+      end if
+      sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
+      if(mhd_htc_sat) then
+        f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0)
+        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+        w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+      else
+        w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
+         max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+      end if
+    end do
+    }
    {^IFTWOD
     do ix2=ixOmin2,ixOmax2
       do ix1=ixOmin1,ixOmax1
