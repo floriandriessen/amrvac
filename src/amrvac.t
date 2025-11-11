@@ -18,6 +18,7 @@ program amrvac
   use mod_multigrid_coupling
   use mod_convert, only: init_convert
   use mod_physics
+  use mod_eos, only: eos_init
   use mod_amr_grid, only: resettree, settree, resettree_convert
   use mod_trac, only: initialize_trac_after_settree
   use mod_convert_files, only: generate_plotfile
@@ -39,6 +40,8 @@ program amrvac
 
   ! init_convert is called before usr_init as user might associate a convert method
   call init_convert()
+  !> eos_init is called prior to physics module
+  call eos_init(eos_fl)
   ! the user_init routine should load a physics module
   call usr_init()
 

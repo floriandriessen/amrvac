@@ -5,6 +5,7 @@ module mod_physics
   use mod_global_parameters, only: name_len, max_nw
   use mod_physics_hllc
   use mod_physics_roe
+  use mod_eos
 
   implicit none
   public
