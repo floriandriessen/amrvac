@@ -4,7 +4,7 @@ module mod_usr
   implicit none
 
   ! input control values: Reynolds and Mach number, derived pressure
-  double precision :: Re,Ma,p0,RR
+  double precision :: Re,Ma,p0,RadCyl
 
 contains
 
@@ -50,7 +50,7 @@ contains
     
     vc_mu=1.0/Re
     p0=1.0d0/(hd_gamma*Ma**2)
-    RR=0.5d0
+    RadCyl=0.5d0
 
     if(mype==0) then
       write(*,*) "Karman street setup:"
@@ -69,7 +69,7 @@ contains
     double precision, intent(in)    :: x(ixG^S,1:ndim)
     double precision, intent(inout) :: w(ixG^S,1:nw)
 
-    double precision :: rad(ixG^S),costhe(ixG^S),cos2theta(ixG^S),rad2(ixG^S),RR2
+    double precision :: rad(ixG^S),costhe(ixG^S),cos2theta(ixG^S),rad2(ixG^S),RadCyl2
     integer :: idims
     logical                         :: first = .true.
 
@@ -79,22 +79,22 @@ contains
           print *,'Re=', Re
           print *,'Ma=', Ma
           print *,'Initial flow is potential'
-          print *,'radius of cylinder is ', RR
+          print *,'radius of cylinder is ', RadCyl
        end if
        first=.false.
     end if
 
     w(ix^S,rho_)  =1.0d0
-    RR2=RR**2
+    RadCyl2=RadCyl**2
     rad2(ix^S)=x(ix^S,1)**2+x(ix^S,2)**2
     rad(ix^S)=dsqrt(x(ix^S,1)**2+x(ix^S,2)**2)
     costhe(ix^S)=x(ix^S,1)/rad(ix^S)
     cos2theta(ix^S)=2.0d0*costhe(ix^S)**2-1.0d0
-    w(ix^S,mom(1))=1.0d0+RR2/rad2(ix^S)-2.0d0*x(ix^S,1)**2*RR2/rad2(ix^S)**2
-    w(ix^S,mom(2))=-2.0d0*x(ix^S,1)*x(ix^S,2)*RR2/rad2(ix^S)**2
-    w(ix^S,p_)=0.5d0*(2.0d0*cos2theta(ix^S)*RR2/rad2(ix^S)-RR2**2/rad2(ix^S)**2)+p0
+    w(ix^S,mom(1))=1.0d0+RadCyl2/rad2(ix^S)-2.0d0*x(ix^S,1)**2*RadCyl2/rad2(ix^S)**2
+    w(ix^S,mom(2))=-2.0d0*x(ix^S,1)*x(ix^S,2)*RadCyl2/rad2(ix^S)**2
+    w(ix^S,p_)=0.5d0*(2.0d0*cos2theta(ix^S)*RadCyl2/rad2(ix^S)-RadCyl2**2/rad2(ix^S)**2)+p0
 
-    where(rad(ix^S)<RR)
+    where(rad(ix^S)<RadCyl)
       w(ix^S,mom(1))=0.0d0
       w(ix^S,mom(2))=0.0d0
       w(ix^S,rho_)  =1.0d0
@@ -110,20 +110,20 @@ contains
     integer, intent(in) :: ixO^L, iB, ixI^L
     double precision, intent(in) :: qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
-    double precision :: rad(ixI^S),costhe(ixI^S),cos2theta(ixI^S),rad2(ixI^S),RR2
+    double precision :: rad(ixI^S),costhe(ixI^S),cos2theta(ixI^S),rad2(ixI^S),RadCyl2
 
     select case(iB)
     ! special left boundary
     ! fix inflow properties
     case(1)
-       RR2=RR**2
+       RadCyl2=RadCyl**2
        rad2(ixO^S)=x(ixO^S,1)**2+x(ixO^S,2)**2
        rad(ixO^S)=dsqrt(x(ixO^S,1)**2+x(ixO^S,2)**2)
        costhe(ixO^S)=x(ixO^S,1)/rad(ixO^S)
        cos2theta(ixO^S)=2.0d0*costhe(ixO^S)**2-1.0d0
-       w(ixO^S,mom(1))=1.0d0+RR2/rad2(ixO^S)-2.0d0*x(ixO^S,1)**2*RR2/rad2(ixO^S)**2
-       w(ixO^S,mom(2))=-2.0d0*x(ixO^S,1)*x(ixO^S,2)*RR2/rad2(ixO^S)**2
-       w(ixO^S,p_)=0.5d0*(2.0d0*cos2theta(ixO^S)*RR2/rad2(ixO^S)-RR2**2/rad2(ixO^S)**2)+p0
+       w(ixO^S,mom(1))=1.0d0+RadCyl2/rad2(ixO^S)-2.0d0*x(ixO^S,1)**2*RadCyl2/rad2(ixO^S)**2
+       w(ixO^S,mom(2))=-2.0d0*x(ixO^S,1)*x(ixO^S,2)*RadCyl2/rad2(ixO^S)**2
+       w(ixO^S,p_)=0.5d0*(2.0d0*cos2theta(ixO^S)*RadCyl2/rad2(ixO^S)-RadCyl2**2/rad2(ixO^S)**2)+p0
        w(ixO^S,rho_)   = 1.0d0
        !!w(ixO^S,p_)     = p0
        !!w(ixO^S,mom(1)) = 1.0d0
@@ -152,7 +152,7 @@ contains
 
     R(ix^S)=dsqrt(x(ix^S,1)**2+x(ix^S,2)**2)
 
-    if (any(R(ix^S) <= 2.0d0*RR)) refine=1
+    if (any(R(ix^S) <= 2.0d0*RadCyl)) refine=1
 
   end subroutine specialrefine_grid
 
@@ -231,7 +231,7 @@ contains
     double precision :: rad(ixI^S)
 
     rad(ixO^S)=dsqrt(x(ixO^S,1)**2+x(ixO^S,2)**2)
-    where (rad(ixO^S)<RR)
+    where (rad(ixO^S)<RadCyl)
         w(ixO^S,mom(1)) = 0.d0
         w(ixO^S,mom(2)) = 0.d0
         w(ixO^S,p_)     = p0/(hd_gamma-1.0d0)
@@ -246,7 +246,7 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision :: rad2(ixI^S)
     rad2(ixO^S)=x(ixO^S,1)**2+x(ixO^S,2)**2
-    where (rad2(ixO^S)<RR**2)
+    where (rad2(ixO^S)<RadCyl**2)
         w(ixO^S,mom(1)) = 0.d0
         w(ixO^S,mom(2)) = 0.d0
     end where
