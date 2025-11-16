@@ -38,7 +38,7 @@ contains
       print*, 'unit_velocity = ', unit_velocity
       print*, 'unit_time = ', unit_time
       print*, 'usr_grav = ', usr_grav
-      print*, 'kpara', tc_k_para
+      print*, 'kpara', tc_fl%tc_k_para
     end if
     !> length of the ghostzones
     gzone=0.005d0*(xprobmax1-xprobmin1)
@@ -56,9 +56,15 @@ contains
     double precision :: s1,ra,s2,dip,span,loop,Fc,sj
     double precision :: Tcor,Tpho,htra,wtra,p0,res,rhob,pb
     double precision, dimension(jmax) :: theta,x_i,y_i,z_i,s_i
-    double precision, dimension(imax) :: x_o,y_o,z_o
-    double precision, dimension(imax) :: dz,sumt
+    double precision, dimension(imax),save :: x_o,y_o,z_o
+    double precision, dimension(imax),save :: dz,sumt
+    !double precision, allocatable :: x_o,y_o,z_o,dz,sumt
 
+    !allocate(x_o(imax))
+    !allocate(y_o(imax))
+    !allocate(z_o(imax))
+    !allocate(dz(imax))
+    !allocate(sumt(imax))
     s1=0.8d0 ! foot
     ra=0.5d0 ! shoulder
     s2=s1+ra*dpi/2.d0
@@ -190,7 +196,7 @@ contains
       end do
     end do
     if(mype==zero) then
-      print*, 'temprature from', minval(t_o), 'to', maxval(t_o)
+      print*, 'temperature from', minval(t_o), 'to', maxval(t_o)
       print*, 'density from', rhob, 'to', minval(r_o)
       print*, 'pressure from', pb, 'to', minval(p_o)
       print*, 'gravity from', minval(g_o), 'to', maxval(g_o)

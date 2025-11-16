@@ -475,7 +475,9 @@ contains
     double precision :: ppsource(ixO^S,1:nw)
 
     double precision :: k_cak(ixO^S), rad_flux(ixO^S,1:ndim)
+    integer :: nth_for_gradient
 
+    nth_for_gradient=1
     call PseudoPlanarSource(ixI^L,ixO^L,wCT,x,ppsource)
     w(ixO^S,rho_) = w(ixO^S,rho_) + qdt*ppsource(ixO^S,rho_) !> OK
     w(ixO^S,mom(1)) = w(ixO^S,mom(1)) + qdt*ppsource(ixO^S,mom(1)) !> OK
@@ -500,7 +502,7 @@ contains
         endif
       else
         !> Local flux
-        call fld_get_radflux(wCT, x, ixI^L, ixO^L, rad_flux)
+        call fld_get_radflux(wCT, x, ixI^L, ixO^L, rad_flux, nth_for_gradient)
         w(ixO^S,mom(1)) = w(ixO^S,mom(1)) &
           + qdt*wCT(ixO^S,rho_)*rad_flux(ixO^S,1)/const_c*k_cak(ixO^S)*unit_velocity
         if (rhd_energy) then
@@ -526,6 +528,9 @@ contains
     double precision :: radius(ixO^S),  pert(ixO^S)
     double precision :: edd(ixO^S,1:ndim,1:ndim)
     integer :: rdir, pdir
+    integer :: nth_for_gradient
+
+    nth_for_gradient=1
 
     source(ixO^S,1:nw) = zero
 
@@ -556,7 +561,7 @@ contains
 
     !> dEr/dt = -2 (E v_r + F_r)/r
     if (rhd_radiation_diffusion) then
-      call fld_get_radflux(w, x, ixI^L, ixO^L, rad_flux)
+      call fld_get_radflux(w, x, ixI^L, ixO^L, rad_flux, nth_for_gradient)
       source(ixO^S,r_e) = source(ixO^S,r_e) - two*rad_flux(ixO^S,rdir)/radius(ixO^S)
     endif
 
@@ -566,7 +571,7 @@ contains
 
     ! Not sure about this one
     if (rhd_radiation_force) then
-      call fld_get_eddington(w, x, ixI^L, ixO^L, edd)
+      call fld_get_eddington(w, x, ixI^L, ixO^L, edd, nth_for_gradient)
       source(ixO^S,r_e) = source(ixO^S,r_e) + two*v(ixO^S,rdir)*w(ixO^S,r_e)*edd(ixO^S,1,1)/radius(ixO^S)
     endif
 
@@ -764,8 +769,9 @@ subroutine get_kappa_CAK2(ixI^L,ixO^L,w,x,kappa)
         rho0 = w(ix^D,rho_)*unit_density
         Temp0 = Temp(ix^D)*unit_temperature
         Temp0 = max(Temp0,1.d4)
-        gradv0 = gradv(ix^D)*(unit_velocity/unit_length)
-        call set_cak_opacity(rho0,Temp0,gradv0,alpha, Qbar, Q0, kappa_e_t)
+        !gradv0 = gradv(ix^D)*(unit_velocity/unit_length)
+        !call set_cak_opacity(rho0,Temp0,gradv0,alpha, Qbar, Q0, kappa_e_t)
+        call set_cak_opacity(rho0,Temp0,alpha, Qbar, Q0, kappa_e_t)
 
         tau = (kappa_e*unit_opacity)*rho0*const_c/gradv0
         M_t = Qbar/(1-alpha)*((1+Q0*tau)**(1-alpha) - 1)/(Q0*tau)
@@ -873,6 +879,9 @@ subroutine get_kappa_CAK2(ixI^L,ixO^L,w,x,kappa)
     integer :: lvl_h(1:domain_nx1), lvl_h_S(1:domain_nx1), lvl_h_R(1:domain_nx1)
     integer :: lvl_l(1:domain_nx1), lvl_l_S(1:domain_nx1), lvl_l_R(1:domain_nx1)
 
+    integer :: nth_for_gradient
+    nth_for_gradient=1
+
     ! if (refine_max_level .ne. 1) &
     ! call mpistop("collapse_to_1D doesnt work YET with mpi")
 
@@ -941,7 +950,7 @@ subroutine get_kappa_CAK2(ixI^L,ixO^L,w,x,kappa)
         call mpistop("collapse_to_1D doesnt work, reduce amr")
 
       !> Calculate radflux in block for luminosity
-      call fld_get_radflux(block%w, block%x, ixG^LL, ixM^LL, radflux)
+      call fld_get_radflux(block%w, block%x, ixG^LL, ixM^LL, radflux, nth_for_gradient)
 
       !> For all cells in the current block, average velocity over lateral direction.
       !> Take into account possible amr
@@ -1131,12 +1140,14 @@ subroutine get_kappa_CAK2(ixI^L,ixO^L,w,x,kappa)
     integer                            :: idim
     double precision :: radius(ixI^S)
     double precision :: mass
+    integer :: nth_for_gradient
 
+    nth_for_gradient=1
     radius(ixO^S) = x(ixO^S,1)*unit_length
     mass = M_star*(unit_density*unit_length**3.d0)
 
     call fld_get_opacity(w, x, ixI^L, ixO^L, kappa)
-    call fld_get_radflux(w, x, ixI^L, ixO^L, rad_flux)
+    call fld_get_radflux(w, x, ixI^L, ixO^L, rad_flux, nth_for_gradient)
 
     if (rhd_energy) call rhd_get_tgas(w, x, ixI^L, ixO^L, Tgas)
     call rhd_get_trad(w, x, ixI^L, ixO^L, Trad)
@@ -1158,7 +1169,7 @@ subroutine get_kappa_CAK2(ixI^L,ixO^L,w,x,kappa)
 
     pp_rf(ixO^S) = two*rad_flux(ixO^S,1)/x(ixO^S,1)*dt
 
-    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R)
+    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nth_for_gradient)
 
     Lum(ixO^S) = 4*dpi*rad_flux(ixO^S,1)*(x(ixO^S,1)*unit_length)**2*unit_radflux/L_sun
 

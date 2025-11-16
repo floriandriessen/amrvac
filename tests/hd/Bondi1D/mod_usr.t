@@ -63,7 +63,7 @@ contains
       rin=1.0277248004393015E-002 ! 1.0304870605468750d-2 ! ** to modify **
       open(123,file='compute_analytic_initial_state/iniState.dat')
       print*, x(3,1)
-      if (stretched_grid) then
+      if (stretched_dim(1)) then
         do ix=1,domain_nx1/block_nx1
            ! ** to modify **
            print*, ix, rin*(xprobmax1/xprobmin1)**((dble((ix-1)*block_nx1))/dble(domain_nx1))

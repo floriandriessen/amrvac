@@ -1,4 +1,4 @@
-!$AMRVAC_DIR/setup.pl -d=3
+!$AMRVAC_DIR/setup.pl -d=3 -v=3
 
  &filelist
         base_filename='nlfff'
