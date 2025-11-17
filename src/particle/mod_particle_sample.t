@@ -146,6 +146,7 @@ contains
     integer                          :: ipart, iipart, igrid
     integer                          :: nok, nbad, ierror
 
+
     do iipart=1,nparticles_active_on_mype
       ipart                   = particles_active_on_mype(iipart);
       dt_p                    = sample_get_particle_dt(particle(ipart), end_time)
@@ -160,7 +161,11 @@ contains
       ! Position update (if defined)
       ! TODO: this may create problems with interpolation out of boundaries
       if (associated(usr_particle_position)) call usr_particle_position(x,particle(ipart)%self%index,tloc,tlocnew)
+      
+      call fix_phi_crossing(x, igrid)
+
       particle(ipart)%self%x(1:ndir) = x
+
 
       ! Time update
       particle(ipart)%self%time = tlocnew
@@ -227,21 +232,25 @@ contains
 
     dt_p = dtsave_particles
 
-    ! Make sure the user-defined particle movement doesn't break communication
+    ! Make sure the user-defined particle movement doesnt break communication
     if (associated(usr_particle_position)) then
       xp = partp%self%x
       told = partp%self%time
       tnew = told+dt_p
       call usr_particle_position(xp, partp%self%index, told, tnew)
+      call fix_phi_crossing(xp, partp%igrid)
+      
       do while (.not. point_in_igrid_ghostc(xp,partp%igrid,1))
         dt_p = dt_p/10.d0
         xp = partp%self%x
         tnew = told+dt_p
         call usr_particle_position(xp, partp%self%index, told, tnew)
+        call fix_phi_crossing(xp, partp%igrid)
+        ! add a statement to give up shrinking: the integrator will migrate the particle to the new block
       end do
     end if
 
-    ! Make sure we don't advance beyond end_time
+    ! Make sure we do not advance beyond end_time
     call limit_dt_endtime(end_time - partp%self%time, dt_p)
 
   end function sample_get_particle_dt
