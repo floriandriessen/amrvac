@@ -355,6 +355,7 @@ contains
     end do time_evol
 
     if(use_particles) then
+      call write_particle_output()
       call finish_gridvars()
     end if
 

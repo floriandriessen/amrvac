@@ -285,7 +285,7 @@ contains
     csv_header = trim(csv_header) // ' ipe, iteration, index'
 
     ! Generate format string for CSV files
-    write(csv_format, '(A,I0,A,A)') '(', 8 + npayload, '(es14.6,", ")', &
+    write(csv_format, '(A,I0,A,A)') '(', 8 + npayload, '(es14.6,", "),', &
          'i8.7,", ",i11.10,", ",i8.7)'
 
   end subroutine particle_base_init
