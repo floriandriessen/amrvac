@@ -5,7 +5,7 @@
  &filelist
         autoconvert   = .true.
         saveprim      = .true.
-        base_filename ='icarus_testcase'
+        base_filename ='icarus_2015_5CMEs'
         convert_type  = 'vtuBCCmpi'
         slice_type    = 'csv'
         nocartesian   = .true.
@@ -48,6 +48,7 @@
        mhd_n_tracer = 1
        SI_unit = .false.
        mhd_particles = .true.
+       boundary_divbfix = F, T, F, F, F, F
  /
 
  &particles_list
@@ -61,17 +62,19 @@
 
  &boundlist
         typeboundary_min1 = 'bc_icarus', 'bc_icarus', 'asymm', 'asymm', 'bc_icarus', 'bc_icarus', 'asymm', 'asymm'
-        typeboundary_max1 =8*'cont'
+        typeboundary_max1 = 5*'cont', 'special', 'cont', 'cont' 
         typeboundary_min2 =8*'symm'
         typeboundary_max2 =8*'symm'
         typeboundary_min3 =8*'periodic'
         typeboundary_max3 =8*'periodic'
-        save_physical_boundary = .true.
+! saving ghost cell at inner and outer boundary
+        save_physical_boundary = .false.
+        
  /
 
  &meshlist
- !       stretch_dim(1)='uni'
- !       stretch_uncentered = .false.
+        !stretch_dim(1)='uni'
+        !stretch_uncentered = .false.
         refine_criterion=1
         refine_max_level = 1
         nbufferx1=0
@@ -94,7 +97,7 @@
 
  &paramlist
         typecourant='maxsum'
-        courantpar=0.9d0
+        courantpar=0.7d0
         slowsteps=10
 /
 
@@ -108,11 +111,11 @@
 /
 
 &icarus_list
-        amr_criterion = 'tracing'
-        cme_flag =1
+        amr_criterion = 'shock'
         num_cmes = 5
         relaxation = 10
         cme_insertion = 7
         cme_parameter_file ='cme_euhforia_formatted.in'
-        magnetogram_time = '2015-06-25T01:04:00'
+        magnetogram_time = '2015-06-25T01:04:00' 
+        amr_start_hour=0
 /
