@@ -1104,7 +1104,7 @@ contains
 
     ! open the snapshot file on the headnode
     if (mype .eq. 0) then
-      write(filename,"(a,a,i4.4,a)") trim(base_filename),'_particles',snapshotnumber,'.dat'
+      write(filename,"(a,a,i6.6,a)") trim(base_filename),'_particles',snapshotnumber,'.dat'
       INQUIRE(FILE=filename, EXIST=file_exists)
       if (.not. file_exists) then
         open(unit=unitparticles,file=filename,form='unformatted',status='new',access='stream')
