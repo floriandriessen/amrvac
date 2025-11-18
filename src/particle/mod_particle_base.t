@@ -1763,7 +1763,7 @@ contains
   end subroutine partvec_from_cartesian
 
   !> Fix particle position when crossing the 0,2pi boundary in noncartesian coordinates
-  subroutine fix_phi_crossing(xp,igrid)
+  recursive subroutine fix_phi_crossing(xp,igrid)
     use mod_global_parameters
     use mod_geometry
 
@@ -1804,7 +1804,7 @@ contains
 
   !> Quick check if particle coordinate is inside igrid
   !> (ghost cells included, except the last ngh)
-  logical function point_in_igrid_ghostc(x, igrid, ngh)
+  recursive logical function point_in_igrid_ghostc(x, igrid, ngh)
     use mod_global_parameters
     use mod_geometry
     integer, intent(in) :: igrid, ngh
