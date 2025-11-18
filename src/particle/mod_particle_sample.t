@@ -245,12 +245,7 @@ contains
         xp = partp%self%x
         tnew = told+dt_p
         call usr_particle_position(xp, partp%self%index, told, tnew)
-        select case (coordinate)
-        case (cylindrical)
-          xp(phi_) = modulo(xp(phi_), 2.0d0*dpi); if (xp(phi_) < 0.d0) xp(phi_) = xp(phi_) + 2.0d0*dpi
-        case (spherical)
-          xp(3)    = modulo(xp(3),   2.0d0*dpi); if (xp(3)    < 0.d0) xp(3)    = xp(3)    + 2.0d0*dpi
-        end select
+        call fix_phi_crossing(xp, partp%igrid)
       end do
     end if
 
