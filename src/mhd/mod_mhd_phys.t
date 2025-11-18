@@ -182,8 +182,8 @@ module mod_mhd_phys
   logical, public, protected :: B0field_forcefree=.true.
   !> Whether an total energy equation is used
   logical :: total_energy = .true.
-  !> Whether an internal or hydrodynamic energy equation is used
-  logical, public :: partial_energy = .false.
+  !> Whether numerical resistive heating is included when solving partial energy equation
+  logical, public :: numerical_resistive_heating = .false.
   !> Whether gravity work is included in energy equation
   logical :: gravity_energy
   !> gravity work is calculated use density times velocity or conservative momentum
@@ -262,7 +262,7 @@ contains
       B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
       particles_eta, particles_etah,has_equi_rho0, has_equi_pe0,mhd_equi_thermal,&
       boundary_divbfix, boundary_divbfix_skip, mhd_divb_nth, mhd_semirelativistic,&
-      mhd_reduced_c, clean_initial_divb, mhd_internal_e, &
+      mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
       mhd_hydrodynamic_e, mhd_trac, mhd_trac_type, mhd_trac_mask, mhd_trac_finegrid, mhd_cak_force, &
       mhd_hyperbolic_thermal_conduction, mhd_htc_sat
 
@@ -393,10 +393,9 @@ contains
 
     if(mhd_energy) then
       if(mhd_internal_e.or.mhd_hydrodynamic_e) then
-        partial_energy=.true.
         total_energy=.false.
       else
-        partial_energy=.false.
+        numerical_resistive_heating=.false.
         total_energy=.true.
       end if
     else
@@ -7169,7 +7168,7 @@ contains
               fE(ix^D,idir)=quarter*&
               (fC(ix^D,iwdim1,idim2)+fC({ix^D+i1kr^D},iwdim1,idim2)&
               -fC(ix^D,iwdim2,idim1)-fC({ix^D+i2kr^D},iwdim2,idim1))
-              if(partial_energy) Ein(ix^D,idir)=fE(ix^D,idir)
+              if(numerical_resistive_heating) Ein(ix^D,idir)=fE(ix^D,idir)
            {end do\}
             ! add slope in idim2 direction from equation (50)
             ixAmin^D=ixCmin^D;
@@ -7222,7 +7221,7 @@ contains
               end if
               fE(ix^D,idir)=fE(ix^D,idir)+0.25d0*(ELC+ERC)
               ! difference between average and upwind interpolated E
-              if(partial_energy) Ein(ix^D,idir)=fE(ix^D,idir)-Ein(ix^D,idir)
+              if(numerical_resistive_heating) Ein(ix^D,idir)=fE(ix^D,idir)-Ein(ix^D,idir)
               ! add resistive electric field at cell edges E=-vxB+eta J
               if(mhd_eta/=zero) fE(ix^D,idir)=fE(ix^D,idir)+E_resi(ix^D,idir)
               ! add ambipolar electric field
@@ -7236,7 +7235,7 @@ contains
       end do
     end do
 
-    if(partial_energy) then
+    if(numerical_resistive_heating) then
       ! add upwind diffused magnetic energy back to energy
       ! calculate current density at cell edges
       jce=0.d0
