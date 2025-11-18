@@ -162,7 +162,7 @@ contains
       ! TODO: this may create problems with interpolation out of boundaries
       if (associated(usr_particle_position)) call usr_particle_position(x,particle(ipart)%self%index,tloc,tlocnew)
       
-      call fix_phi_crossing(x, igrid)
+      !call fix_phi_crossing(x, igrid)
 
       particle(ipart)%self%x(1:ndir) = x
 
@@ -238,14 +238,14 @@ contains
       told = partp%self%time
       tnew = told+dt_p
       call usr_particle_position(xp, partp%self%index, told, tnew)
-      call fix_phi_crossing(xp, partp%igrid)
+      !call fix_phi_crossing(xp, partp%igrid)
       
       do while (.not. point_in_igrid_ghostc(xp,partp%igrid,1))
         dt_p = dt_p/10.d0
         xp = partp%self%x
         tnew = told+dt_p
         call usr_particle_position(xp, partp%self%index, told, tnew)
-        call fix_phi_crossing(xp, partp%igrid)
+        !call fix_phi_crossing(xp, partp%igrid)
         ! add a statement to give up shrinking: the integrator will migrate the particle to the new block
       end do
     end if
