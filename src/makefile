@@ -635,6 +635,7 @@ mod_source.o: mod_usr_methods.mod
 mod_space_filling_curve.o: mod_comm_lib.mod
 mod_space_filling_curve.o: mod_forest.mod
 mod_space_filling_curve.o: mod_global_parameters.mod
+mod_spline.o: mod_comm_lib.mod
 mod_srhd.o: mod_amrvac.mod
 mod_srhd.o: mod_srhd_phys.mod
 mod_srhd_phys.o: mod_comm_lib.mod

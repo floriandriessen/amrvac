@@ -812,7 +812,11 @@ contains
 
       allocate(tc_fl)
       call tc_get_mhd_params(tc_fl,tc_params_read_mhd)
-      call add_sts_method(mhd_get_tc_dt_mhd,mhd_sts_set_source_tc_mhd,e_,1,e_,1,.false.)
+      if(ndim==1) then
+        call add_sts_method(mhd_get_tc_dt_hd,mhd_sts_set_source_tc_hd,e_,1,e_,1,.false.)
+      else
+        call add_sts_method(mhd_get_tc_dt_mhd,mhd_sts_set_source_tc_mhd,e_,1,e_,1,.false.)
+      endif
       if(phys_internal_e) then
         if(has_equi_pe0 .and. has_equi_rho0) then
           tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint_with_equi
@@ -982,6 +986,18 @@ contains
     call sts_set_source_tc_mhd(ixI^L,ixO^L,w,x,wres,fix_conserve_at_step,my_dt,igrid,nflux,tc_fl)
   end subroutine mhd_sts_set_source_tc_mhd
 
+  subroutine  mhd_sts_set_source_tc_hd(ixI^L,ixO^L,w,x,wres,fix_conserve_at_step,my_dt,igrid,nflux)
+    use mod_global_parameters
+    use mod_fix_conserve
+    use mod_thermal_conduction, only: sts_set_source_tc_hd
+    integer, intent(in) :: ixI^L, ixO^L, igrid, nflux
+    double precision, intent(in) ::  x(ixI^S,1:ndim)
+    double precision, intent(inout) ::  wres(ixI^S,1:nw), w(ixI^S,1:nw)
+    double precision, intent(in) :: my_dt
+    logical, intent(in) :: fix_conserve_at_step
+    call sts_set_source_tc_hd(ixI^L,ixO^L,w,x,wres,fix_conserve_at_step,my_dt,igrid,nflux,tc_fl)
+  end subroutine mhd_sts_set_source_tc_hd
+
   function mhd_get_tc_dt_mhd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
     !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
     !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
@@ -996,6 +1012,21 @@ contains
 
     dtnew=get_tc_dt_mhd(w,ixI^L,ixO^L,dx^D,x,tc_fl)
   end function mhd_get_tc_dt_mhd
+
+  function mhd_get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
+    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
+    !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
+    !and                        T=p/rho
+    use mod_global_parameters
+    use mod_thermal_conduction, only: get_tc_dt_hd
+ 
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: dx^D, x(ixI^S,1:ndim)
+    double precision, intent(in) :: w(ixI^S,1:nw)
+    double precision :: dtnew
+
+    dtnew=get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x,tc_fl)
+  end function mhd_get_tc_dt_hd
 
   subroutine mhd_tc_handle_small_e(w, x, ixI^L, ixO^L, step)
     use mod_global_parameters
@@ -4008,7 +4039,7 @@ contains
     double precision,intent(out) :: f(ixI^S,nwflux)
 
     double precision             :: vHall(ixI^S,1:ndir)
-    double precision             :: ptotal, Btotal(ixO^S,1:ndir)
+    double precision             :: ptotal, btotal(ixO^S,1:ndir)
     integer                      :: iw, ix^D
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -4027,7 +4058,7 @@ contains
         ! Get flux of momentum and magnetic field
         ! f_i[m_k]=v_i*m_k-b_k*b_i
         ^C&f(ix^D,m^C_)=wC(ix^D,mom(idim))*w(ix^D,m^C_)-&
-                          Btotal(ix^D,idim)*w(ix^D,b^C_)-w(ix^D,mag(idim))*block%B0(ix^D,^C,idim)\
+                          btotal(ix^D,idim)*w(ix^D,b^C_)-w(ix^D,mag(idim))*block%B0(ix^D,^C,idim)\
         f(ix^D,mom(idim))=f(ix^D,mom(idim))+ptotal
       else
         ^C&btotal(ix^D,^C)=w(ix^D,b^C_)\
@@ -4037,7 +4068,7 @@ contains
         f(ix^D,mom(idim))=f(ix^D,mom(idim))+ptotal
       end if
       ! f_i[b_k]=v_i*b_k-v_k*b_i
-      ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*Btotal(ix^D,^C)-Btotal(ix^D,idim)*w(ix^D,m^C_)\
+      ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*btotal(ix^D,^C)-btotal(ix^D,idim)*w(ix^D,m^C_)\
 
       ! Get flux of energy
       ! f_i[e]=v_i*e+v_i*ptotal-b_i*(b_k*v_k)
@@ -4045,7 +4076,7 @@ contains
         f(ix^D,e_)=w(ix^D,mom(idim))*wC(ix^D,e_)
       else
         f(ix^D,e_)=w(ix^D,mom(idim))*(wC(ix^D,e_)+ptotal)&
-           -Btotal(ix^D,idim)*(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)
+           -btotal(ix^D,idim)*(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)
       end if
    {end do\}
 
@@ -4065,7 +4096,7 @@ contains
         if(total_energy) then
           ! f_i[e]= f_i[e] + vHall_i*(b_k*b_k) - b_i*(vHall_k*b_k)
           f(ix^D,e_)=f(ix^D,e_)+vHall(ix^D,idim)*(^C&w(ix^D,b^C_)*btotal(ix^D,^C)+)&
-                    -Btotal(ix^D,idim)*(^C&vHall(ix^D,^C)*w(ix^D,b^C_)+)
+                    -btotal(ix^D,idim)*(^C&vHall(ix^D,^C)*w(ix^D,b^C_)+)
         end if
      {end do\}
     end if
@@ -4077,7 +4108,7 @@ contains
     end do
     if(mhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*Btotal(ix^D,idim)/(dsqrt(^C&btotal(ix^D,^C)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*btotal(ix^D,idim)/(dsqrt(^C&btotal(ix^D,^C)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4728,13 +4759,14 @@ contains
     double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
-    double precision, dimension(ixI^S) :: R,Te,rho_loc
+    double precision, dimension(ixI^S) :: R,Te,rho_loc,pth_loc
     double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndim),bunitvec(ndim)
     integer :: ix^D
 
     call mhd_get_rho(wCT,x,ixI^L,ixI^L,rho_loc)
-    call mhd_get_Rfactor(wCTprim,x,ixI^L,ixI^L,R)
-    Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+    call mhd_get_pthermal(wCT,x,ixI^L,ixI^L,pth_loc)
+    call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
+    Te(ixI^S)=pth_loc(ixI^S)/(R(ixI^S)*rho_loc(ixI^S))
     ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
     ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
    {^IFONED
@@ -4742,24 +4774,24 @@ contains
     do ix1=ixOmin1,ixOmax1
       if(mhd_trac) then
         if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-          sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+          sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
           sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
         else
-          sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
           sigma_T7=sigma_T5*Te(ix^D)
         end if
       else
-        sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+        sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
         sigma_T7=sigma_T5*Te(ix^D)
       end if
       sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
       if(mhd_htc_sat) then
-        f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0)
-        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+        f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
         w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
       else
         w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-         max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+         max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
       end if
     end do
     }
@@ -4768,14 +4800,14 @@ contains
       do ix1=ixOmin1,ixOmax1
         if(mhd_trac) then
           if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-            sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+            sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
             sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
           else
-            sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
             sigma_T7=sigma_T5*Te(ix^D)
           end if
         else
-          sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
           sigma_T7=sigma_T5*Te(ix^D)
         end if
         if(B0field) then
@@ -4797,12 +4829,12 @@ contains
            bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
         if(mhd_htc_sat) then
-          f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0)
-          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+          f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
           w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
         else
           w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-           max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+           max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
         end if
       end do
     end do
@@ -4813,14 +4845,14 @@ contains
         do ix1=ixOmin1,ixOmax1
           if(mhd_trac) then
             if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-              sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+              sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
               sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
             else
-              sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+              sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
               sigma_T7=sigma_T5*Te(ix^D)
             end if
           else
-            sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
             sigma_T7=sigma_T5*Te(ix^D)
           end if
           if(B0field) then
@@ -4848,12 +4880,12 @@ contains
             +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
           if(mhd_htc_sat) then
-            f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0)
-            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+            f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
             w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
           else
             w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-             max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+             max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
           end if
         end do
       end do
