@@ -183,7 +183,7 @@ contains
 
   end subroutine tc_get_hd_params
 
-  !> Get the explicut timestep for the TC (mhd implementation)
+  !> Get the explicit timestep for the TC (mhd implementation)
   function get_tc_dt_mhd(w,ixI^L,ixO^L,dx^D,x,fl) result(dtnew)
     !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
     !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
@@ -197,7 +197,7 @@ contains
     double precision :: dtnew
 
     double precision :: mf(ixO^S,1:ndim),Te(ixI^S),rho(ixI^S),gradT(ixI^S)
-    double precision :: tmp(ixO^S),hfs(ixO^S),Blocal(1:ndim)
+    double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndim)
     double precision :: dtdiff_tcond,maxtmp2
     integer          :: idims,ix^D
 
@@ -210,30 +210,30 @@ contains
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
           ^D&blocal(^D)=w({ix^D},iw_mag(^D))+block%B0({ix^D},^D,0)\
          {^IFTWOD
-          if(Blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,Blocal(1))/dsqrt(1.d0+(Blocal(2)/Blocal(1))**2)
+          if(blocal(1)/=0.d0) then
+            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2)
           else
             mf(ix^D,1)=0.d0
           end if
-          if(Blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,Blocal(2))/dsqrt(1.d0+(Blocal(1)/Blocal(2))**2)
+          if(blocal(2)/=0.d0) then
+            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2)
           else
             mf(ix^D,2)=0.d0
           end if
          }
          {^IFTHREED
-          if(Blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,Blocal(1))/dsqrt(1.d0+(Blocal(2)/Blocal(1))**2+(Blocal(3)/Blocal(1))**2)
+          if(blocal(1)/=0.d0) then
+            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2+(blocal(3)/blocal(1))**2)
           else
             mf(ix^D,1)=0.d0
           end if
-          if(Blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,Blocal(2))/dsqrt(1.d0+(Blocal(1)/Blocal(2))**2+(Blocal(3)/Blocal(2))**2)
+          if(blocal(2)/=0.d0) then
+            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2+(blocal(3)/blocal(2))**2)
           else
             mf(ix^D,2)=0.d0
           end if
-          if(Blocal(3)/=0.d0) then
-            mf(ix^D,3)=sign(1.d0,Blocal(3))/dsqrt(1.d0+(Blocal(1)/Blocal(3))**2+(Blocal(2)/Blocal(3))**2)
+          if(blocal(3)/=0.d0) then
+            mf(ix^D,3)=sign(1.d0,blocal(3))/dsqrt(1.d0+(blocal(1)/blocal(3))**2+(blocal(2)/blocal(3))**2)
           else
             mf(ix^D,3)=0.d0
           end if
@@ -413,7 +413,7 @@ contains
     !! qdd store the heat conduction energy changing rate
     double precision, dimension(ixI^S,1:ndim) :: mf,Bc,Bcf,gradT
     double precision, dimension(ixI^S) :: ka,kaf,ke,kef,qdd,Bnorm
-    double precision :: minq,maxq,qd(ixI^S,2**(ndim-1)), Blocal(ndim)
+    double precision :: minq,maxq,qd(ixI^S,2**(ndim-1)), blocal(ndim)
     integer :: idims,idir,ix^D,ix^L,ixC^L,ixA^L,ixB^L
 
     ix^L=ixO^L^LADD1;
@@ -425,30 +425,30 @@ contains
        {do ix^DB=ixmin^DB,ixmax^DB\}
           ^D&blocal(^D)=w({ix^D},iw_mag(^D))+block%B0({ix^D},^D,0)\
          {^IFTWOD
-          if(Blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,Blocal(1))/dsqrt(1.d0+(Blocal(2)/Blocal(1))**2)
+          if(blocal(1)/=0.d0) then
+            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2)
           else
             mf(ix^D,1)=0.d0
           end if
-          if(Blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,Blocal(2))/dsqrt(1.d0+(Blocal(1)/Blocal(2))**2)
+          if(blocal(2)/=0.d0) then
+            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2)
           else
             mf(ix^D,2)=0.d0
           end if
          }
          {^IFTHREED
-          if(Blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,Blocal(1))/dsqrt(1.d0+(Blocal(2)/Blocal(1))**2+(Blocal(3)/Blocal(1))**2)
+          if(blocal(1)/=0.d0) then
+            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2+(blocal(3)/blocal(1))**2)
           else
             mf(ix^D,1)=0.d0
           end if
-          if(Blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,Blocal(2))/dsqrt(1.d0+(Blocal(1)/Blocal(2))**2+(Blocal(3)/Blocal(2))**2)
+          if(blocal(2)/=0.d0) then
+            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2+(blocal(3)/blocal(2))**2)
           else
             mf(ix^D,2)=0.d0
           end if
-          if(Blocal(3)/=0.d0) then
-            mf(ix^D,3)=sign(1.d0,Blocal(3))/dsqrt(1.d0+(Blocal(1)/Blocal(3))**2+(Blocal(2)/Blocal(3))**2)
+          if(blocal(3)/=0.d0) then
+            mf(ix^D,3)=sign(1.d0,blocal(3))/dsqrt(1.d0+(blocal(1)/blocal(3))**2+(blocal(2)/blocal(3))**2)
           else
             mf(ix^D,3)=0.d0
           end if
@@ -532,13 +532,13 @@ contains
       if(phys_trac) then
        {do ix^DB=ixmin^DB,ixmax^DB\}
           if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
-            qdd(ix^D)=fl%tc_k_para*sqrt(block%wextra(ix^D,fl%Tcoff_)**5)
+            qdd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
           else
-            qdd(ix^D)=fl%tc_k_para*sqrt(Te(ix^D)**5)
+            qdd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)
           end if
        {end do\}
       else
-        qdd(ix^S)=fl%tc_k_para*sqrt(Te(ix^S)**5)
+        qdd(ix^S)=fl%tc_k_para*dsqrt(Te(ix^S)**5)
       end if
      ! cell corner parallel conductivity in ka
      {^IFTHREED
@@ -937,7 +937,7 @@ contains
     signf(ixO^S)=sign(1.d0,f(ixO^S))
     select case(tc_slope_limiter)
      case(1)
-       ! 'MC' montonized central limiter Woodward and Collela limiter (eq.3.51h), a factor of 2 is pulled out
+       ! 'MC' monotonized central limiter Woodward and Collela limiter (eq.3.51h), a factor of 2 is pulled out
        lf(ixO^S)=two*signf(ixO^S)* &
             max(zero,min(dabs(f(ixO^S)),signf(ixO^S)*f(ixB^S),&
             signf(ixO^S)*quarter*(f(ixB^S)+f(ixO^S))))
@@ -945,7 +945,7 @@ contains
        ! 'minmod' limiter
        lf(ixO^S)=signf(ixO^S)*max(0.d0,min(abs(f(ixO^S)),signf(ixO^S)*f(ixB^S)))
      case(3)
-       ! 'superbee' Roes superbee limiter (eq.3.51i)
+       ! 'superbee' Roe superbee limiter (eq.3.51i)
        lf(ixO^S)=signf(ixO^S)* &
             max(zero,min(two*dabs(f(ixO^S)),signf(ixO^S)*f(ixB^S)),&
             min(dabs(f(ixO^S)),two*signf(ixO^S)*f(ixB^S)))
@@ -988,7 +988,7 @@ contains
         hfs(ixO^S)=hfs(ixO^S)+gradT(ixO^S)**2
       end do
       ! kappa=kappa_Spizer/(1+4.2*l_mfpe/(T/|gradT|))
-      tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/(rho(ixO^S)*(1.d0+4.2d0*tmp2(ixO^S)*sqrt(hfs(ixO^S))/Te(ixO^S)))
+      tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/(rho(ixO^S)*(1.d0+4.2d0*tmp2(ixO^S)*dsqrt(hfs(ixO^S))/Te(ixO^S)))
     else
       tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/rho(ixO^S)
     end if
@@ -996,20 +996,20 @@ contains
 
     if(slab_uniform) then
       do idim=1,ndim
-        ! approximate thermal conduction flux: tc_k_para_i/rho/dx
+        ! approximate thermal conduction flux: tc_k_para/rho/dx
         tmp2(ixO^S)=tmp(ixO^S)/dxlevel(idim)
         maxtmp2=maxval(tmp2(ixO^S))
-        ! dt< dx_idim**2/((gamma-1)*tc_k_para_i/rho)
+        ! dt< dx_idim**2/((gamma-1)*tc_k_para/rho)
         dtdiff_tcond=dxlevel(idim)/(tc_gamma_1*maxtmp2+smalldouble)
         ! limit the time step
         dtnew=min(dtnew,dtdiff_tcond)
       end do
     else
       do idim=1,ndim
-        ! approximate thermal conduction flux: tc_k_para_i/rho/dx
+        ! approximate thermal conduction flux: tc_k_para/rho/dx
         tmp2(ixO^S)=tmp(ixO^S)/block%ds(ixO^S,idim)
         maxtmp2=maxval(tmp2(ixO^S)/block%ds(ixO^S,idim))
-        ! dt< dx_idim**2/((gamma-1)*tc_k_para_i/rho*B_i**2/B**2)
+        ! dt< dx_idim**2/((gamma-1)*tc_k_para/rho)
         dtdiff_tcond=1.d0/(tc_gamma_1*maxtmp2+smalldouble)
         ! limit the time step
         dtnew=min(dtnew,dtdiff_tcond)
@@ -1142,13 +1142,13 @@ contains
     if(phys_trac) then
      {do ix^DB=ixmin^DB,ixmax^DB\}
         if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
-          qd(ix^D)=fl%tc_k_para*sqrt(block%wextra(ix^D,fl%Tcoff_)**5)
+          qd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
         else
-          qd(ix^D)=fl%tc_k_para*sqrt(Te(ix^D)**5)
+          qd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)
         end if
      {end do\}
     else
-      qd(ix^S)=fl%tc_k_para*sqrt(Te(ix^S)**5)
+      qd(ix^S)=fl%tc_k_para*dsqrt(Te(ix^S)**5)
     end if
      ! conductivity at cell corner
     {^IFTHREED

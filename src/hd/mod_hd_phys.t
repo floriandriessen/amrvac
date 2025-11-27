@@ -403,9 +403,8 @@ contains
   end subroutine hd_sts_set_source_tc_hd
 
   function hd_get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
-    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
-    !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
-    !and                        T=p/rho
+    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para/rho)
+    !and   tc_k_para can depend on T=p/rho
     use mod_global_parameters
     use mod_thermal_conduction, only: get_tc_dt_hd
  
