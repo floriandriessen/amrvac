@@ -186,8 +186,6 @@ module mod_mhd_phys
   logical, public :: numerical_resistive_heating = .false.
   !> Whether gravity work is included in energy equation
   logical :: gravity_energy
-  !> gravity work is calculated use density times velocity or conservative momentum
-  logical :: gravity_rhov = .false.
   !> Method type to clean divergence of B
   character(len=std_len), public, protected :: typedivbfix  = 'linde'
   !> Method type of constrained transport
@@ -407,12 +405,6 @@ contains
         gravity_energy=.false.
       else
         gravity_energy=.true.
-      end if
-      if(has_equi_rho0) then
-        gravity_rhov=.true.
-      end if
-      if(mhd_semirelativistic.and..not.mhd_hydrodynamic_e) then
-        gravity_rhov=.true.
       end if
     else
       gravity_energy=.false.
@@ -4677,7 +4669,7 @@ contains
 
     if(mhd_gravity) then
       call gravity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
-           w,x,gravity_energy,gravity_rhov,qsourcesplit,active)
+           w,x,gravity_energy,qsourcesplit,active)
     end if
 
     if (mhd_cak_force) then

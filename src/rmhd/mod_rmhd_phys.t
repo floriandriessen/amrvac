@@ -180,8 +180,6 @@ module mod_rmhd_phys
   logical, public :: partial_energy = .false.
   !> Whether gravity work is included in energy equation
   logical :: gravity_energy
-  !> gravity work is calculated use density times velocity or conservative momentum
-  logical :: gravity_rhov = .false.
   !> Method type to clean divergence of B
   character(len=std_len), public, protected :: typedivbfix  = 'linde'
   !> Method type of constrained transport
@@ -325,9 +323,6 @@ contains
     phys_total_energy=total_energy
     if(rmhd_energy) then
       gravity_energy=.true.
-      if(has_equi_rho0) then
-        gravity_rhov=.true.
-      end if
     else
       gravity_energy=.false.
     end if
@@ -2586,7 +2581,7 @@ contains
     end if
     if(rmhd_gravity) then
       call gravity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
-           w,x,gravity_energy,gravity_rhov,qsourcesplit,active)
+           w,x,gravity_energy,qsourcesplit,active)
     end if
     if (rmhd_cak_force) then
       call cak_add_source(qdt,ixI^L,ixO^L,wCT,w,x,rmhd_energy,qsourcesplit,active)
