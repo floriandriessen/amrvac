@@ -114,6 +114,8 @@ module mod_hd_phys
   public :: hd_to_primitive
   public :: hd_check_params
   public :: hd_check_w
+  public :: hd_e_to_ei
+  public :: hd_ei_to_e
 
 contains
 
