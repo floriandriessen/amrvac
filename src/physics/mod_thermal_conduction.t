@@ -1140,16 +1140,20 @@ contains
      }
     end do
     ! conductivity at cell center
-    if(phys_trac) then
-     {do ix^DB=ixmin^DB,ixmax^DB\}
-        if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
-          qd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
-        else
-          qd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)
-        end if
-     {end do\}
+    if(fl%tc_constant) then
+      qd(ix^S)=fl%tc_k_para
     else
-      qd(ix^S)=fl%tc_k_para*dsqrt(Te(ix^S)**5)
+      if(phys_trac) then
+       {do ix^DB=ixmin^DB,ixmax^DB\}
+          if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
+            qd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
+          else
+            qd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)
+          end if
+       {end do\}
+      else
+        qd(ix^S)=fl%tc_k_para*dsqrt(Te(ix^S)**5)
+      end if
     end if
      ! conductivity at cell corner
     {^IFTHREED
