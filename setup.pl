@@ -51,6 +51,9 @@ GetOptions(
     "help"    => \$help)
     or die("Error in command line arguments\n");
 
+if (!defined $ndim || !defined $ndir) {
+    die "Error: both -d (dimension count) and -v flags (vector count) are mandatory\n";
+}
 
 # Show help if -help is given or if there are no other arguments
 if ($help || !($ndim || $arch )) {
@@ -80,9 +83,7 @@ if ($ndim) {
 
 if ($ndir) {
     replace_regexp_file("makefile", qr/NDIR\s*[:?]?=.*/, "NDIR := $ndir");
-}else{
-    replace_regexp_file("makefile", qr/NDIR\s*[:?]?=.*/, "NDIR := $ndim");
-;}
+}
 
 if ($arch) {
     replace_regexp_file("makefile", qr/ARCH\s*[:?]?=.*/, "ARCH = $arch");
