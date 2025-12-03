@@ -1035,9 +1035,7 @@ contains
     double precision :: fluxall(ixI^S,1,1:ndim)
 
     double precision :: dxinv(ndim)
-    integer :: idims,ix^L,ixB^L,ixA^L
-
-    ix^L=ixO^L^LADD1;
+    integer :: idims,ixA^L
 
     dxinv=1.d0/dxlevel
 
@@ -1051,23 +1049,33 @@ contains
       call fl%get_rho_equi(w, x, ixI^L, ixI^L, rho)  !calculate rho in whole domain (+ghosts)
       call set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec_equi,rho,Te)
       do idims=1,ndim
-        qvec(ix^S,idims)=qvec(ix^S,idims) - qvec_equi(ix^S,idims)
+        ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
+        qvec(ixA^S,idims)=qvec(ixA^S,idims)-qvec_equi(ixA^S,idims)
       end do
       deallocate(qvec_equi)
     endif
 
-    qd=0.d0
     if(slab_uniform) then
       do idims=1,ndim
-        qvec(ix^S,idims)=dxinv(idims)*qvec(ix^S,idims)
-        ixB^L=ixO^L-kr(idims,^D);
-        qd(ixO^S)=qd(ixO^S)+qvec(ixO^S,idims)-qvec(ixB^S,idims)
+        ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
+        qvec(ixA^S,idims)=dxinv(idims)*qvec(ixA^S,idims)
+        ixA^L=ixO^L-kr(idims,^D);
+        if(idims==1) then
+          qd(ixO^S)=qvec(ixO^S,idims)-qvec(ixA^S,idims)
+        else
+          qd(ixO^S)=qd(ixO^S)+qvec(ixO^S,idims)-qvec(ixA^S,idims)
+        end if
       end do
     else
       do idims=1,ndim
-        qvec(ix^S,idims)=qvec(ix^S,idims)*block%surfaceC(ix^S,idims)
-        ixB^L=ixO^L-kr(idims,^D);
-        qd(ixO^S)=qd(ixO^S)+qvec(ixO^S,idims)-qvec(ixB^S,idims)
+        ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
+        qvec(ixA^S,idims)=qvec(ixA^S,idims)*block%surfaceC(ixA^S,idims)
+        ixA^L=ixO^L-kr(idims,^D);
+        if(idims==1) then
+          qd(ixO^S)=qvec(ixO^S,idims)-qvec(ixA^S,idims)
+        else
+          qd(ixO^S)=qd(ixO^S)+qvec(ixO^S,idims)-qvec(ixA^S,idims)
+        end if
       end do
       qd(ixO^S)=qd(ixO^S)/block%dvolume(ixO^S)
     end if
@@ -1155,32 +1163,33 @@ contains
         qd(ix^S)=fl%tc_k_para*dsqrt(Te(ix^S)**5)
       end if
     end if
-     ! conductivity at cell corner
+    ! conductivity Ke at cell corner
+    ! cell corner conduction flux gradT
     {^IFTHREED
     {do ix^DB=ixCmin^DB,ixCmax^DB\}
        ke(ix^D)=0.125d0*(qd(ix1,ix2,ix3)+qd(ix1+1,ix2,ix3)&
                       +qd(ix1,ix2+1,ix3)+qd(ix1+1,ix2+1,ix3)&
                       +qd(ix1,ix2,ix3+1)+qd(ix1+1,ix2,ix3+1)&
                       +qd(ix1,ix2+1,ix3+1)+qd(ix1+1,ix2+1,ix3+1))
+       gradT(ix^D,1)=ke(ix^D)*qvec(ix^D,1)
+       gradT(ix^D,2)=ke(ix^D)*qvec(ix^D,2)
+       gradT(ix^D,3)=ke(ix^D)*qvec(ix^D,3)
     {end do\}
     }
     {^IFTWOD
     {do ix^DB=ixCmin^DB,ixCmax^DB\}
        ke(ix^D)=0.25d0*(qd(ix1,ix2)+qd(ix1+1,ix2)+qd(ix1,ix2+1)+qd(ix1+1,ix2+1))
+       gradT(ix^D,1)=ke(ix^D)*qvec(ix^D,1)
+       gradT(ix^D,2)=ke(ix^D)*qvec(ix^D,2)
     {end do\}
     }
     {^IFONED
      do ix1=ixCmin1,ixCmax1
-       ke(ix1)=0.5d0*(qd(ix1)+qd(ix1+1))
+       gradT(ix^D,1)=0.5d0*(qd(ix1)+qd(ix1+1))*qvec(ix^D,1)
      end do
     }
-    ! cell corner conduction flux
-    do idims=1,ndim
-      gradT(ixC^S,idims)=ke(ixC^S)*qvec(ixC^S,idims)
-    end do
 
-    ! conduction flux at cell face
-    qvec=0.d0
+    ! conduction flux qvec at cell face
     do idims=1,ndim
       ixB^L=ixO^L-kr(idims,^D);
       ixAmax^D=ixOmax^D; ixAmin^D=ixBmin^D;

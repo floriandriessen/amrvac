@@ -883,7 +883,7 @@ contains
       w(ixO^S,Tcoff_)=Te(ixO^S)*&
         (0.25*(ltr(jxO^S)+two*ltr(ixO^S)+ltr(hxO^S)))**0.4d0
     case default
-      call mpistop("mhd_trac_type not allowed for 1D simulation")
+      call mpistop("hd_trac_type not allowed for 1D simulation")
     end select
     }
   end subroutine hd_get_tcutoff
