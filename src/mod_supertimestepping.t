@@ -31,7 +31,7 @@ module mod_supertimestepping
 
   ! input parameters from parameter file
   !> the coefficient that multiplies the sts dt
-  double precision :: sts_dtpar=0.8d0
+  double precision :: sts_dtpar=0.5d0
 
   !The following is used only for method 2, not input parameter TODO check if we want as input parameter
   double precision,parameter :: nu_sts = 0.5d0
