@@ -9,10 +9,11 @@ from datetime import datetime, timedelta
 import csv
 import sys
 
-# Usage : python convert_output_euhforia_format.py forecast 10 7 2015-06-25T01:04:00
+# Usage : python convert_output_euhforia_format.py relaxation 10 7 2015-06-25T01:04:00
 
 
-trajectory_data = sorted(glob.glob('../icarus_testcase_particle_00000?.csv'))
+trajectory_data = sorted(glob.glob('../icarus_2015_5CMEs_particle_00000?.csv'))
+
 
 
 ##### Reading in the passed arguments

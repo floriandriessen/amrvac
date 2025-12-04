@@ -1246,7 +1246,7 @@ contains
 
     if(ffhd_gravity) then
       call gravity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
-           w,x,ffhd_energy,.false.,qsourcesplit,active)
+           w,x,ffhd_energy,qsourcesplit,active)
     end if
 
     ! update temperature from new pressure, density, and old ionization degree

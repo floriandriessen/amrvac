@@ -1,7 +1,7 @@
 module mod_usr
   use mod_mhd
   use mod_global_parameters
-  use mod_randomheating
+  use mod_random_heating
   implicit none
   double precision, allocatable :: pbc(:),rbc(:)
   double precision :: usr_grav,vmax,La,trelax

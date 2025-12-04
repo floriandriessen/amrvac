@@ -285,7 +285,7 @@ contains
     csv_header = trim(csv_header) // ' ipe, iteration, index'
 
     ! Generate format string for CSV files
-    write(csv_format, '(A,I0,A,A)') '(', 8 + npayload, '(es14.6,", ")', &
+    write(csv_format, '(A,I0,A,A)') '(', 8 + npayload, '(es14.6,", "),', &
          'i8.7,", ",i11.10,", ",i8.7)'
 
   end subroutine particle_base_init
@@ -1104,7 +1104,7 @@ contains
 
     ! open the snapshot file on the headnode
     if (mype .eq. 0) then
-      write(filename,"(a,a,i4.4,a)") trim(base_filename),'_particles',snapshotnumber,'.dat'
+      write(filename,"(a,a,i6.6,a)") trim(base_filename),'_particles',snapshotnumber,'.dat'
       INQUIRE(FILE=filename, EXIST=file_exists)
       if (.not. file_exists) then
         open(unit=unitparticles,file=filename,form='unformatted',status='new',access='stream')
@@ -1763,7 +1763,7 @@ contains
   end subroutine partvec_from_cartesian
 
   !> Fix particle position when crossing the 0,2pi boundary in noncartesian coordinates
-  subroutine fix_phi_crossing(xp,igrid)
+  recursive subroutine fix_phi_crossing(xp,igrid)
     use mod_global_parameters
     use mod_geometry
 
@@ -1804,7 +1804,7 @@ contains
 
   !> Quick check if particle coordinate is inside igrid
   !> (ghost cells included, except the last ngh)
-  logical function point_in_igrid_ghostc(x, igrid, ngh)
+  recursive logical function point_in_igrid_ghostc(x, igrid, ngh)
     use mod_global_parameters
     use mod_geometry
     integer, intent(in) :: igrid, ngh

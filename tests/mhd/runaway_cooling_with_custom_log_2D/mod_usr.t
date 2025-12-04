@@ -58,7 +58,6 @@ contains
 
   subroutine special_source(qdt,ixI^L,ixO^L,iw^LIM,qtC,wCT,qt,w,x)
 
-    !use mod_radiative_cooling
     integer, intent(in) :: ixI^L, ixO^L, iw^LIM
     double precision, intent(in) :: qdt, qtC, qt
     double precision, intent(in) :: x(ixI^S,1:ndim), wCT(ixI^S,1:nw)
@@ -87,7 +86,7 @@ contains
     rho_e = 1.0d0
 
     ! get cooling curve value
-    call findL(T_cor,l_cor)
+    call findL(T_cor,l_cor,rc_fl)
 
     ! approximate thermal equilibrium: matching the initial losses due to density, except in the perturbation
     bQgrid(ixO^S) = rho_e**2.d0 * l_cor

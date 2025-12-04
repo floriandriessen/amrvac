@@ -114,6 +114,8 @@ module mod_hd_phys
   public :: hd_to_primitive
   public :: hd_check_params
   public :: hd_check_w
+  public :: hd_e_to_ei
+  public :: hd_ei_to_e
 
 contains
 
@@ -403,9 +405,8 @@ contains
   end subroutine hd_sts_set_source_tc_hd
 
   function hd_get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
-    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
-    !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
-    !and                        T=p/rho
+    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para/rho)
+    !and   tc_k_para can depend on T=p/rho
     use mod_global_parameters
     use mod_thermal_conduction, only: get_tc_dt_hd
  
@@ -882,7 +883,7 @@ contains
       w(ixO^S,Tcoff_)=Te(ixO^S)*&
         (0.25*(ltr(jxO^S)+two*ltr(ixO^S)+ltr(hxO^S)))**0.4d0
     case default
-      call mpistop("mhd_trac_type not allowed for 1D simulation")
+      call mpistop("hd_trac_type not allowed for 1D simulation")
     end select
     }
   end subroutine hd_get_tcutoff
@@ -1328,7 +1329,7 @@ contains
 
     if (hd_gravity) then
       call gravity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
-           hd_energy,.false.,qsourcesplit,active)
+           hd_energy,qsourcesplit,active)
 
       if (hd_dust .and. qsourcesplit .eqv. grav_split) then
          active = .true.
