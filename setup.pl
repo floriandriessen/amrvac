@@ -51,8 +51,8 @@ GetOptions(
     "help"    => \$help)
     or die("Error in command line arguments\n");
 
-if (!defined $ndim || !defined $ndir) {
-    die "Error: both -d (dimension count) and -v flags (vector count) are mandatory\n";
+if ($ndim < 3 && !defined $ndir) {
+    die "Error: both -d (dimension count) and -v flags (vector count) are mandatory for -d < 3\n";
 }
 
 # Show help if -help is given or if there are no other arguments
