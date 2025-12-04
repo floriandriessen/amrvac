@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=2
+SETUP_FLAGS := -d=2 -v=2
 TESTS := gs2d_chaos.log
 
 include ../../test_rules.make
