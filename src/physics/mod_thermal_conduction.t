@@ -1042,12 +1042,20 @@ contains
     !calculate Te in whole domain (+ghosts)
     call fl%get_temperature_from_eint(w, x, ixI^L, ixI^L, Te)
     call fl%get_rho(w, x, ixI^L, ixI^L, rho)
-    call set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
+    if(slab_uniform) then
+      call set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
+    else
+      call set_source_tc_hd_geo(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
+    end if
     if(fl%has_equi) then
       allocate(qvec_equi(ixI^S,1:ndim))
       call fl%get_temperature_equi(w, x, ixI^L, ixI^L, Te)  !calculate Te in whole domain (+ghosts)
       call fl%get_rho_equi(w, x, ixI^L, ixI^L, rho)  !calculate rho in whole domain (+ghosts)
-      call set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec_equi,rho,Te)
+      if(slab_uniform) then
+        call set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec_equi,rho,Te)
+      else
+        call set_source_tc_hd_geo(ixI^L,ixO^L,w,x,fl,qvec_equi,rho,Te)
+      end if
       do idims=1,ndim
         ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
         qvec(ixA^S,idims)=qvec(ixA^S,idims)-qvec_equi(ixA^S,idims)
@@ -1091,6 +1099,7 @@ contains
     wres(ixO^S,fl%e_)=qd(ixO^S)
   end subroutine sts_set_source_tc_hd
 
+  !> get HD thermal conduction source and flux in uniform Cartesian grid
   subroutine set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
@@ -1100,7 +1109,7 @@ contains
     double precision, intent(in) :: Te(ixI^S),rho(ixI^S)
     double precision, intent(out) :: qvec(ixI^S,1:ndim)
     double precision :: gradT(ixI^S,1:ndim),ke(ixI^S),qd(ixI^S)
-    integer :: idims,ix^D,ix^L,ixC^L,ixA^L,ixB^L,ixD^L
+    integer :: idims,ix^D,ix^L,ixC^L,ixA^L,ixB^L
 
     ix^L=ixO^L^LADD1;
     ! ixC is cell-corner index
@@ -1191,8 +1200,7 @@ contains
 
     ! conduction flux qvec at cell face
     do idims=1,ndim
-      ixB^L=ixO^L-kr(idims,^D);
-      ixAmax^D=ixOmax^D; ixAmin^D=ixBmin^D;
+      ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
      {^IFTHREED
       if(idims==1) then
        {do ix^DB=ixAmin^DB,ixAmax^DB\}
@@ -1230,8 +1238,8 @@ contains
       if(fl%tc_saturate) then
           ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
           ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
-          ixD^L=ixA^L+kr(idims,^D);
-          qd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixD^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixD^S)))**3
+          ixB^L=ixA^L+kr(idims,^D);
+          qd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)
@@ -1240,4 +1248,174 @@ contains
       end if
     end do
   end subroutine set_source_tc_hd
+
+  !> get HD thermal conduction source and flux in non-uniform geometry grid
+  subroutine set_source_tc_hd_geo(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
+    use mod_global_parameters
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) ::  x(ixI^S,1:ndim)
+    double precision, intent(in) ::  w(ixI^S,1:nw)
+    type(tc_fluid), intent(in)    :: fl
+    double precision, intent(in) :: Te(ixI^S),rho(ixI^S)
+    double precision, intent(out) :: qvec(ixI^S,1:ndim)
+    double precision :: gradT(ixI^S,1:ndim),ke(ixI^S),qd(ixI^S)
+    integer :: idims,ix^D,ix^L,ixC^L,ixA^L,ixB^L
+
+    ix^L=ixO^L^LADD1;
+    ! ixC is cell-corner index
+    ixCmax^D=ixOmax^D; ixCmin^D=ixOmin^D-1;
+
+    ! calculate thermal conduction flux with symmetric scheme
+    ! T gradient from face centers to cell corners: surface weighted average
+    do idims=1,ndim
+      ixBmin^D=ixmin^D;
+      ixBmax^D=ixmax^D-kr(idims,^D);
+      call gradientF(Te,x,ixI^L,ixB^L,idims,ke)
+     {^IFTHREED
+      if(idims==1) then
+       {do ix^DB=ixCmin^DB,ixCmax^DB\}
+          qvec(ix^D,1)=(ke(ix1,ix2,ix3)*block%surfaceC(ix1,ix2,ix3,1)&
+                     +ke(ix1,ix2+1,ix3)*block%surfaceC(ix1,ix2+1,ix3,1)&
+                     +ke(ix1,ix2,ix3+1)*block%surfaceC(ix1,ix2,ix3+1,1)&
+                   +ke(ix1,ix2+1,ix3+1)*block%surfaceC(ix1,ix2+1,ix3+1,1))/&
+            (block%surfaceC(ix1,ix2,ix3,1)+block%surfaceC(ix1,ix2+1,ix3,1)&
+          +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1))
+       {end do\}
+      else if(idims==2) then
+       {do ix^DB=ixCmin^DB,ixCmax^DB\}
+          qvec(ix^D,2)=(ke(ix1,ix2,ix3)*block%surfaceC(ix1,ix2,ix3,2)&
+                     +ke(ix1+1,ix2,ix3)*block%surfaceC(ix1+1,ix2,ix3,2)&
+                     +ke(ix1,ix2,ix3+1)*block%surfaceC(ix1,ix2,ix3+1,2)&
+                   +ke(ix1+1,ix2,ix3+1)*block%surfaceC(ix1+1,ix2,ix3+1,2))/&
+            (block%surfaceC(ix1,ix2,ix3,2)+block%surfaceC(ix1+1,ix2,ix3,2)&
+          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+1.d-300)
+          ! zero theta-normal surface area at pole axis
+       {end do\}
+      else
+       {do ix^DB=ixCmin^DB,ixCmax^DB\}
+          qvec(ix^D,3)=(ke(ix1,ix2,ix3)*block%surfaceC(ix1,ix2,ix3,3)&
+                     +ke(ix1+1,ix2,ix3)*block%surfaceC(ix1+1,ix2,ix3,3)&
+                     +ke(ix1,ix2+1,ix3)*block%surfaceC(ix1,ix2+1,ix3,3)&
+                   +ke(ix1+1,ix2+1,ix3)*block%surfaceC(ix1+1,ix2+1,ix3,3))/&
+            (block%surfaceC(ix1,ix2,ix3,3)+block%surfaceC(ix1+1,ix2,ix3,3)&
+          +block%surfaceC(ix1,ix2+1,ix3,3)+block%surfaceC(ix1+1,ix2+1,ix3,3))
+       {end do\}
+      end if
+     }
+     {^IFTWOD
+      if(idims==1) then
+       {do ix^DB=ixCmin^DB,ixCmax^DB\}
+          qvec(ix^D,1)=(ke(ix1,ix2)*block%surfaceC(ix1,ix2,1)+ke(ix1,ix2+1)*block%surfaceC(ix1,ix2+1,1))&
+                      /(block%surfaceC(ix1,ix2,1)+block%surfaceC(ix1,ix2+1,1))
+       {end do\}
+      else
+       {do ix^DB=ixCmin^DB,ixCmax^DB\}
+          qvec(ix^D,2)=(ke(ix1,ix2)*block%surfaceC(ix1,ix2,2)+ke(ix1+1,ix2)*block%surfaceC(ix1+1,ix2,2))&
+                      /(block%surfaceC(ix1,ix2,2)+block%surfaceC(ix1+1,ix2,2))
+       {end do\}
+      end if
+     }
+     {^IFONED
+     do ix1=ixCmin1,ixCmax1
+       qvec(ix1,idims)=ke(ix1)
+     end do
+     }
+    end do
+    ! conductivity at cell center
+    if(fl%tc_constant) then
+      qd(ix^S)=fl%tc_k_para
+    else
+      if(phys_trac) then
+       {do ix^DB=ixmin^DB,ixmax^DB\}
+          if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
+            qd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
+          else
+            qd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)
+          end if
+       {end do\}
+      else
+        qd(ix^S)=fl%tc_k_para*dsqrt(Te(ix^S)**5)
+      end if
+    end if
+    ! conductivity Ke at cell corner
+    ! cell corner conduction flux gradT
+    {^IFTHREED
+    {do ix^DB=ixCmin^DB,ixCmax^DB\}
+       ke(ix^D)=(qd(ix1,ix2,ix3)*block%dvolume(ix1,ix2,ix3)+qd(ix1+1,ix2,ix3)*block%dvolume(ix1+1,ix2,ix3)&
+              +qd(ix1,ix2+1,ix3)*block%dvolume(ix1,ix2+1,ix3)+qd(ix1+1,ix2+1,ix3)*block%dvolume(ix1+1,ix2+1,ix3)&
+              +qd(ix1,ix2,ix3+1)*block%dvolume(ix1,ix2,ix3+1)+qd(ix1+1,ix2,ix3+1)*block%dvolume(ix1+1,ix2,ix3+1)&
+            +qd(ix1,ix2+1,ix3+1)*block%dvolume(ix1,ix2+1,ix3+1)+qd(ix1+1,ix2+1,ix3+1)*block%dvolume(ix1+1,ix2+1,ix3+1))&
+           /(block%dvolume(ix1,ix2,ix3)+block%dvolume(ix1+1,ix2,ix3)+block%dvolume(ix1,ix2+1,ix3)+block%dvolume(ix1+1,ix2+1,ix3)&
+        +block%dvolume(ix1,ix2,ix3+1)+block%dvolume(ix1+1,ix2,ix3+1)+block%dvolume(ix1,ix2+1,ix3+1)+block%dvolume(ix1+1,ix2+1,ix3+1))
+       gradT(ix^D,1)=ke(ix^D)*qvec(ix^D,1)
+       gradT(ix^D,2)=ke(ix^D)*qvec(ix^D,2)
+       gradT(ix^D,3)=ke(ix^D)*qvec(ix^D,3)
+    {end do\}
+    }
+    {^IFTWOD
+    {do ix^DB=ixCmin^DB,ixCmax^DB\}
+       ke(ix^D)=(qd(ix1,ix2)*block%dvolume(ix1,ix2)+qd(ix1+1,ix2)*block%dvolume(ix1+1,ix2)&
+              +qd(ix1,ix2+1)*block%dvolume(ix1,ix2+1)+qd(ix1+1,ix2+1)*block%dvolume(ix1+1,ix2+1))&
+             /(block%dvolume(ix1,ix2)+block%dvolume(ix1+1,ix2)+block%dvolume(ix1,ix2+1)+block%dvolume(ix1+1,ix2+1))
+       gradT(ix^D,1)=ke(ix^D)*qvec(ix^D,1)
+       gradT(ix^D,2)=ke(ix^D)*qvec(ix^D,2)
+    {end do\}
+    }
+    {^IFONED
+     do ix1=ixCmin1,ixCmax1
+       gradT(ix^D,1)=(qd(ix1)*block%dvolume(ix1)+qd(ix1+1)*block%dvolume(ix1+1))/(block%dvolume(ix1)+block%dvolume(ix1+1))*qvec(ix^D,1)
+     end do
+    }
+
+    ! conduction flux qvec at cell face
+    do idims=1,ndim
+      ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
+     {^IFTHREED
+      if(idims==1) then
+       {do ix^DB=ixAmin^DB,ixAmax^DB\}
+          qvec(ix^D,idims)=0.25d0*(gradT(ix1,ix2,ix3,idims)+gradT(ix1,ix2-1,ix3,idims)&
+                                +gradT(ix1,ix2,ix3-1,idims)+gradT(ix1,ix2-1,ix3-1,idims))
+       {end do\}
+      else if(idims==2) then
+       {do ix^DB=ixAmin^DB,ixAmax^DB\}
+          qvec(ix^D,idims)=0.25d0*(gradT(ix1,ix2,ix3,idims)+gradT(ix1-1,ix2,ix3,idims)&
+                                +gradT(ix1,ix2,ix3-1,idims)+gradT(ix1-1,ix2,ix3-1,idims))
+       {end do\}
+      else
+       {do ix^DB=ixAmin^DB,ixAmax^DB\}
+          qvec(ix^D,idims)=0.25d0*(gradT(ix1,ix2,ix3,idims)+gradT(ix1,ix2-1,ix3,idims)&
+                                +gradT(ix1-1,ix2,ix3,idims)+gradT(ix1-1,ix2-1,ix3,idims))
+       {end do\}
+      end if
+     }
+     {^IFTWOD
+      if(idims==1) then
+       {do ix^DB=ixAmin^DB,ixAmax^DB\}
+          qvec(ix^D,idims)=0.5d0*(gradT(ix1,ix2,idims)+gradT(ix1,ix2-1,idims))
+       {end do\}
+      else
+       {do ix^DB=ixAmin^DB,ixAmax^DB\}
+          qvec(ix^D,idims)=0.5d0*(gradT(ix1,ix2,idims)+gradT(ix1-1,ix2,idims))
+       {end do\}
+      end if
+     }
+     {^IFONED
+      do ix1=ixAmin1,ixAmax1
+        qvec(ix1,idims)=gradT(ix1,idims)
+      end do
+     }
+      if(fl%tc_saturate) then
+          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
+          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
+          ixB^L=ixA^L+kr(idims,^D);
+          qd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3
+         {do ix^DB=ixAmin^DB,ixAmax^DB\}
+            if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
+              qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)
+            end if
+         {end do\}
+      end if
+    end do
+  end subroutine set_source_tc_hd_geo
+
 end module mod_thermal_conduction

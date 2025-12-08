@@ -499,18 +499,18 @@ contains
                *dsin(half*psc(igrid)%dx(ixCoG^S,2))}{^IFTHREED*psc(igrid)%dx(ixCoG^S,3)}
         ps(igrid)%ds(ixGext^S,1)=ps(igrid)%dx(ixGext^S,1)
         {^NOONED   ps(igrid)%ds(ixGext^S,2)=xext(ixGext^S,1)*ps(igrid)%dx(ixGext^S,2)}
-        {^IFTHREED ps(igrid)%ds(ixGext^S,3)=xext(ixGext^S,1)*dsin(xext(ixGext^S,2))*&
+        {^IFTHREED ps(igrid)%ds(ixGext^S,3)=xext(ixGext^S,1)*dabs(dsin(xext(ixGext^S,2)))*&
                                             ps(igrid)%dx(ixGext^S,3)}
         ps(igrid)%dsC(ixGext^S,1)=ps(igrid)%dx(ixGext^S,1)
         {^NOONED   ps(igrid)%dsC(ixGext^S,2)=(xext(ixGext^S,1)+half*ps(igrid)%dx(ixGext^S,1))*&
                                             ps(igrid)%dx(ixGext^S,2)
         if(ndir>ndim) then
           ps(igrid)%dsC(ixGext^S,3)=(xext(ixGext^S,1)+half*ps(igrid)%dx(ixGext^S,1))*&
-                                         dsin(xext(ixGext^S,2)+half*ps(igrid)%dx(ixGext^S,2))
+                                         dabs(dsin(xext(ixGext^S,2)+half*ps(igrid)%dx(ixGext^S,2)))
         end if
         }
         {^IFTHREED ps(igrid)%dsC(ixGext^S,3)=(xext(ixGext^S,1)+half*ps(igrid)%dx(ixGext^S,1))*&
-                                         dsin(xext(ixGext^S,2)+half*ps(igrid)%dx(ixGext^S,2))*&
+                                         dabs(dsin(xext(ixGext^S,2)+half*ps(igrid)%dx(ixGext^S,2)))*&
                                          ps(igrid)%dx(ixGext^S,3)}
       case (cylindrical)
         ps(igrid)%dvolume(ixGext^S)=dabs(xext(ixGext^S,1)) &
@@ -527,8 +527,8 @@ contains
           end if
         end if
         if(phi_>0.and.phi_<=ndim) then
-          ps(igrid)%ds(ixGext^S,phi_)=xext(ixGext^S,1)*ps(igrid)%dx(ixGext^S,phi_)
-          ps(igrid)%dsC(ixGext^S,phi_)=(xext(ixGext^S,1)+&
+          ps(igrid)%ds(ixGext^S,phi_)=dabs(xext(ixGext^S,1))*ps(igrid)%dx(ixGext^S,phi_)
+          ps(igrid)%dsC(ixGext^S,phi_)=dabs(xext(ixGext^S,1)+&
                      half*ps(igrid)%dx(ixGext^S,1))*ps(igrid)%dx(ixGext^S,phi_)
           if(z_>phi_.and.ndir>ndim) ps(igrid)%dsC(ixGext^S,z_)=1.d0
         end if

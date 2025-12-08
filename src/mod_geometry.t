@@ -225,47 +225,48 @@ contains
       }
 
       s%surfaceC(ixG^S,1)=(x(ixG^S,1)+half*drs(ixG^S))**2 {^NOONED &
-           *two*dsin(x(ixG^S,2))*dsin(half*dx2(ixG^S))}{^IFTHREED*dx3(ixG^S)}
+           *two*dabs(dsin(x(ixG^S,2)))*dsin(half*dx2(ixG^S))}{^IFTHREED*dx3(ixG^S)}
+      ! change negative theta to positive to preserve positive area near pole
 
       {^NOONED
       s%surfaceC(ixG^S,2)=x(ixG^S,1)*drs(ixG^S)&
-           *dsin(x(ixG^S,2)+half*dx2(ixG^S))}{^IFTHREED*dx3(ixG^S)}
+           *dabs(dsin(x(ixG^S,2)+half*dx2(ixG^S)))}{^IFTHREED*dx3(ixG^S)}
 
       {^IFTHREED
       s%surfaceC(ixG^S,3)=x(ixG^S,1)*drs(ixG^S)*dx2(ixG^S)
       }
 
       {^IFONED
-      s%surfaceC(0,1)=dabs(x(1,1)-half*drs(1))**2
+      s%surfaceC(0,1)=(x(1,1)-half*drs(1))**2
       }
       {^IFTWOD
       s%surfaceC(0,ixGmin2:ixGmax2,1)=(x(1,ixGmin2:ixGmax2,1)-half*drs(1,&
-         ixGmin2:ixGmax2))**2*two*dsin(x(1,ixGmin2:ixGmax2,2))*dsin(half*dx2(1,&
+         ixGmin2:ixGmax2))**2*two*dabs(dsin(x(1,ixGmin2:ixGmax2,2)))*dsin(half*dx2(1,&
          ixGmin2:ixGmax2))
       s%surfaceC(ixGmin1:ixGmax1,0,2)=x(ixGmin1:ixGmax1,1,&
-         1)*drs(ixGmin1:ixGmax1,1)*dsin(x(ixGmin1:ixGmax1,1,&
-         2)-half*dx2(ixGmin1:ixGmax1,1))
+         1)*drs(ixGmin1:ixGmax1,1)*dabs(dsin(x(ixGmin1:ixGmax1,1,&
+         2)-half*dx2(ixGmin1:ixGmax1,1)))
       }
       {^IFTHREED
       s%surfaceC(0,ixGmin2:ixGmax2,ixGmin3:ixGmax3,1)=(x(1,ixGmin2:ixGmax2,&
          ixGmin3:ixGmax3,1)-half*drs(1,ixGmin2:ixGmax2,&
-         ixGmin3:ixGmax3))**2*two*dsin(x(1,ixGmin2:ixGmax2,ixGmin3:ixGmax3,&
-         2))*dsin(half*dx2(1,ixGmin2:ixGmax2,ixGmin3:ixGmax3))*dx3(1,&
+         ixGmin3:ixGmax3))**2*two*dabs(dsin(x(1,ixGmin2:ixGmax2,ixGmin3:ixGmax3,&
+         2)))*dsin(half*dx2(1,ixGmin2:ixGmax2,ixGmin3:ixGmax3))*dx3(1,&
          ixGmin2:ixGmax2,ixGmin3:ixGmax3)
       s%surfaceC(ixGmin1:ixGmax1,0,ixGmin3:ixGmax3,2)=x(ixGmin1:ixGmax1,1,&
          ixGmin3:ixGmax3,1)*drs(ixGmin1:ixGmax1,1,&
-         ixGmin3:ixGmax3)*dsin(x(ixGmin1:ixGmax1,1,ixGmin3:ixGmax3,&
-         2)-half*dx2(ixGmin1:ixGmax1,1,ixGmin3:ixGmax3))*dx3(ixGmin1:ixGmax1,1,&
+         ixGmin3:ixGmax3)*dabs(dsin(x(ixGmin1:ixGmax1,1,ixGmin3:ixGmax3,&
+         2)-half*dx2(ixGmin1:ixGmax1,1,ixGmin3:ixGmax3)))*dx3(ixGmin1:ixGmax1,1,&
          ixGmin3:ixGmax3)
       s%surfaceC(ixGmin1:ixGmax1,ixGmin2:ixGmax2,0,3)=&
          s%surfaceC(ixGmin1:ixGmax1,ixGmin2:ixGmax2,1,3)
       }
 
       s%surface(ixG^S,1)=x(ixG^S,1)**2 {^NOONED &
-           *two*dsin(x(ixG^S,2))*dsin(half*dx2(ixG^S))}{^IFTHREED*dx3(ixG^S)}
+           *two*dabs(dsin(x(ixG^S,2)))*dsin(half*dx2(ixG^S))}{^IFTHREED*dx3(ixG^S)}
       {^NOONED
       s%surface(ixG^S,2)=x(ixG^S,1)*drs(ixG^S)&
-           *dsin(x(ixG^S,2))}{^IFTHREED*dx3(ixG^S)}
+           *dabs(dsin(x(ixG^S,2)))}{^IFTHREED*dx3(ixG^S)}
 
       {^IFTHREED
       s%surface(ixG^S,3)=x(ixG^S,1)*drs(ixG^S)*dx2(ixG^S)}
@@ -279,12 +280,13 @@ contains
       dx3(ixG^S)=s%dx(ixG^S,3)}
 
       s%surfaceC(ixG^S,1)=dabs(x(ixG^S,1)+half*drs(ixG^S)){^DE&*dx^DE(ixG^S) }
+      ! change negative r to positive to preserve positive area near pole
       {^NOONED
-      if (z_==2) s%surfaceC(ixG^S,2)=x(ixG^S,1)*drs(ixG^S){^IFTHREED*dx3(ixG^S)}
+      if (z_==2) s%surfaceC(ixG^S,2)=dabs(x(ixG^S,1))*drs(ixG^S){^IFTHREED*dx3(ixG^S)}
       if (phi_==2) s%surfaceC(ixG^S,2)=drs(ixG^S){^IFTHREED*dx3(ixG^S)}
       }
       {^IFTHREED
-      if (z_==3) s%surfaceC(ixG^S,3)=x(ixG^S,1)*drs(ixG^S)*dx2(ixG^S)
+      if (z_==3) s%surfaceC(ixG^S,3)=dabs(x(ixG^S,1))*drs(ixG^S)*dx2(ixG^S)
       if (phi_==3) s%surfaceC(ixG^S,3)=drs(ixG^S)*dx2(ixG^S)
       }
       {^IFONED
@@ -304,10 +306,10 @@ contains
 
       s%surface(ixG^S,1)=dabs(x(ixG^S,1)){^DE&*dx^DE(ixG^S) }
       {^NOONED
-      if (z_==2) s%surface(ixG^S,2)=x(ixG^S,1)*drs(ixG^S){^IFTHREED*dx3(ixG^S)}
+      if (z_==2) s%surface(ixG^S,2)=dabs(x(ixG^S,1))*drs(ixG^S){^IFTHREED*dx3(ixG^S)}
       if (phi_==2) s%surface(ixG^S,2)=drs(ixG^S){^IFTHREED*dx3(ixG^S)}}
       {^IFTHREED
-      if (z_==3) s%surface(ixG^S,3)=x(ixG^S,1)*drs(ixG^S)*dx2(ixG^S)
+      if (z_==3) s%surface(ixG^S,3)=dabs(x(ixG^S,1))*drs(ixG^S)*dx2(ixG^S)
       if (phi_==3) s%surface(ixG^S,3)=drs(ixG^S)*dx2(ixG^S)}
 
     case default

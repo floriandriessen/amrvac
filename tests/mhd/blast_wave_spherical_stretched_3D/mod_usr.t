@@ -33,7 +33,7 @@ contains
        end if
        first=.false.
     end if
-    rbs=0.2d0
+    rbs=0.5d0
     w(ixO^S,rho_)=1.d0
     w(ixO^S,p_)=1.d0
     xc1=(xprobmin1+xprobmax1)*0.5d0
