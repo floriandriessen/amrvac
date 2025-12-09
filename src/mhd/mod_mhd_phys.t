@@ -233,6 +233,7 @@ module mod_mhd_phys
   public :: mhd_face_to_center
   public :: get_divb
   public :: get_current
+  public :: mhd_get_Rfactor
   !> needed  public if we want to use the ambipolar coefficient in the user file
   public :: multiplyAmbiCoef
   public :: get_normalized_divb
@@ -744,11 +745,7 @@ contains
           mhd_get_temperature => mhd_get_temperature_from_eint
         end if
       else
-        if(has_equi_pe0 .and. has_equi_rho0) then
-          mhd_get_temperature => mhd_get_temperature_from_etot_with_equi
-        else
-          mhd_get_temperature => mhd_get_temperature_from_etot
-        end if
+        mhd_get_temperature => mhd_get_temperature_from_etot
       end if
     end if
 
@@ -816,11 +813,7 @@ contains
           tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint
         end if
       else
-        if(has_equi_pe0 .and. has_equi_rho0) then
-          tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_etot_with_equi
-        else
-          tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_etot
-        end if
+        tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_etot
       end if
       if(has_equi_pe0 .and. has_equi_rho0) then
         tc_fl%get_temperature_from_eint => mhd_get_temperature_from_eint_with_equi
@@ -3587,10 +3580,13 @@ contains
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       if(has_equi_rho0) then
         pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))&
-             +(^C&w(ix^D,b^C_)**2+)))+block%equi_vars(ix^D,equi_pe0_,0)
+             +(^C&w(ix^D,b^C_)**2+)))
       else
         pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
              +(^C&w(ix^D,b^C_)**2+)))
+      end if
+      if(has_equi_pe0) then
+        pth(ix^D)=pth(ix^D)+block%equi_vars(ix^D,equi_pe0_,0)
       end if
       if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
    {end do\}
@@ -3750,7 +3746,7 @@ contains
     res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
   end subroutine mhd_get_temperature_from_eint
 
-  !> Calculate temperature=p/rho when in e_ the total energy is stored
+  !> Calculate temperature=p/rho from total energy 
   subroutine mhd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
     integer, intent(in)          :: ixI^L, ixO^L
@@ -3758,28 +3754,14 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S)
+    double precision :: R(ixI^S),rho(ixI^S)
 
     call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
     call mhd_get_pthermal(w,x,ixI^L,ixO^L,res)
-    res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+    call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
+    res(ixO^S)=res(ixO^S)/(R(ixO^S)*rho(ixO^S))
 
   end subroutine mhd_get_temperature_from_etot
-
-  subroutine mhd_get_temperature_from_etot_with_equi(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-
-    double precision :: R(ixI^S)
-
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,res)
-    res(ixO^S)=res(ixO^S)/(R(ixO^S)*(w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,b0i)))
-
-  end subroutine mhd_get_temperature_from_etot_with_equi
 
   subroutine mhd_get_temperature_from_eint_with_equi(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
@@ -3805,6 +3787,7 @@ contains
 
     double precision :: R(ixI^S)
 
+    !!! somewhat inconsistent: R from w itself, while only equilibrium needed !!!
     call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
     res(ixO^S)= block%equi_vars(ixO^S,equi_pe0_,b0i)/(block%equi_vars(ixO^S,equi_rho0_,b0i)*R(ixO^S))
 

@@ -1,6 +1,6 @@
 !> module radiative cooling -- add optically thin radiative cooling for HD and MHD
 !>
-!> Assumptions: full ionize plasma dominated by H and He, ionization equilibrium 
+!> Assumptions: full ionized plasma dominated by H and He, ionization equilibrium 
 !> Formula: Q=-n_H*n_e*f(T), positive f(T) function is pre-computed and tabulated or a piecewise power law
 !> Developed by Allard Jan van Marle, Rony Keppens, and Chun Xia
 !> Cooling tables extend to 1O^9 K, (17.11.2009)  AJvM
@@ -1313,8 +1313,7 @@ module mod_radiative_cooling
     subroutine getvar_cooling_exact(qdt, ixI^L, ixO^L, wCT, w, x, coolrate, fl)
     ! Calculates cooling rate using the exact cooling method,
     ! for usage in eg. source_terms subroutine.
-    ! The TEF must be known, so this routine can only be used
-    ! together with the "exact" cooling method.
+    ! this routine can only be used together with the "exact" cooling method.
       use mod_global_parameters
 
       integer, intent(in)           :: ixI^L, ixO^L
@@ -1931,7 +1930,7 @@ module mod_radiative_cooling
       type(rc_fluid), intent(in) :: fl
 
       double precision :: lgtp
-      integer :: jl,jc,jh,i
+      integer :: jl,i
 
       if(fl%isPPL) then
         i = maxloc(fl%t_PPL, dim=1, mask=fl%t_PPL<tpoint)
@@ -1944,31 +1943,10 @@ module mod_radiative_cooling
                   / (fl%tcool(jl+1)-fl%tcool(jl))
       end if
 
-!      if (tpoint == fl%tcoolmin) then
-!        Lpoint = fl%Lcool(1)
-!      else if (tpoint == fl%tcoolmax) then
-!        Lpoint = fl%Lcool(fl%ncool)
-!      else
-!        jl=0
-!        jh=fl%ncool+1  
-!        do
-!          if (jh-jl <= 1) exit
-!          jc=(jh+jl)/2
-!          if (tpoint >= fl%tcool(jc)) then
-!              jl=jc
-!          else
-!              jh=jc
-!          end if
-!        end do
-!        ! Linear interpolation to obtain correct cooling
-!        Lpoint = fl%Lcool(jl)+ (tpoint-fl%tcool(jl)) &
-!                  * (fl%Lcool(jl+1)-fl%Lcool(jl)) &
-!                  / (fl%tcool(jl+1)-fl%tcool(jl))
-!      end if
     end subroutine findL
 
     subroutine findY (tpoint,Ypoint,fl)
-    !  Fast search option to find correct point in cooling time (TEF)
+    !  Fast search option to find correct point in cooling time 
       use mod_global_parameters
 
       double precision,intent(IN)   :: tpoint
@@ -1977,7 +1955,7 @@ module mod_radiative_cooling
 
       double precision :: lgtp
       double precision :: y_extra,factor
-      integer :: jl,jc,jh,i
+      integer :: jl,i
 
       if(fl%isPPL) then
         i = maxloc(fl%t_PPL, dim=1, mask=fl%t_PPL<tpoint)
@@ -1996,29 +1974,6 @@ module mod_radiative_cooling
                   / (fl%tcool(jl+1)-fl%tcool(jl))
       end if
 
-  !    integer i
-  !    
-  !    if (tpoint == tcoolmin) then
-  !      Ypoint = Yc(1)
-  !    else if (tpoint == tcoolmax) then
-  !      Ypoint = Yc(ncool)
-  !    else
-  !      jl=0
-  !      jh=ncool+1  
-  !      do
-  !        if (jh-jl <= 1) exit
-  !        jc=(jh+jl)/2
-  !        if (tpoint >= tcool(jc)) then
-  !           jl=jc
-  !        else
-  !           jh=jc
-  !        end if
-  !      end do
-  !      ! Linear interpolation to obtain correct value
-  !      Ypoint = Yc(jl)+ (tpoint-tcool(jl)) &
-  !                * (Yc(jl+1)-Yc(jl)) &
-  !                / (tcool(jl+1)-tcool(jl))
-  !    end if
     end subroutine findY
 
     subroutine findT (tpoint,Ypoint,fl)
@@ -2068,45 +2023,4 @@ module mod_radiative_cooling
       end if
     end subroutine findT
 
-    subroutine finddLdt (tpoint,dLpoint,fl)
-    !  Fast search option to find correct point 
-    !  in derivative of cooling curve
-    !  Does not work for the piecewise power laws
-      use mod_global_parameters
-
-      double precision,intent(IN)   :: tpoint
-      double precision, intent(OUT) :: dLpoint
-      type(rc_fluid), intent(in) :: fl
-
-      double precision :: lgtp
-      integer :: jl,jc,jh
-
-      lgtp = dlog10(tpoint)
-      jl = int((lgtp -fl%lgtcoolmin) / fl%lgstep) + 1
-      dLpoint = fl%dLdtcool(jl)+ (tpoint-fl%tcool(jl)) &
-                * (fl%dLdtcool(jl+1)-fl%dLdtcool(jl)) &
-                / (fl%tcool(jl+1)-fl%tcool(jl))
-
-!      if (tpoint == tcoolmin) then
-!        dLpoint = dLdtcool(1)
-!      else if (tpoint == tcoolmax) then
-!        dLpoint = dLdtcool(ncool)
-!      else
-!        jl=0
-!        jh=ncool+1  
-!        do
-!          if (jh-jl <= 1) exit
-!          jc=(jh+jl)/2
-!          if (tpoint >= tcool(jc)) then
-!              jl=jc
-!          else
-!              jh=jc
-!          end if
-!        end do
-!        ! Linear interpolation to obtain correct cooling derivative
-!        dLpoint = dLdtcool(jl)+ (tpoint-tcool(jl)) &
-!                  * (dLdtcool(jl+1)-dLdtcool(jl)) &
-!                  / (tcool(jl+1)-tcool(jl))
-!      end if
-    end subroutine finddLdt
 end module mod_radiative_cooling
