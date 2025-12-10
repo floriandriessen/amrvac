@@ -9,21 +9,12 @@ program amrvac
   use mod_ghostcells_update
   use mod_usr
   use mod_initialize
-  use mod_initialize_amr, only: initlevelone, modify_IC
-  use mod_initialize_amr, only: improve_initial_condition
-  use mod_selectgrids, only: selectgrids
   use mod_particles
   use mod_fix_conserve
   use mod_advance, only: process
   use mod_multigrid_coupling
   use mod_convert, only: init_convert
   use mod_physics
-  use mod_eos, only: eos_init
-  use mod_amr_grid, only: resettree, settree, resettree_convert
-  use mod_trac, only: initialize_trac_after_settree
-  use mod_convert_files, only: generate_plotfile
-  use mod_comm_lib, only: comm_start, comm_finalize,mpistop
-
 
   double precision :: time0, time_in
   logical,save     :: part_file_exists=.false.
@@ -40,8 +31,6 @@ program amrvac
 
   ! init_convert is called before usr_init as user might associate a convert method
   call init_convert()
-  !> eos_init is called prior to physics module
-  call eos_init()
   ! the user_init routine should load a physics module
   call usr_init()
 
@@ -70,18 +59,8 @@ program amrvac
        it           = it_init
      end if
 
-     ! allow use to read extra data before filling boundary condition
-     if (associated(usr_process_grid) .or. &
-          associated(usr_process_global)) then
-        call process(it,global_time)
-     end if
-
      ! modify initial condition
-     if (firstprocess) then
-       ! update ghost cells for all need-boundary variables before modification
-       call getbc(global_time,0.d0,ps,1,nwflux+nwaux)
-       call modify_IC
-     end if
+     if (firstprocess) call modify_IC
 
      ! select active grids
      call selectgrids
@@ -97,47 +76,41 @@ program amrvac
        if (levmax>levmin) call allocateBflux
      end if
 
-     ! all blocks refined to the same level for output
-     if(convert .and. level_io>0 .or. level_io_min.ne.1 .or. level_io_max.ne.nlevelshi) &
-       call resettree_convert
-
-     {^NOONED
-     ! improve initial condition after restart and modification
-     if(firstprocess) call improve_initial_condition()
-     }
-
-     if (use_multigrid) call mg_setup_multigrid()
-
      if(use_particles) then
        call read_particles_snapshot(part_file_exists)
-       call init_gridvars()
        if (.not. part_file_exists) call particles_create()
        if(convert) then
          call handle_particles()
-         call finish_gridvars()
          call time_spent_on_particles()
          call comm_finalize
          stop
        end if
      end if
 
-     if(convert) then
-       if (npe/=1.and.(.not.(index(convert_type,'mpi')>=1)) &
-            .and. convert_type .ne. 'user')  &
-            call mpistop("non-mpi conversion only uses 1 cpu")
-       if(mype==0.and.level_io>0) write(unitterm,*)'reset tree to fixed level=',level_io
+     if (use_multigrid) call mg_setup_multigrid()
 
-       !here requires -1 snapshot
-       if (autoconvert .or. snapshotnext>0) snapshotnext = snapshotnext - 1
+     if (convert) then
+        if (npe/=1.and.(.not.(index(convert_type,&
+           'mpi')>=1)) .and. convert_type .ne. 'user')  call &
+           mpistop("non-mpi conversion only uses 1 cpu")
 
-       if(associated(phys_special_advance)) then
-         ! e.g. calculate MF velocity from magnetic field
-         call phys_special_advance(global_time,ps)
-       end if
+        ! Optionally call a user method that can modify the grid variables
+        ! before saving the converted data
+        if (associated(usr_process_grid) .or. associated(usr_process_global)) &
+           then
+           call process(it,global_time)
+        end if
+        !here requires -1 snapshot
+        if (autoconvert .or. snapshotnext>0) snapshotnext = snapshotnext - 1
 
-       call generate_plotfile
-       call comm_finalize
-       stop
+        if(associated(phys_special_advance)) then
+          ! e.g. calculate MF velocity from magnetic field
+          call phys_special_advance(global_time,ps)
+        end if
+
+        call generate_plotfile
+        call comm_finalize
+        stop
      end if
 
   else
@@ -150,21 +123,20 @@ program amrvac
 
      if (use_multigrid) call mg_setup_multigrid()
 
+     
      ! improve initial condition
      call improve_initial_condition()
+    
 
      ! select active grids
      call selectgrids
 
-     if (use_particles) then
-       call init_gridvars()
-       call particles_create()
-     end if
+     if (use_particles) call particles_create()
 
   end if
 
   ! initialize something base on tree information
-  call initialize_trac_after_settree
+  call initialize_after_settree
 
   if (mype==0) then
      print*,'-------------------------------------------------------------------------------'
@@ -173,8 +145,7 @@ program amrvac
   end if
 
   ! an interface to allow user to do special things before the main loop
-  if (associated(usr_before_main_loop)) &
-       call usr_before_main_loop()
+  if (associated(usr_before_main_loop)) call usr_before_main_loop()
 
   ! do time integration of all grids on all levels
   call timeintegration()
@@ -194,16 +165,14 @@ contains
     use mod_advance, only: advance, process, process_advanced
     use mod_forest, only: nleafs_active
     use mod_global_parameters
-    use mod_input_output, only: saveamrfile
-    use mod_input_output_helper, only: save_now
+    use mod_input_output, only: saveamrfile, save_now
     use mod_ghostcells_update
-    use mod_dt, only: setdt
 
-
-    double precision :: time_last_print, time_write0, time_write, time_before_advance, dt_loop
-    integer(kind=8) ncells_update
     integer :: level, ifile, fixcount, ncells_block, igrid, iigrid
+    integer(kind=8) ncells_update
     logical :: crashall
+    double precision :: time_last_print, time_write0, time_write,&
+        time_before_advance, dt_loop
 
     time_in=MPI_WTIME()
     time_last_print = -bigdouble
@@ -213,7 +182,8 @@ contains
 
     do ifile=nfile,1,-1
        if(resume_previous_run) then
-         tsavelast(ifile)=aint((global_time+smalldouble)/dtsave(ifile))*dtsave(ifile)
+         tsavelast(ifile)=aint((global_time+&
+            smalldouble)/dtsave(ifile))*dtsave(ifile)
          itsavelast(ifile)=it/ditsave(ifile)*ditsave(ifile)
        else
          tsavelast(ifile)=global_time
@@ -227,15 +197,15 @@ contains
 
     !  ------ start of integration loop. ------------------
     if (mype==0) then
-      write(*, '(A,ES9.2,A)') ' Start integrating, print status every ', &
-           time_between_print, ' seconds'
-      write(*, '(A4,A10,A12,A12,A12,A14)') '  #', 'it', 'time', 'dt', 'wc-time(s)', 'active_grids'
+      write(*, '(A,ES9.2,A)') ' Start integrating, print status every ',&
+          time_between_print, ' seconds'
+      write(*, '(A4,A10,A12,A12,A12)') '  #', 'it', 'time', 'dt', 'wc-time(s)'
     end if
 
     timeloop0=MPI_WTIME()
     time_bc=0.d0
     time_write=0.d0
-    ncells_block={(ixGhi^D-2*nghostcells)*}
+    ncells_block=(ixGhi1-2*nghostcells)*(ixGhi2-2*nghostcells)
     ncells_update=0
     dt_loop=0.d0
 
@@ -249,8 +219,8 @@ contains
 
        ! Optionally call a user method that can modify the grid variables at the
        ! beginning of a time step
-       if (associated(usr_process_grid) .or. &
-            associated(usr_process_global)) then
+       if (associated(usr_process_grid) .or. associated(usr_process_global)) &
+          then
           call process(it,global_time)
        end if
 
@@ -264,8 +234,8 @@ contains
        if (timeio0 - time_last_print > time_between_print) then
          time_last_print = timeio0
          if (mype == 0) then
-           write(*, '(A4,I10,ES12.4,ES12.4,ES12.4,I14)') " #", &
-                it, global_time, dt, timeio0 - time_in, nleafs_active
+           write(*, '(A4,I10,ES12.4,ES12.4,ES12.4)') " #", it, global_time, dt,&
+               timeio0 - time_in
          end if
        end if
 
@@ -274,9 +244,10 @@ contains
          if(associated(usr_modify_output)) then
            ! Users can modify or set variables before output is written
            do iigrid=1,igridstail; igrid=igrids(iigrid);
-             ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
+             dxlevel(1)=rnode(rpdx1_,igrid);dxlevel(2)=rnode(rpdx2_,igrid);
              block=>ps(igrid)
-             call usr_modify_output(ixG^LL,ixM^LL,global_time,ps(igrid)%w,ps(igrid)%x)
+             call usr_modify_output(ixGlo1,ixGlo2,ixGhi1,ixGhi2,ixMlo1,ixMlo2,&
+                ixMhi1,ixMhi2,global_time,ps(igrid)%w,ps(igrid)%x)
            end do
          end if
          time_write=0.d0
@@ -289,6 +260,7 @@ contains
          end do
        end if
 
+
        ! output a snapshot when user write a file named 'savenow' in the same
        ! folder as the executable amrvac
        if (mype==0) inquire(file='savenow',exist=save_now)
@@ -296,17 +268,19 @@ contains
 
        if (save_now) then
           if(mype==0) write(*,'(a,i7,a,i7,a,es12.4)') ' save a snapshot No.',&
-               snapshotnext,' at it=',it,' global_time=',global_time
+             snapshotnext,' at it=',it,' global_time=',global_time
           call saveamrfile(1)
           call saveamrfile(2)
           call MPI_FILE_DELETE('savenow',MPI_INFO_NULL,ierrmpi)
        end if
        timeio_tot=timeio_tot+MPI_WTIME()-timeio0
 
-       pass_wall_time=MPI_WTIME()-time0+dt_loop+4.d0*time_write >=wall_time_max
+       pass_wall_time=MPI_WTIME()-time0+dt_loop+4.d0*time_write &
+          >=wall_time_max
 
        ! exit time loop if time is up
-       if (it>=it_max .or. global_time>=time_max .or. pass_wall_time .or. final_dt_exit) exit time_evol
+       if (it>=it_max .or. global_time>=time_max .or. pass_wall_time .or. &
+          final_dt_exit) exit time_evol
 
        ! solving equations
        call advance(it)
@@ -314,6 +288,9 @@ contains
        ! if met unphysical values, output the last good status and stop the run
        call MPI_ALLREDUCE(crash,crashall,1,MPI_LOGICAL,MPI_LOR,icomm,ierrmpi)
        if (crashall) then
+         do iigrid=1,igridstail; igrid=igrids(iigrid);
+           ps(igrid)%w=pso(igrid)%w
+         end do
          call saveamrfile(1)
          call saveamrfile(2)
          if(mype==0) write(*,*) "Error: small value encountered, run crash."
@@ -323,7 +300,7 @@ contains
        ! Optionally call a user method that can modify the grid variables at the
        ! end of a time step: this is for two-way coupling to PIC, e.g.
        if (associated(usr_process_adv_grid) .or. &
-            associated(usr_process_adv_global)) then
+          associated(usr_process_adv_global)) then
           call process_advanced(it,global_time)
        end if
 
@@ -357,25 +334,29 @@ contains
        dt_loop=MPI_WTIME()-time_before_advance
     end do time_evol
 
-    if(use_particles) then
-      call finish_gridvars()
-    end if
-
     time_advance=.false.
 
     timeloop=MPI_WTIME()-timeloop0
 
     if (mype==0) then
        write(*,'(a,f12.3,a)')' Total timeloop took        : ',timeloop,' sec'
-       write(*,'(a,f12.3,a)')' Time spent on AMR          : ',timegr_tot,' sec'
-       write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*timegr_tot/timeloop,' %'
-       write(*,'(a,f12.3,a)')' Time spent on IO in loop   : ',timeio_tot,' sec'
-       write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*timeio_tot/timeloop,' %'
+       write(*,'(a,f12.3,a)')' Time spent on AMR          : ',timegr_tot,&
+          ' sec'
+       write(*,'(a,f12.2,a)')'                  Percentage: ',&
+          100.0*timegr_tot/timeloop,' %'
+       write(*,'(a,f12.3,a)')' Time spent on IO in loop   : ',timeio_tot,&
+          ' sec'
+       write(*,'(a,f12.2,a)')'                  Percentage: ',&
+          100.0*timeio_tot/timeloop,' %'
        write(*,'(a,f12.3,a)')' Time spent on ghost cells  : ',time_bc,' sec'
-       write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*time_bc/timeloop,' %'
-       write(*,'(a,f12.3,a)')' Time spent on computing    : ',timeloop-timeio_tot-timegr_tot-time_bc,' sec'
-       write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*(timeloop-timeio_tot-timegr_tot-time_bc)/timeloop,' %'
-       write(*,'(a,es12.3 )')' Cells updated / proc / sec : ',dble(ncells_update)*dble(nstep)/dble(npe)/timeloop
+       write(*,'(a,f12.2,a)')'                  Percentage: ',&
+          100.0*time_bc/timeloop,' %'
+       write(*,'(a,f12.3,a)')' Time spent on computing    : ',&
+          timeloop-timeio_tot-timegr_tot-time_bc,' sec'
+       write(*,'(a,f12.2,a)')'                  Percentage: ',&
+          100.0*(timeloop-timeio_tot-timegr_tot-time_bc)/timeloop,' %'
+       write(*,'(a,es12.3 )')' Cells updated / proc / sec : ',&
+          dble(ncells_update)*dble(nstep)/dble(npe)/timeloop
     end if
 
     ! output end state
@@ -387,15 +368,15 @@ contains
     timeio_tot=timeio_tot+(MPI_WTIME()-timeio0)
 
     if (mype==0) then
-       write(*,'(a,f12.3,a)')' Total time spent on IO     : ',timeio_tot,' sec'
-       write(*,'(a,f12.3,a)')' Total timeintegration took : ',MPI_WTIME()-time_in,' sec'
-       write(*, '(A4,I10,ES12.3,ES12.3,ES12.3)') " #", &
-            it, global_time, dt, timeio0 - time_in
+       write(*,'(a,f12.3,a)')' Total time spent on IO     : ',timeio_tot,&
+          ' sec'
+       write(*,'(a,f12.3,a)')' Total timeintegration took : ',&
+          MPI_WTIME()-time_in,' sec'
+       write(*, '(A4,I10,ES12.3,ES12.3,ES12.3)') " #", it, global_time, dt,&
+           timeio0 - time_in
     end if
 
-    {#IFDEF RAY
-    call time_spent_on_rays
-    }
+    
 
     if(use_particles) call time_spent_on_particles
 
@@ -420,7 +401,8 @@ contains
     end if
     if (it==itsavelast(ifile)+ditsave(ifile)) oksave=.true.
 
-    if (global_time>=tsave(isavet(ifile),ifile).and.global_time-dt<tsave(isavet(ifile),ifile)) then
+    if (global_time>=tsave(isavet(ifile),&
+       ifile).and.global_time-dt<tsave(isavet(ifile),ifile)) then
        oksave=.true.
        isavet(ifile)=isavet(ifile)+1
     end if
