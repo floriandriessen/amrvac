@@ -1,8 +1,8 @@
-05/11/25
+11/12/25
 
 Tinatin Baratashvili
 
-## How to run Icarus testcase
+# How to run Icarus testcase
 ----------------
 
 To run the Icarus test case, you must follow the standard MPI-AMRVAC procedure. First, you install AMRVAC from https://amrvac.org/md_doc_installation.html.
@@ -27,18 +27,18 @@ make -j 4
 
 you can run the testcase with
 ```
-mpirun –np 4 ./amrvac -i amrvac.par
+mpirun –np 4 ./amrvac -i test_icarus.par
 ```
 Note* 4 here is number of CPUs, can be modified depending on the availability of CPUs.
 
 
-## Standard testcase description
+# Standard testcase description
 
-This run will be short, to check that it does not crash and can be finished successfully. I would recommend not modifying this amrvac.par file, instead to work with test_icarus.par file which is also uploaded in this directory. By default this testcase runs a simulation in low resolution, uniform grid, without AMR, with 5 cone CMEs. The simulation lasts 24 days and the output is saved after 10 days.
+I would recommend not modifying this amrvac.par file, instead to work with test_icarus.par file. By default this testcase runs a simulation in low resolution, uniform grid, without AMR, with 5 cone CMEs from the datacube that is already provided. The simulation lasts 24 days and the output is saved after 10 days.
 
 
 
-## Necessary files
+# Necessary files
 The most important files to run Icarus are the
 
 
@@ -46,6 +46,8 @@ The most important files to run Icarus are the
 - Parameter file that fixes the numerical method, computational domain and Icarus specific settings
 - The solar wind boundary (.vtk file)
 - The CME parameter file (.in file)
+- The CME datacube if CMEs are injected
+
 
 # Setting Icarus parameters
 
@@ -59,7 +61,8 @@ Name | Standard values | Description
 `relaxation` | 14 | Duration is given in days
 `cme_insertion` | 0 | Duration is given in days
 `cme_parameter_file` | 'cme_parameters.in' | The file containing CME parameters
-`magnetogram_time` |'2015-06-25T01:04:00' | Magnetogram timestamp in 'YYYY-MM-DDTHH:mm:ss' format
+`magnetogram_time` |'2015-06-25T01:04:00' | Magnetogram timestamp in 'YYYY-MM-DDTHH:mm:ss' format`
+`amr_start_hour` | >= 0 |When the AMR refinement starts
 
 # Changing the parameters
 
@@ -97,7 +100,6 @@ The additional files are uploaded to generate necessary files for Icarus.
 
 - input_boundary_generate.vtk - this python script generates the input VTK file from the standard WSA output file. If you have multiple WSA standard boundary files, it can combine into the timedependent input file. The paths and information should be indicated correctly in the user definition segment of the script.
 - convert_output_euhforia_format.py - This python script converts the standard output .csv files which are the satellite to the standard EUHFORIA format with the corresponding satellite names in the filename.
-
 
 
 The mangetogram timestamp should be indicated in the amrvac.par file in the icarus_list. When input_boundary_generate.vtk is run, it outputs in the terminal delta_phi value that should be adjusted in &icarus_list for variable delta_phi.
