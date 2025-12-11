@@ -4,6 +4,8 @@ module mod_usr
   use mod_bc_data
   !SI units, constants
   use mod_constants, only: mp_SI, kB_SI, miu0_SI
+  use, intrinsic :: ieee_arithmetic
+  use mod_datacube
   implicit none
 
   character(len=20)                              :: printsettingformat
@@ -77,7 +79,7 @@ contains
       read(unitpar, nml=icarus_list,        iostat=ios)
       close(unitpar)
     end do
-
+    
     if (num_cmes  == 0) cme_insertion = 0
     ! --- Map AMR mode (case-sensitive) ---
     select case (trim(adjustl(amr_criterion)))
@@ -238,7 +240,7 @@ contains
           sat_indx(i-zero_count) = i
           sat_count = sat_count+1
           call read_satellite_trajectory(trajectory_list(i), i)
-          !print *, i, positions_list(i)%positions(1,1)
+          
         end if
          if (which_satellite(i) == 0) then
           zero_count = zero_count+1
@@ -742,87 +744,143 @@ contains
     double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     integer             :: ix3,ix2
-    double precision    :: r_g, r_in, r_ref, br_bc, rho_bc, p_bc
-    integer             :: i,j,k, valuej, valuek, i_in  
-
+    double precision    :: vr_bc, vt_bc, vp_bc, br_bc, bt_bc, bp_bc, md_bc,rho_bc, temp_bc, p_bc, theta, phi
+    integer             :: i,j,k, valuej, valuek, i_in
     integer             :: nr_r, nr_colat, nr_lon
     integer             :: point11_clt, point11_lon, point22_clt, point22_lon
     double precision    :: xloc(1:ndim)
 
-    double precision    :: clt_zero, lon_zero
+    double precision    :: clt_zero, lon_zero, ts_magnetogram
+    double precision    :: r_ref, r_g
     integer             :: mask_cme, n, local_check
+
+    real, allocatable             :: mask(:)
+    real, allocatable             :: vr(:), vp(:), vt(:), br(:), bt(:), bp(:), md(:), temp(:)
+
+    double precision, allocatable :: clts(:), lons(:)
+    double precision :: time
+    integer :: idx, ndata, time_found
 
     select case(iB)
       case(1)! Lower radial boundary
         nr_colat = lt_3d(1)%n_points(1)
         nr_lon = lt_3d(1)%n_points(2)
-
-!        w(ixO^S,:) = 0.d0
-
-        !W IS USING CONSERVATIVE VALUES
-        !SO TO GET v1 WE NEED TO USE m1/rho!!
-        ! Should we want a radial velocity in the inertial frame, we need to set v3 = -omega_frame * r  and B3 = -omega_frame * r * sin\theta / v1
-        ! we cannot use asymm BC for v3 and B3 in the par file, since that will kill any component in the corot-frame 
-
-        call mhd_to_primitive(ixI^L,ixO^L,w,x)
-        do ix3 = ixOmin3, ixOmax3
+! Should we want a radial velocity in the inertial frame, we need to set v3 = -omega_frame * r  and B3 = -omega_frame * r * sin\theta / v1
+! we cannot use asymm BC for v3 and B3 in the par file, since that will kill any component in the corot-frame
+      
+      call mhd_to_primitive(ixI^L,ixO^L,w,x)
+      do ix3 = ixOmin3, ixOmax3
           do ix2 = ixOmin2,ixOmax2
             ! bc_data_set() has already filled ghost cells; keep its value at the
             ! ghost cell adjacent to the domain and enforce r^2 Br = const inward.
-
             br_bc  = w(ixOmax1, ix2, ix3, mag(1))
             rho_bc = w(ixOmax1, ix2, ix3, rho_)
             p_bc   = w(ixOmax1, ix2, ix3, p_)
-            r_ref  = xprobmin1 
+            r_ref  = x(ixOmax1, ix2, ix3, 1)
 
-            do i = ixOmin1, ixOmax1   ! fill all other ghost cells
+            do i = ixOmin1, ixOmax1-1   ! fill all other ghost cells
               r_g = x(i, ix2, ix3, 1)
               w(i,ix2,ix3,mag(1)) = br_bc  * (r_ref / r_g)**2
               w(i,ix2,ix3,rho_)   = rho_bc * (r_ref / r_g)**2
 
               ! (A) isothermal:
-              ! w(i,ix2,ix3,p_) = p_bc * ( w(i,ix2,ix3,rho_) / rho_bc ) 
+              ! w(i,ix2,ix3,p_) = p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )
 
               ! (B) polytropic:
-              w(i,ix2,ix3,p_)  =  p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )**mhd_gamma 
+              w(i,ix2,ix3,p_)  =  p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )**mhd_gamma
 
             end do
-            ! leave Btheta, Bphi as set by bc_data_set 
 
+            ! leave Btheta, Bphi as set by bc_data_set
+ 
             ! default: no tracer dye in the inner ghosts
             if (mhd_n_tracer >= 1) then
               do i = ixOmin1, ixOmax1
                 w(i, ix2, ix3, tracer(1)) = 0.d0
               end do
             end if
+           end do 
+         end do
 
-            !Get data from the first phsyical cell going in the r-direction
-            xloc(:) = x(ixOmax1 + 1 , ix2, ix3,:)
-            mask_cme = 0
-            
-            if (num_cmes > 0) then
-              do n = 1, num_cmes
-                if (mask_cme == 0) then
-                  call mask(xloc(2), xloc(3), mask_cme, n)
-                  if (mask_cme == 1) then
-                    do i = ixOmin1, ixOmax1
+        do n = 1, num_cmes
+            time = qt - timestamp(n)
+            ts_magnetogram = timestamp(n) - relaxation*24 - cme_insertion*24
 
-                      ! --- Inject CME primitive values in the two inner ghost cells ---
-                      w(i, ix2, ix3, rho_)   = rho_cme(n) / unit_density
-                      w(i, ix2, ix3, mom(1)) = vr_cme(n) / unit_velocity
-                      w(i, ix2, ix3, p_)     = rho_cme(n) / (0.5d0*mp_SI) * kB_SI * temperature_cme(n) / unit_pressure
-                      if (mhd_n_tracer >= 1) then
-                         w(i, ix2, ix3, tracer(1)) = rho_cme(n) / unit_density
-                      end if
-                    end do
-                  end if
-                end if
-              end do
+            if (time > 0.0d0) then
+                call get_datacube_arrays(time, n, base_filename, time_found, clts, lons, mask, vr, vt, vp, br, bt, bp, md, temp)
+            else
+                time_found = 0
             end if
-          end do
+
+            if (time_found == 1) then
+                ndata   = size(mask)
+            end if
+
+            do ix3 = ixOmin3, ixOmax3
+                do ix2 = ixOmin2, ixOmax2
+                    theta = x(ixOmin1+2, ix2, ix3, 2)
+                    phi   = x(ixOmin1+2, ix2, ix3, 3)
+
+                    mask_cme = 0
+                   if (time_found == 1) then
+                        call get_value(theta, phi, ts_magnetogram, &
+                                       clts, lons, mask, vr, vp, vt, br, bt, bp, temp, md, ndata, mask_cme, &
+                                       vr_bc, vp_bc, vt_bc, br_bc, bt_bc, bp_bc, md_bc, temp_bc)
+
+                            if (mask_cme == 1) then
+                            if (.not. ieee_is_nan(vr_bc)) then
+                                w(ixOmin1, ix2, ix3, mom(1)) = vr_bc/unit_velocity
+                                w(ixOmax1, ix2, ix3, mom(1)) = vr_bc/unit_velocity
+                            end if
+
+                            if ((.not. ieee_is_nan(vt_bc))) then
+                                w(ixOmin1, ix2, ix3, mom(2)) = vt_bc/unit_velocity
+                                w(ixOmax1, ix2, ix3, mom(2)) = vt_bc/unit_velocity
+                            end if
+
+                            if ((.not. ieee_is_nan(vp_bc))) then
+                                w(ixOmin1, ix2, ix3, mom(3)) = vp_bc/unit_velocity
+                                w(ixOmax1, ix2, ix3, mom(3)) = vp_bc/unit_velocity
+                            end if
+
+                            if (.not. ieee_is_nan(br_bc)) then
+                                w(ixOmin1, ix2, ix3, mag(1)) = br_bc/unit_magneticfield
+                                w(ixOmax1, ix2, ix3, mag(1)) = br_bc/unit_magneticfield
+                            end if
+
+                            if (.not. ieee_is_nan(bt_bc)) then
+                                w(ixOmin1, ix2, ix3, mag(2)) = bt_bc/unit_magneticfield
+                                w(ixOmax1, ix2, ix3, mag(2)) = bt_bc/unit_magneticfield
+                            end if
+
+                            if (.not. ieee_is_nan(bp_bc)) then
+                                w(ixOmin1, ix2, ix3, mag(3)) = bp_bc/unit_magneticfield
+                                w(ixOmax1, ix2, ix3, mag(3)) = bp_bc/unit_magneticfield
+                            end if
+
+                            if (.not. ieee_is_nan(md_bc)) then
+                                w(ixOmin1, ix2, ix3, rho_) = md_bc/unit_density
+                                w(ixOmax1, ix2, ix3, rho_) = md_bc/unit_density
+                                w(ixOmax1, ix2, ix3, tracer(1)) = md_bc/unit_density
+                                w(ixOmin1, ix2, ix3, tracer(1)) = md_bc/unit_density
+                            end if
+
+                            p_bc = md_bc/(0.5*mp_SI) * kB_SI * temp_bc
+                            if (.not. ieee_is_nan(p_bc)) then
+                                w(ixOmin1, ix2, ix3, p_) = p_bc/unit_pressure
+                                w(ixOmax1, ix2, ix3, p_) = p_bc/unit_pressure
+                            end if
+                        else
+                            w(ixOmax1, ix2, ix3, tracer(1)) = - w(ixOmin1+2, ix2, ix3, tracer(1))
+                            w(ixOmin1, ix2, ix3, tracer(1)) = - w(ixOmin1+3, ix2, ix3, tracer(1))
+                        end if
+                    end if
+                end do
+            end do
         end do
-        !convert back to conserved values
-        call mhd_to_conserved(ixI^L,ixO^L,w,x)
+
+        ! convert back to conserved values
+        call mhd_to_conserved(ixI^L, ixO^L, w, x)
     end select
   end subroutine specialbound_usr
 
