@@ -188,6 +188,7 @@ mod_dust.o: mod_usr_methods.mod
 mod_dust.o: mod_variables.mod
 mod_eos.o: mod_eos_container.mod
 mod_eos.o: mod_global_parameters.mod
+mod_eos.o: mod_input_output.mod
 mod_eos_container.o: mod_global_parameters.mod
 mod_eos_container.o: mod_phys_dict.mod
 mod_errest.o: mod_comm_lib.mod
@@ -409,11 +410,13 @@ mod_mhd.o: mod_mhd_eos.mod
 mod_mhd.o: mod_mhd_hllc.mod
 mod_mhd.o: mod_mhd_phys.mod
 mod_mhd.o: mod_mhd_roe.mod
+mod_mhd_eos.o: mod_comm_lib.mod
 mod_mhd_eos.o: mod_eos.mod
 mod_mhd_eos.o: mod_eos_container.mod
 mod_mhd_eos.o: mod_global_parameters.mod
 mod_mhd_eos.o: mod_mhd_phys.mod
 mod_mhd_eos.o: mod_phys_dict.mod
+mod_mhd_eos.o: mod_physics.mod
 mod_mhd_hllc.o: mod_functions_bfield.mod
 mod_mhd_hllc.o: mod_global_parameters.mod
 mod_mhd_hllc.o: mod_mhd_phys.mod

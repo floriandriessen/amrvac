@@ -66,7 +66,7 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate total energy from pressure, kinetic and magnetic energy
-      w(ix^D,e_)=w(ix^D,p_)*eos%inv_gamma_minus_1&
+      w(ix^D,e_)=w(ix^D,p_)*eos%p_to_eint_factor(ix^D)&
                  +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
                  +(^C&w(ix^D,b^C_)**2+))
       ! Convert velocity to momentum
@@ -102,7 +102,7 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate total energy from pressure, kinetic and magnetic energy
-      w(ix^D,e_)=w(ix^D,p_)*eos%inv_gamma_minus_1&
+      w(ix^D,e_)=w(ix^D,p_)*eos%p_to_eint_factor(ix^D)&
                  +half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
@@ -121,7 +121,7 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate total energy from pressure, kinetic and magnetic energy
-      w(ix^D,e_)=w(ix^D,p_)*eos%inv_gamma_minus_1
+      w(ix^D,e_)=w(ix^D,p_)*eos%p_to_eint_factor(ix^D)
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
    {end do\}
@@ -141,7 +141,7 @@ contains
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       rho=w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i)
       ! Calculate total energy from pressure, kinetic and magnetic energy
-      w(ix^D,e_)=w(ix^D,p_)*eos%inv_gamma_minus_1&
+      w(ix^D,e_)=w(ix^D,p_)*eos%p_to_eint_factor(ix^D)&
                  +half*((^C&w(ix^D,m^C_)**2+)*rho&
                        +(^C&w(ix^D,b^C_)**2+))
       ! Convert velocity to momentum
@@ -182,11 +182,11 @@ contains
       }
       if(mhd_internal_e) then
         ! internal energy
-        w(ix^D,e_)=w(ix^D,p_)*eos%inv_gamma_minus_1
+        w(ix^D,e_)=w(ix^D,p_)*eos%p_to_eint_factor(ix^D)
       else
         ! equation (9)
         ! Calculate total energy from internal, kinetic and magnetic energy
-        w(ix^D,e_)=w(ix^D,p_)*eos%inv_gamma_minus_1&
+        w(ix^D,e_)=w(ix^D,p_)*eos%p_to_eint_factor(ix^D)&
                    +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
                    +(^C&w(ix^D,b^C_)**2+)&
                    +(^C&e(ix^D,^C)**2+)*eos%inv_squared_c)
@@ -254,7 +254,7 @@ contains
       ! Convert momentum to velocity
       ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
       ! Calculate pressure = (gamma-1) * (e-ek-eb)
-      w(ix^D,p_)=eos%gamma_minus_1*(w(ix^D,e_)&
+      w(ix^D,p_)=eos%p_to_eint_factor(ix^D)*(w(ix^D,e_)&
                 -half*(w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)&
                   +(^C&w(ix^D,b^C_)**2+)))
    {end do\}
