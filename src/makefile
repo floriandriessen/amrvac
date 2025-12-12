@@ -26,6 +26,7 @@ amrvac.o: mod_comm_lib.mod
 amrvac.o: mod_convert.mod
 amrvac.o: mod_convert_files.mod
 amrvac.o: mod_dt.mod
+amrvac.o: mod_eos.mod
 amrvac.o: mod_fix_conserve.mod
 amrvac.o: mod_forest.mod
 amrvac.o: mod_ghostcells_update.mod
@@ -185,6 +186,10 @@ mod_dust.o: mod_global_parameters.mod
 mod_dust.o: mod_physics.mod
 mod_dust.o: mod_usr_methods.mod
 mod_dust.o: mod_variables.mod
+mod_eos.o: mod_eos_container.mod
+mod_eos.o: mod_global_parameters.mod
+mod_eos_container.o: mod_global_parameters.mod
+mod_eos_container.o: mod_phys_dict.mod
 mod_errest.o: mod_comm_lib.mod
 mod_errest.o: mod_forest.mod
 mod_errest.o: mod_global_parameters.mod
@@ -261,6 +266,7 @@ mod_ghostcells_update.o: mod_coarsen.mod
 mod_ghostcells_update.o: mod_comm_lib.mod
 mod_ghostcells_update.o: mod_global_parameters.mod
 mod_ghostcells_update.o: mod_physics.mod
+mod_ghostcells_update.o: mod_usr_methods.mod
 mod_global_parameters.o: mod_basic_types.mod
 mod_global_parameters.o: mod_connectivity.mod
 mod_global_parameters.o: mod_constants.mod
@@ -399,9 +405,15 @@ mod_mf_phys.o: mod_usr_methods.mod
 mod_mf_phys.o: mod_variables.mod
 mod_mhd.o: mod_amrvac.mod
 mod_mhd.o: mod_functions_bfield.mod
+mod_mhd.o: mod_mhd_eos.mod
 mod_mhd.o: mod_mhd_hllc.mod
 mod_mhd.o: mod_mhd_phys.mod
 mod_mhd.o: mod_mhd_roe.mod
+mod_mhd_eos.o: mod_eos.mod
+mod_mhd_eos.o: mod_eos_container.mod
+mod_mhd_eos.o: mod_global_parameters.mod
+mod_mhd_eos.o: mod_mhd_phys.mod
+mod_mhd_eos.o: mod_phys_dict.mod
 mod_mhd_hllc.o: mod_functions_bfield.mod
 mod_mhd_hllc.o: mod_global_parameters.mod
 mod_mhd_hllc.o: mod_mhd_phys.mod
@@ -411,6 +423,7 @@ mod_mhd_phys.o: mod_comm_lib.mod
 mod_mhd_phys.o: mod_constants.mod
 mod_mhd_phys.o: mod_constrained_transport.mod
 mod_mhd_phys.o: mod_convert.mod
+mod_mhd_phys.o: mod_eos.mod
 mod_mhd_phys.o: mod_fix_conserve.mod
 mod_mhd_phys.o: mod_forest.mod
 mod_mhd_phys.o: mod_functions_bfield.mod
@@ -421,6 +434,7 @@ mod_mhd_phys.o: mod_ionization_degree.mod
 mod_mhd_phys.o: mod_magnetofriction.mod
 mod_mhd_phys.o: mod_multigrid_coupling.mod
 mod_mhd_phys.o: mod_particles.mod
+mod_mhd_phys.o: mod_phys_dict.mod
 mod_mhd_phys.o: mod_physics.mod
 mod_mhd_phys.o: mod_radiative_cooling.mod
 mod_mhd_phys.o: mod_rotating_frame.mod
@@ -493,6 +507,7 @@ mod_particles.o: mod_particle_lorentz.mod
 mod_particles.o: mod_particle_sample.mod
 mod_pfss.o: mod_comm_lib.mod
 mod_pfss.o: mod_global_parameters.mod
+mod_phys_dict.o: mod_global_parameters.mod
 mod_physics.o: mod_comm_lib.mod
 mod_physics.o: mod_global_parameters.mod
 mod_physics.o: mod_physics_hllc.mod

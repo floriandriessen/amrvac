@@ -2,20 +2,14 @@
 
 module mod_eos
     use mod_global_parameters
-
+    use mod_eos_container
     implicit none
     private
-
-    type eos_container
-
-        integer :: eos_type
-        double precision :: He_abundance
-    
-    end type eos_container
 
     !> eos object
     type(eos_container), public, allocatable     :: eos
 
+    public :: eos_init!, link_eos
 
     contains
         !> Read this module"s parameters from a file
@@ -25,9 +19,20 @@ module mod_eos
 
             !> Default values
             character(len=std_len)  :: eos_type
-            double precision, parameter :: He_abundance = 0.1d0
+            double precision :: He_abundance
+            double precision :: gamma
+            double precision :: gamma_minus_1
+            double precision :: inv_gamma
+            double precision :: inv_gamma_minus_1
 
-            namelist /eos_list/ eos_type, He_abundance
+            eos_type = 'FI'
+            He_abundance = 0.1d0
+            gamma = 5.0d0/3.0d0
+            gamma_minus_1 = gamma - 1.0d0
+            inv_gamma = 1.0d0 / gamma
+            inv_gamma_minus_1 = 1.0d0 / gamma_minus_1
+
+            namelist /eos_list/ eos_type, He_abundance, gamma
 
             do n = 1, size(files)
                 open(unitpar, file=trim(files(n)), status="old")
@@ -37,6 +42,10 @@ module mod_eos
 
             eos%eos_type = eos_type
             eos%He_abundance = He_abundance
+            eos%gamma = gamma
+            eos%gamma_minus_1 = eos%gamma - 1.0d0
+            eos%inv_gamma = 1.0d0 / eos%gamma
+            eos%inv_gamma_minus_1 = 1.0d0 / eos%gamma_minus_1
         
         end subroutine eos_read_params
 
@@ -47,7 +56,5 @@ module mod_eos
 
         end subroutine eos_init
 
-        !> I think that the eos stuff is initialised like this but it has to be tested.
-        !> Next steps are to add the methods where the module sets the relevant params inside the eos
-
 end module mod_eos
+!> Needs a line after to pass the preprocesor
