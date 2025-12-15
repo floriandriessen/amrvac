@@ -5,7 +5,7 @@
 !>   !! Viscous work in the energy equation:
 !>   !! de/dt    += - div (v . vc_mu * PI)
 !>   where the PI stress tensor is
-!>   PI_i,j = - (dv_j/dx_i + dv_i/dx_j) + (2/3)*Sum_k dv_k/dx_k
+!>   PI_i,j = - (dv_j/dx_i + dv_i/dx_j) + Kronecker delta_i,j*(2/3)*Sum_k dv_k/dx_k
 !>   where vc_mu is the dynamic viscosity coefficient (g cm^-1 s^-1).
 module mod_viscosity
   use mod_comm_lib, only: mpistop
@@ -22,6 +22,8 @@ module mod_viscosity
 
   !> Index of the energy density (-1 if not present)
   integer, private, protected              :: e_
+  !> Indices of the velocity for the form of better vectorization
+  integer, public, protected              :: v1_,v2_,v3_
 
   !> fourth order
   logical :: vc_4th_order = .false.
@@ -33,8 +35,9 @@ module mod_viscosity
   !> fluxes (ie in the div on the LHS), or not (by default)
   logical :: viscInDiv= .false.
 
-
+  procedure(sub_add_source), pointer :: viscosity_add_source => null()
   ! Public methods
+  public :: viscosity_add_source
   public :: visc_get_flux_prim
 
 contains
@@ -58,6 +61,7 @@ contains
   !> Initialize the module
   subroutine viscosity_init(phys_wider_stencil)
     use mod_global_parameters
+    use mod_geometry
     integer, intent(inout) :: phys_wider_stencil
     integer :: nwx,idir
 
@@ -73,6 +77,7 @@ contains
        nwx    = nwx + 1
        mom(idir) = nwx       ! momentum density
     end do
+    v^C_=mom(^C);
 
     nwx = nwx + 1
     e_     = nwx          ! energy density
@@ -81,10 +86,18 @@ contains
       ! to compute the derivatives from left and right upwinded values
       phys_wider_stencil = 1
     end if
+    select case (coordinate)
+      case (Cartesian,Cartesian_stretched,Cartesian_expansion)
+        viscosity_add_source => viscosity_add_source_Cartesian
+      case (cylindrical)
+        viscosity_add_source => viscosity_add_source_cylinder
+      case (spherical)
+        viscosity_add_source => viscosity_add_source_sphere
+    end select
 
   end subroutine viscosity_init
 
-  subroutine viscosity_add_source(qdt,ixI^L,ixO^L,wCT,w,x,&
+  subroutine viscosity_add_source_Cartesian(qdt,ixI^L,ixO^L,wCT,wp,w,x,&
        energy,qsourcesplit,active)
   ! Add viscosity source in isotropic Newtonian fluids to w within ixO
   ! neglecting bulk viscosity
@@ -93,13 +106,208 @@ contains
     use mod_geometry
 
     integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw)
+    double precision, intent(in) :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw), wp(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     logical, intent(in) :: energy,qsourcesplit
     logical, intent(inout) :: active
 
-    double precision:: lambda(ixI^S,ndir,ndir),tmp(ixI^S),tmp2(ixI^S),v(ixI^S,ndir),vlambda(ixI^S,ndir)
-    integer:: ix^L,idim,idir,jdir,iw
+    double precision:: lambda(ixI^S,ndir,ndir),tmp(ixI^S),vlambda(ixI^S,ndir),qdtmu,divv23
+    integer:: ix^L,ix^D
+
+    if (viscInDiv) return
+
+    if(qsourcesplit .eqv. vc_split) then
+      active = .true.
+      ! standard case, textbook viscosity
+      ! Calculating viscosity sources
+      if(.not.vc_4th_order) then
+        ! involves second derivatives, two extra layers
+        ix^L=ixO^L^LADD2;
+        if({ ixImin^D>ixmin^D .or. ixImax^D<ixmax^D|.or.})&
+          call mpistop("error for viscous source addition, 2 layers needed")
+        ix^L=ixO^L^LADD1;
+      else
+        ! involves second derivatives, four extra layers
+        ix^L=ixO^L^LADD4;
+        if({ ixImin^D>ixmin^D .or. ixImax^D<ixmax^D|.or.})&
+          call mpistop("error for viscous source addition"//&
+          "requested fourth order gradients: 4 layers needed")
+        ix^L=ixO^L^LADD2;
+      end if
+      qdtmu=qdt*vc_mu
+      {^IFTHREED
+      {do ix^DB=ixmin^DB,ixmax^DB\}
+        ! idim=1, idir=1
+        lambda(ix^D,1,1)=(wp(ix1+1,ix2,ix3,v1_)-wp(ix1-1,ix2,ix3,v1_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))*two*qdtmu
+        ! idim=1, idir=2
+        lambda(ix^D,1,2)=(wp(ix1+1,ix2,ix3,v2_)-wp(ix1-1,ix2,ix3,v2_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))
+        ! idim=1, idir=3
+        lambda(ix^D,1,3)=(wp(ix1+1,ix2,ix3,v3_)-wp(ix1-1,ix2,ix3,v3_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))
+        ! idim=2, idir=1
+        lambda(ix^D,2,1)=(wp(ix1,ix2+1,ix3,v1_)-wp(ix1,ix2-1,ix3,v1_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))
+        ! idim=2, idir=2
+        lambda(ix^D,2,2)=(wp(ix1,ix2+1,ix3,v2_)-wp(ix1,ix2-1,ix3,v2_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*two*qdtmu
+        ! idim=2, idir=3
+        lambda(ix^D,2,3)=(wp(ix1,ix2+1,ix3,v3_)-wp(ix1,ix2-1,ix3,v3_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))
+        ! idim=3, idir=1
+        lambda(ix^D,3,1)=(wp(ix1,ix2,ix3+1,v1_)-wp(ix1,ix2,ix3-1,v1_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))
+        ! idim=3, idir=2
+        lambda(ix^D,3,2)=(wp(ix1,ix2,ix3+1,v2_)-wp(ix1,ix2,ix3-1,v2_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))
+        ! idim=3, idir=3
+        lambda(ix^D,3,3)=(wp(ix1,ix2,ix3+1,v3_)-wp(ix1,ix2,ix3-1,v3_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))*two*qdtmu
+        ! dv_i/d_j + dv_j/d_i
+        lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+        lambda(ix^D,2,1)=lambda(ix^D,1,2)
+        lambda(ix^D,1,3)=(lambda(ix^D,1,3)+lambda(ix^D,3,1))*qdtmu
+        lambda(ix^D,3,1)=lambda(ix^D,1,3)
+        lambda(ix^D,2,3)=(lambda(ix^D,2,3)+lambda(ix^D,3,2))*qdtmu
+        lambda(ix^D,3,2)=lambda(ix^D,2,3)
+        divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2)+lambda(ix^D,3,3))
+        lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
+        lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
+        lambda(ix^D,3,3)=lambda(ix^D,3,3)-divv23
+        if(energy) then
+          vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)+wp(ix^D,v2_)*lambda(ix^D,2,1)+wp(ix^D,v3_)*lambda(ix^D,3,1)
+          vlambda(ix^D,2)=wp(ix^D,v1_)*lambda(ix^D,1,2)+wp(ix^D,v2_)*lambda(ix^D,2,2)+wp(ix^D,v3_)*lambda(ix^D,3,2)
+          vlambda(ix^D,3)=wp(ix^D,v1_)*lambda(ix^D,1,3)+wp(ix^D,v2_)*lambda(ix^D,2,3)+wp(ix^D,v3_)*lambda(ix^D,3,3)
+        end if
+      {end do\}
+      ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        w(ix^D,mom(1))=(lambda(ix1+1,ix2,ix3,1,1)-lambda(ix1-1,ix2,ix3,1,1))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,1)-lambda(ix1,ix2-1,ix3,2,1))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
+                       (lambda(ix1,ix2,ix3+1,3,1)-lambda(ix1,ix2,ix3-1,3,1))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+w(ix^D,mom(1))
+        w(ix^D,mom(2))=(lambda(ix1+1,ix2,ix3,1,2)-lambda(ix1-1,ix2,ix3,1,2))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,2)-lambda(ix1,ix2-1,ix3,2,2))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
+                       (lambda(ix1,ix2,ix3+1,3,2)-lambda(ix1,ix2,ix3-1,3,2))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+w(ix^D,mom(2))
+        w(ix^D,mom(3))=(lambda(ix1+1,ix2,ix3,1,3)-lambda(ix1-1,ix2,ix3,1,3))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,3)-lambda(ix1,ix2-1,ix3,2,3))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
+                       (lambda(ix1,ix2,ix3+1,3,3)-lambda(ix1,ix2,ix3-1,3,3))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+w(ix^D,mom(3))
+      {end do\}
+      }
+      {^IFTWOD
+      {do ix^DB=ixmin^DB,ixmax^DB\}
+        ! idim=1, idir=1
+        lambda(ix^D,1,1)=(wp(ix1+1,ix2,v1_)-wp(ix1-1,ix2,v1_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))*two*qdtmu
+        ! idim=1, idir=2
+        lambda(ix^D,1,2)=(wp(ix1+1,ix2,v2_)-wp(ix1-1,ix2,v2_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))
+        ! idim=2, idir=1
+        lambda(ix^D,2,1)=(wp(ix1,ix2+1,v1_)-wp(ix1,ix2-1,v1_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))
+        ! idim=2, idir=2
+        lambda(ix^D,2,2)=(wp(ix1,ix2+1,v2_)-wp(ix1,ix2-1,v2_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*two*qdtmu
+        ! dv_i/d_j + dv_j/d_i
+        lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+        lambda(ix^D,2,1)=lambda(ix^D,1,2)
+        divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2))
+        lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
+        lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
+        if(ndir==3) then
+          ! idim=1, idir=3
+          lambda(ix1,ix2,1,3)=(wp(ix1+1,ix2,v3_)-wp(ix1-1,ix2,v3_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))*qdtmu
+          ! idim=2, idir=3
+          lambda(ix1,ix2,2,3)=(wp(ix1,ix2+1,v3_)-wp(ix1,ix2-1,v3_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*qdtmu
+          lambda(ix1,ix2,3,1)=lambda(ix1,ix2,1,3)
+          lambda(ix1,ix2,3,2)=lambda(ix1,ix2,2,3)
+          lambda(ix1,ix2,3,3)=-divv23
+          if(energy) then
+            vlambda(ix1,ix2,1)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,1)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,1)+wp(ix1,ix2,v3_)*lambda(ix1,ix2,3,1)
+            vlambda(ix1,ix2,2)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,2)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,2)+wp(ix1,ix2,v3_)*lambda(ix1,ix2,3,2)
+            vlambda(ix1,ix2,3)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,3)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,3)+wp(ix1,ix2,v3_)*lambda(ix1,ix2,3,3)
+          end if
+        else if(energy) then
+          vlambda(ix1,ix2,1)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,1)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,1)
+          vlambda(ix1,ix2,2)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,2)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,2)
+        end if
+      {end do\}
+      ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        w(ix^D,mom(1))=(lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                       (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+w(ix^D,mom(1))
+        w(ix^D,mom(2))=(lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                       (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+w(ix^D,mom(2))
+        if(ndir==3) then
+          w(ix1,ix2,mom(3))=(lambda(ix1+1,ix2,1,3)-lambda(ix1-1,ix2,1,3))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                         (lambda(ix1,ix2+1,2,3)-lambda(ix1,ix2-1,2,3))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+w(ix1,ix2,mom(3))
+        end if
+      {end do\}
+      }
+      {^IFONED
+      do ix1=ixmin1,ixmax1
+        ! idim=1, idir=1
+        lambda(ix1,1,1)=(wp(ix1+1,v1_)-wp(ix1-1,v1_))/(x(ix1+1,1)-x(ix1-1,1))*two*qdtmu
+        ! dv_i/d_j + dv_j/d_i
+        divv23=third*lambda(ix1,1,1)
+        lambda(ix1,1,1)=lambda(ix1,1,1)-divv23
+        if(ndir==2) then
+          ! idim=1, idir=2
+          lambda(ix1,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu
+          ! dv_i/d_j + dv_j/d_i
+          lambda(ix1,2,1)=lambda(ix1,1,2)
+          lambda(ix1,2,2)=-divv23
+          if(energy) then
+            vlambda(ix1,1)=wp(ix1,v1_)*lambda(ix1,1,1)+wp(ix1,v2_)*lambda(ix1,2,1)
+            vlambda(ix1,2)=wp(ix1,v1_)*lambda(ix1,1,2)+wp(ix1,v2_)*lambda(ix1,2,2)
+          end if
+        else if(ndir==3) then
+          ! idim=1, idir=2
+          lambda(ix1,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu
+          ! dv_i/d_j + dv_j/d_i
+          lambda(ix1,2,1)=lambda(ix1,1,2)
+          lambda(ix1,2,2)=-divv23
+          ! idim=1, idir=3
+          lambda(ix1,1,3)=(wp(ix1+1,v3_)-wp(ix1-1,v3_))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu
+          lambda(ix1,3,1)=lambda(ix1,1,3)
+          lambda(ix1,3,3)=-divv23
+          if(energy) then
+            vlambda(ix1,1)=wp(ix1,v1_)*lambda(ix1,1,1)+wp(ix1,v2_)*lambda(ix1,2,1)+wp(ix1,v3_)*lambda(ix1,3,1)
+            vlambda(ix1,2)=wp(ix1,v1_)*lambda(ix1,1,2)+wp(ix1,v2_)*lambda(ix1,2,2)+wp(ix1,v3_)*lambda(ix1,3,2)
+            vlambda(ix1,3)=wp(ix1,v1_)*lambda(ix1,1,3)+wp(ix1,v2_)*lambda(ix1,2,3)+wp(ix1,v3_)*lambda(ix1,3,3)
+          end if
+        else if(energy) then
+          vlambda(ix1,1)=wp(ix1,v1_)*lambda(ix1,1,1)
+        end if
+      end do
+      ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+      do ix1=ixOmin1,ixOmax1
+        if(ndir==1) then
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(1))
+        else if(ndir==2) then
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(1))
+          w(ix1,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(2))
+        else
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(1))
+          w(ix1,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(2))
+          w(ix1,mom(3))=(lambda(ix1+1,1,3)-lambda(ix1-1,1,3))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(3))
+        end if
+      end do
+      }
+      if(energy) then
+        ! de/dt= +div(v.dot.[mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v *kr])
+        ! thus e=e+d_i v_j tensor_ji
+        call divvector(vlambda,ixI^L,ixO^L,tmp)
+        w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)
+      end if
+    end if
+
+  end subroutine viscosity_add_source_Cartesian
+
+  subroutine viscosity_add_source_sphere(qdt,ixI^L,ixO^L,wCT,wp,w,x,&
+       energy,qsourcesplit,active)
+  ! Add viscosity source in isotropic Newtonian fluids to w within ixO
+  ! neglecting bulk viscosity
+  ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+    use mod_global_parameters
+    use mod_geometry
+
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw), wp(ixI^S,1:nw)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+    logical, intent(in) :: energy,qsourcesplit
+    logical, intent(inout) :: active
+
+    double precision :: lambda(ixI^S,ndir,ndir),vlambda(ixI^S,ndir),invr(ixI^S),tctan(ixI^S),invrsin(ixI^S)
+    double precision :: qdtmu,tsin,tcos,divv23
+    integer:: ix^L,ix^D
 
     if (viscInDiv) return
 
@@ -122,123 +330,559 @@ contains
         ix^L=ixO^L^LADD2;
       end if
 
-      ! get velocity
-      do idir=1,ndir
-        v(ixI^S,idir)=wCT(ixI^S,mom(idir))/wCT(ixI^S,rho_)
-      end do
-
       ! construct lambda tensor: lambda_ij = gradv_ij + gradv_ji
       ! initialize
-      lambda=zero
-
-      !next construct
-      do idim=1,ndim; do idir=1,ndir
-      ! Calculate velocity gradient tensor within ixL: gradv= grad v,
-      ! thus gradv_ij=d_j v_i
-        tmp(ixI^S)=v(ixI^S,idir)
-        ! Correction for Christoffel terms in non-cartesian
-        if (coordinate==cylindrical .and. idim==r_  .and. idir==phi_  ) tmp(ixI^S) = tmp(ixI^S)/x(ixI^S,1)
-        if (coordinate==spherical) then
-          if     (idim==r_  .and. (idir==2 .or. idir==phi_)) then
-            tmp(ixI^S) = tmp(ixI^S)/x(ixI^S,1)
-{^NOONED
-          elseif (idim==2  .and. idir==phi_) then
-            tmp(ixI^S)=tmp(ixI^S)/dsin(x(ixI^S,2))
-}
-          endif
-        endif
-        call gradient(tmp,ixI^L,ix^L,idim,tmp2)
-        ! Correction for Christoffel terms in non-cartesian
-        if (coordinate==cylindrical .and. idim==r_  .and. idir==phi_  ) tmp2(ix^S)=tmp2(ix^S)*x(ix^S,1)
-        if (coordinate==cylindrical .and. idim==phi_ .and. idir==phi_ ) tmp2(ix^S)=tmp2(ix^S)+v(ix^S,r_)/x(ix^S,1)
-        if (coordinate==spherical) then
-          if (idim==r_  .and. (idir==2 .or. idir==phi_)) then
-            tmp2(ix^S) = tmp2(ix^S)*x(ix^S,1)
-{^NOONED
-          elseif (idim==2  .and. idir==phi_ ) then
-            tmp2(ix^S)=tmp2(ix^S)*dsin(x(ix^S,2))
-          elseif (idim==2   .and. idir==2   ) then
-            tmp2(ix^S)=tmp2(ix^S)+v(ix^S,r_)/x(ix^S,1)
-          elseif (idim==phi_.and. idir==phi_) then
-            tmp2(ix^S)=tmp2(ix^S)+v(ix^S,r_)/x(ix^S,1)+v(ix^S,2)/(x(ix^S,1)*dtan(x(ix^S,2)))
-}
-          endif
-        endif
-        lambda(ix^S,idim,idir)= lambda(ix^S,idim,idir)+ tmp2(ix^S)
-        lambda(ix^S,idir,idim)= lambda(ix^S,idir,idim)+ tmp2(ix^S)
-      enddo; enddo;
-
-      ! Multiply lambda with viscosity coefficient and dt
-      lambda(ix^S,1:ndir,1:ndir)=lambda(ix^S,1:ndir,1:ndir)*vc_mu*qdt
-
-      !calculate div v term through trace action separately
-      ! rq : it is safe to use the trace rather than compute the divergence
-      !      since we always retrieve the divergence (even with the
-      !      Christoffel terms)
-      tmp=0.d0
-      do idir=1,ndir
-         tmp(ix^S)=tmp(ix^S)+lambda(ix^S,idir,idir)
-      end do
-      tmp(ix^S)=tmp(ix^S)/3.d0
-
-      !substract trace from diagonal elements
-      do idir=1,ndir
-         lambda(ix^S,idir,idir)=lambda(ix^S,idir,idir)-tmp(ix^S)
-      enddo
-
+      qdtmu=qdt*vc_mu
+      {^IFTHREED
+      {do ix^DB=ixmin^DB,ixmax^DB\}
+        invr(ix^D)=1.d0/x(ix^D,1)
+        tcos=dcos(x(ix^D,2))
+        ! idim=1, idir=1
+        lambda(ix^D,1,1)=(wp(ix1+1,ix2,ix3,v1_)-wp(ix1-1,ix2,ix3,v1_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))*two*qdtmu
+        ! idim=1, idir=2
+        lambda(ix^D,1,2)=(wp(ix1+1,ix2,ix3,v2_)-wp(ix1-1,ix2,ix3,v2_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))
+        ! idim=1, idir=3
+        lambda(ix^D,1,3)=(wp(ix1+1,ix2,ix3,v3_)-wp(ix1-1,ix2,ix3,v3_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))
+        ! idim=2, idir=1
+        lambda(ix^D,2,1)=((wp(ix1,ix2+1,ix3,v1_)-wp(ix1,ix2-1,ix3,v1_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))-wp(ix^D,v2_))*invr(ix^D)
+        ! idim=2, idir=2
+        lambda(ix^D,2,2)=((wp(ix1,ix2+1,ix3,v2_)-wp(ix1,ix2-1,ix3,v2_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+wp(ix^D,v1_))*invr(ix^D)*&
+                         two*qdtmu
+        ! idim=2, idir=3
+        lambda(ix^D,2,3)=((wp(ix1,ix2+1,ix3,v3_)-wp(ix1,ix2-1,ix3,v3_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+wp(ix^D,v2_)*tcos)*invr(ix^D)
+        tsin=dsin(x(ix^D,2))
+        invrsin(ix^D)=invr(ix^D)/tsin
+        tctan(ix^D)=tcos/tsin
+        ! idim=3, idir=1
+        lambda(ix^D,3,1)=((wp(ix1,ix2,ix3+1,v1_)-wp(ix1,ix2,ix3-1,v1_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))-wp(ix^D,v3_)*tsin)*invrsin(ix^D)
+        ! idim=3, idir=2
+        lambda(ix^D,3,2)=((wp(ix1,ix2,ix3+1,v2_)-wp(ix1,ix2,ix3-1,v2_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))-wp(ix^D,v3_)*tcos)*invrsin(ix^D)
+        ! idim=3, idir=3
+        lambda(ix^D,3,3)=((wp(ix1,ix2,ix3+1,v3_)-wp(ix1,ix2,ix3-1,v3_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+wp(ix^D,v1_)*tsin+&
+            wp(ix^D,v2_)*tcos)*invrsin(ix^D)*two*qdtmu
+        ! dv_i/d_j + dv_j/d_i
+        lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+        lambda(ix^D,2,1)=lambda(ix^D,1,2)
+        lambda(ix^D,1,3)=(lambda(ix^D,1,3)+lambda(ix^D,3,1))*qdtmu
+        lambda(ix^D,3,1)=lambda(ix^D,1,3)
+        lambda(ix^D,2,3)=(lambda(ix^D,2,3)+lambda(ix^D,3,2))*qdtmu
+        lambda(ix^D,3,2)=lambda(ix^D,2,3)
+        divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2)+lambda(ix^D,3,3))
+        lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
+        lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
+        lambda(ix^D,3,3)=lambda(ix^D,3,3)-divv23
+        if(energy) then
+          vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)+wp(ix^D,v2_)*lambda(ix^D,2,1)+wp(ix^D,v3_)*lambda(ix^D,3,1)
+          vlambda(ix^D,2)=wp(ix^D,v1_)*lambda(ix^D,1,2)+wp(ix^D,v2_)*lambda(ix^D,2,2)+wp(ix^D,v3_)*lambda(ix^D,3,2)
+          vlambda(ix^D,3)=wp(ix^D,v1_)*lambda(ix^D,1,3)+wp(ix^D,v2_)*lambda(ix^D,2,3)+wp(ix^D,v3_)*lambda(ix^D,3,3)
+        end if
+      {end do\}
       ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
-      ! hence m_j=m_j+d_i tensor_ji
-      do idir=1,ndir
-        do idim=1,ndim
-              tmp(ix^S)=lambda(ix^S,idir,idim)
-              ! Correction for divergence of a tensor
-              if (coordinate==cylindrical .and. idim==r_ .and. (idir==r_ .or. idir==z_)) tmp(ix^S) = tmp(ix^S)*x(ix^S,1)
-              if (coordinate==cylindrical .and. idim==r_ .and. idir==phi_              ) tmp(ix^S) = tmp(ix^S)*x(ix^S,1)**two
-              if (coordinate==spherical) then
-                if (idim==r_ .and. idir==r_                 ) tmp(ix^S) = tmp(ix^S)*x(ix^S,1)**two
-                if (idim==r_ .and. (idir==2 .or. idir==phi_)) tmp(ix^S) = tmp(ix^S)*x(ix^S,1)**3.d0
-{^NOONED
-                if (idim==2  .and. (idir==r_ .or. idir==2))   tmp(ix^S) = tmp(ix^S)*dsin(x(ix^S,2))
-                if (idim==2  .and. idir==phi_               ) tmp(ix^S) = tmp(ix^S)*dsin(x(ix^S,2))**two
-}
-              endif
-              call gradient(tmp,ixI^L,ixO^L,idim,tmp2)
-              ! Correction for divergence of a tensor
-              if (coordinate==cylindrical .and. idim==r_ .and. (idir==r_ .or. idir==z_)) tmp2(ixO^S) = tmp2(ixO^S)/x(ixO^S,1)
-              if (coordinate==cylindrical .and. idim==r_ .and. idir==phi_              ) tmp2(ixO^S) = tmp2(ixO^S)/(x(ixO^S,1)**two)
-              if (coordinate==spherical) then
-                if (idim==r_ .and. idir==r_                 ) tmp2(ixO^S) = tmp2(ixO^S)/(x(ixO^S,1)**two)
-                if (idim==r_ .and. (idir==2 .or. idir==phi_)) tmp2(ixO^S) = tmp2(ixO^S)/(x(ixO^S,1)**3.d0)
-{^NOONED
-                if (idim==2  .and. (idir==r_ .or. idir==2))   tmp2(ixO^S) = tmp2(ixO^S)/(dsin(x(ixO^S,2)))
-                if (idim==2  .and. idir==phi_               ) tmp2(ixO^S) = tmp2(ixO^S)/(dsin(x(ixO^S,2))**two)
-}
-              endif
-              w(ixO^S,mom(idir))=w(ixO^S,mom(idir))+tmp2(ixO^S)
-        enddo
-        ! Correction for geometrical terms in the div of a tensor
-        if (coordinate==cylindrical .and. idir==r_  ) w(ixO^S,mom(idir))=w(ixO^S,mom(idir))-lambda(ixO^S,phi_,phi_)/x(ixO^S,1)
-        if (coordinate==spherical   .and. idir==r_  ) w(ixO^S,mom(idir))=w(ixO^S,mom(idir))-(lambda(ixO^S,2,2)+lambda(ixO^S,phi_,phi_))/x(ixO^S,1)
-{^NOONED
-        if (coordinate==spherical   .and. idir==2   ) w(ixO^S,mom(idir))=w(ixO^S,mom(idir))-lambda(ixO^S,phi_,phi_)/(x(ixO^S,1)/dtan(x(ixO^S,2)))
-}
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        w(ix^D,mom(1))=(lambda(ix1+1,ix2,ix3,1,1)-lambda(ix1-1,ix2,ix3,1,1))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,1)-lambda(ix1,ix2-1,ix3,2,1))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*invr(ix^D)+&
+                       (lambda(ix1,ix2,ix3+1,3,1)-lambda(ix1,ix2,ix3-1,3,1))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))*invrsin(ix^D)+&
+                    two*lambda(ix^D,1,1)*invr(ix^D)+lambda(ix^D,2,1)*invr(ix^D)*tctan(ix^D)+w(ix^D,mom(1))
+        w(ix^D,mom(2))=(lambda(ix1+1,ix2,ix3,1,2)-lambda(ix1-1,ix2,ix3,1,2))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,2)-lambda(ix1,ix2-1,ix3,2,2))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*invr(ix^D)+&
+                       (lambda(ix1,ix2,ix3+1,3,2)-lambda(ix1,ix2,ix3-1,3,2))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))*invrsin(ix^D)+&
+                    two*lambda(ix^D,1,2)*invr(ix^D)+lambda(ix^D,2,2)*invr(ix^D)*tctan(ix^D)-lambda(ix^D,3,3)*tctan(ix^D)*invr(ix^D)**2+&
+                    w(ix^D,mom(2))
+        w(ix^D,mom(3))=(lambda(ix1+1,ix2,ix3,1,3)-lambda(ix1-1,ix2,ix3,1,3))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,3)-lambda(ix1,ix2-1,ix3,2,3))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*invr(ix^D)+&
+                       (lambda(ix1,ix2,ix3+1,3,3)-lambda(ix1,ix2,ix3-1,3,3))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))*invrsin(ix^D)+&
+                    two*lambda(ix^D,1,3)*invr(ix^D)+lambda(ix^D,2,3)*(invr(ix^D)+invr(ix^D)**2)*tctan(ix^D)+w(ix^D,mom(3))
+      {end do\}
+      }
+      {^IFTWOD
+      {do ix^DB=ixmin^DB,ixmax^DB\}
+        invr(ix1,ix2)=1.d0/x(ix1,ix2,1)
+        ! idim=1, idir=1
+        lambda(ix1,ix2,1,1)=(wp(ix1+1,ix2,v1_)-wp(ix1-1,ix2,v1_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))*two*qdtmu
+        ! idim=1, idir=2
+        lambda(ix1,ix2,1,2)=(wp(ix1+1,ix2,v2_)-wp(ix1-1,ix2,v2_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))
+        ! idim=2, idir=1
+        lambda(ix1,ix2,2,1)=((wp(ix1,ix2+1,v1_)-wp(ix1,ix2-1,v1_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))-wp(ix1,ix2,v2_))*invr(ix1,ix2)
+        ! idim=2, idir=2
+        lambda(ix1,ix2,2,2)=((wp(ix1,ix2+1,v2_)-wp(ix1,ix2-1,v2_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+wp(ix1,ix2,v1_))*invr(ix1,ix2)*&
+                         two*qdtmu
+        ! dv_i/d_j + dv_j/d_i
+        lambda(ix1,ix2,1,2)=(lambda(ix1,ix2,1,2)+lambda(ix1,ix2,2,1))*qdtmu
+        lambda(ix1,ix2,2,1)=lambda(ix1,ix2,1,2)
+        divv23=third*(lambda(ix1,ix2,1,1)+lambda(ix1,ix2,2,2))
+        tcos=dcos(x(ix1,ix2,2))
+        tsin=dsin(x(ix1,ix2,2))
+        tctan(ix1,ix2)=tcos/tsin
+        if(ndir==2) then
+          lambda(ix1,ix2,1,1)=lambda(ix1,ix2,1,1)-divv23
+          lambda(ix1,ix2,2,2)=lambda(ix1,ix2,2,2)-divv23
+          if(energy) then
+            vlambda(ix1,ix2,1)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,1)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,1)
+            vlambda(ix1,ix2,2)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,2)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,2)
+          end if
+        else
+          invrsin(ix1,ix2)=invr(ix1,ix2)/tsin
+          ! idim=1, idir=3
+          lambda(ix1,ix2,1,3)=(wp(ix1+1,ix2,v3_)-wp(ix1-1,ix2,v3_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))
+          ! idim=2, idir=3
+          lambda(ix1,ix2,2,3)=((wp(ix1,ix2+1,v3_)-wp(ix1,ix2-1,v3_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+wp(ix1,ix2,v2_)*tcos)*invr(ix1,ix2)
+          ! idim=3, idir=1
+          lambda(ix1,ix2,3,1)=-wp(ix1,ix2,v3_)*tsin*invrsin(ix1,ix2)
+          ! idim=3, idir=2
+          lambda(ix1,ix2,3,2)=-wp(ix1,ix2,v3_)*tcos*invrsin(ix1,ix2)
+          ! idim=3, idir=3
+          lambda(ix1,ix2,3,3)=(wp(ix1,ix2,v1_)*tsin+wp(ix1,ix2,v2_)*tcos)*invrsin(ix1,ix2)*two*qdtmu
+          lambda(ix1,ix2,1,3)=(lambda(ix1,ix2,1,3)+lambda(ix1,ix2,3,1))*qdtmu
+          lambda(ix1,ix2,3,1)=lambda(ix1,ix2,1,3)
+          lambda(ix1,ix2,2,3)=(lambda(ix1,ix2,2,3)+lambda(ix1,ix2,3,2))*qdtmu
+          lambda(ix1,ix2,3,2)=lambda(ix1,ix2,2,3)
+          lambda(ix1,ix2,1,1)=lambda(ix1,ix2,1,1)-divv23
+          lambda(ix1,ix2,2,2)=lambda(ix1,ix2,2,2)-divv23
+          lambda(ix1,ix2,3,3)=-divv23
+          if(energy) then
+            vlambda(ix1,ix2,1)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,1)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,1)+wp(ix1,ix2,v3_)*lambda(ix1,ix2,3,1)
+            vlambda(ix1,ix2,2)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,2)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,2)+wp(ix1,ix2,v3_)*lambda(ix1,ix2,3,2)
+            vlambda(ix1,ix2,3)=wp(ix1,ix2,v1_)*lambda(ix1,ix2,1,3)+wp(ix1,ix2,v2_)*lambda(ix1,ix2,2,3)+wp(ix1,ix2,v3_)*lambda(ix1,ix2,3,3)
+          end if
+        end if
+      {end do\}
+      ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        if(ndir==2) then
+          w(ix1,ix2,mom(1))=(lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                            (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix1,ix2)+&
+                         two*lambda(ix1,ix2,1,1)*invr(ix1,ix2)+lambda(ix1,ix2,2,1)*invr(ix1,ix2)*tctan(ix1,ix2)+w(ix1,ix2,mom(1))
+          w(ix1,ix2,mom(2))=(lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                         (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix1,ix2)+&
+                      two*lambda(ix1,ix2,1,2)*invr(ix1,ix2)+lambda(ix1,ix2,2,2)*invr(ix1,ix2)*tctan(ix1,ix2)+w(ix1,ix2,mom(2))
+        else
+          w(ix1,ix2,mom(1))=(lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                         (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix1,ix2)+&
+                      two*lambda(ix1,ix2,1,1)*invr(ix1,ix2)+lambda(ix1,ix2,2,1)*invr(ix1,ix2)*tctan(ix1,ix2)+w(ix1,ix2,mom(1))
+          w(ix1,ix2,mom(2))=(lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                         (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix1,ix2)+&
+                      two*lambda(ix1,ix2,1,2)*invr(ix1,ix2)+lambda(ix1,ix2,2,2)*invr(ix1,ix2)*tctan(ix1,ix2)-&
+                      lambda(ix1,ix2,3,3)*tctan(ix1,ix2)*invr(ix1,ix2)**2+w(ix1,ix2,mom(2))
+          w(ix1,ix2,mom(3))=(lambda(ix1+1,ix2,1,3)-lambda(ix1-1,ix2,1,3))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                         (lambda(ix1,ix2+1,2,3)-lambda(ix1,ix2-1,2,3))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix1,ix2)+&
+                      two*lambda(ix1,ix2,1,3)*invr(ix1,ix2)+lambda(ix1,ix2,2,3)*(invr(ix1,ix2)+invr(ix1,ix2)**2)*tctan(ix1,ix2)+w(ix1,ix2,mom(3))
+        end if
+      {end do\}
+      }
+      {^IFONED
+      do ix1=ixmin1,ixmax1
+        invr(ix1)=1.d0/x(ix1,1)
+        ! idim=1, idir=1
+        lambda(ix1,1,1)=(wp(ix1+1,v1_)-wp(ix1-1,v1_))/(x(ix1+1,1)-x(ix1-1,1))*two*qdtmu
+        ! dv_i/d_j + dv_j/d_i
+        divv23=third*lambda(ix1,1,1)
+        lambda(ix1,1,1)=lambda(ix1,1,1)-divv23
+        if(ndir==1) then
+          if(energy) then
+            vlambda(ix1,1)=wp(ix1,v1_)*lambda(ix1,1,1)
+          end if
+        else if(ndir==2) then
+          ! idim=1, idir=2
+          lambda(ix1,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))
+          lambda(ix1,1,2)=lambda(ix1,1,2)*qdtmu
+          lambda(ix1,2,1)=lambda(ix1,1,2)
+          lambda(ix1,2,2)=-divv23
+          if(energy) then
+            vlambda(ix1,1)=wp(ix1,v1_)*lambda(ix1,1,1)+wp(ix1,v2_)*lambda(ix1,2,1)
+            vlambda(ix1,2)=wp(ix1,v1_)*lambda(ix1,1,2)+wp(ix1,v2_)*lambda(ix1,2,2)
+          end if
+        else
+          tcos=0.d0
+          tsin=1.d0
+          tctan(ix1)=tcos/tsin
+          invrsin(ix1)=invr(ix1)/tsin
+          ! idim=1, idir=3
+          lambda(ix1,1,3)=(wp(ix1+1,v3_)-wp(ix1-1,v3_))/(x(ix1+1,1)-x(ix1-1,1))
+          ! idim=3, idir=1
+          lambda(ix1,3,1)=-wp(ix1,v3_)*tsin*invrsin(ix1)
+          ! idim=3, idir=2
+          lambda(ix1,3,2)=-wp(ix1,v3_)*tcos*invrsin(ix1)
+          ! idim=3, idir=3
+          lambda(ix1,3,3)=(wp(ix1,v1_)*tsin+wp(ix1,v2_)*tcos)*invrsin(ix1)*two*qdtmu
+          lambda(ix1,1,3)=(lambda(ix1,1,3)+lambda(ix1,3,1))*qdtmu
+          lambda(ix1,3,1)=lambda(ix1,1,3)
+          lambda(ix1,3,2)=lambda(ix1,3,2)*qdtmu
+          lambda(ix1,2,3)=lambda(ix1,3,2)
+          lambda(ix1,3,3)=lambda(ix1,3,3)-divv23
+          if(energy) then
+            vlambda(ix1,1)=wp(ix1,v1_)*lambda(ix1,1,1)+wp(ix1,v2_)*lambda(ix1,2,1)+wp(ix1,v3_)*lambda(ix1,3,1)
+            vlambda(ix1,2)=wp(ix1,v1_)*lambda(ix1,1,2)+wp(ix1,v2_)*lambda(ix1,2,2)+wp(ix1,v3_)*lambda(ix1,3,2)
+            vlambda(ix1,3)=wp(ix1,v1_)*lambda(ix1,1,3)+wp(ix1,v2_)*lambda(ix1,2,3)+wp(ix1,v3_)*lambda(ix1,3,3)
+          end if
+        end if
       end do
-
+      ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+      do ix1=ixOmin1,ixOmax1
+        if(ndir==1) then
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+&
+                      two*lambda(ix1,1,1)*invr(ix1)+w(ix1,mom(1))
+        else if(ndir==2) then
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+&
+                      two*lambda(ix1,1,1)*invr(ix1)+lambda(ix1,2,1)*invr(ix1)*tctan(ix1)+w(ix1,mom(1))
+          w(ix1,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+&
+                      two*lambda(ix1,1,2)*invr(ix1)+lambda(ix1,2,2)*invr(ix1)*tctan(ix1)+w(ix1,mom(2))
+        else
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+&
+                      two*lambda(ix1,1,1)*invr(ix1)+lambda(ix1,2,1)*invr(ix1)*tctan(ix1)+w(ix1,mom(1))
+          w(ix1,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+&
+                      two*lambda(ix1,1,2)*invr(ix1)+lambda(ix1,2,2)*invr(ix1)*tctan(ix1)-lambda(ix1,3,3)*tctan(ix1)*invr(ix1)**2+&
+                      w(ix1,mom(2))
+          w(ix1,mom(3))=(lambda(ix1+1,1,3)-lambda(ix1-1,1,3))/(x(ix1+1,1)-x(ix1-1,1))+&
+                      two*lambda(ix1,1,3)*invr(ix1)+lambda(ix1,2,3)*(invr(ix1)+invr(ix1)**2)*tctan(ix1)+w(ix1,mom(3))
+        end if
+      end do
+      }
       if(energy) then
         ! de/dt= +div(v.dot.[mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v *kr])
         ! thus e=e+d_i v_j tensor_ji
-        vlambda=0.d0
-        do idim=1,ndim
-          do idir=1,ndir
-             vlambda(ixI^S,idim)=vlambda(ixI^S,idim)+v(ixI^S,idir)*lambda(ixI^S,idir,idim)
-          end do
-        end do
-        call divvector(vlambda,ixI^L,ixO^L,tmp2)
-        w(ixO^S,e_)=w(ixO^S,e_)+tmp2(ixO^S)
+        call divvector(vlambda,ixI^L,ixO^L,invr)
+        w(ixO^S,e_)=w(ixO^S,e_)+invr(ixO^S)
       end if
+
     end if
 
-  end subroutine viscosity_add_source
+  end subroutine viscosity_add_source_sphere
+
+  subroutine viscosity_add_source_cylinder(qdt,ixI^L,ixO^L,wCT,wp,w,x,&
+       energy,qsourcesplit,active)
+  ! Add viscosity source in isotropic Newtonian fluids to w within ixO
+  ! neglecting bulk viscosity
+  ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+    use mod_global_parameters
+    use mod_geometry
+
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw), wp(ixI^S,1:nw)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+    logical, intent(in) :: energy,qsourcesplit
+    logical, intent(inout) :: active
+
+    double precision:: lambda(ixI^S,ndir,ndir),vlambda(ixI^S,ndir),invr(ixI^S)
+    double precision :: qdtmu,divv23
+    integer:: ix^L,ix^D
+
+    if (viscInDiv) return
+
+    if(qsourcesplit .eqv. vc_split) then
+      active = .true.
+      ! standard case, textbook viscosity
+      ! Calculating viscosity sources
+      if(.not.vc_4th_order) then
+        ! involves second derivatives, two extra layers
+        ix^L=ixO^L^LADD2;
+        if({ ixImin^D>ixmin^D .or. ixImax^D<ixmax^D|.or.})&
+          call mpistop("error for viscous source addition, 2 layers needed")
+        ix^L=ixO^L^LADD1;
+      else
+        ! involves second derivatives, four extra layers
+        ix^L=ixO^L^LADD4;
+        if({ ixImin^D>ixmin^D .or. ixImax^D<ixmax^D|.or.})&
+          call mpistop("error for viscous source addition"//&
+          "requested fourth order gradients: 4 layers needed")
+        ix^L=ixO^L^LADD2;
+      end if
+
+      ! construct lambda tensor: lambda_ij = gradv_ij + gradv_ji
+      ! initialize
+      qdtmu=qdt*vc_mu
+      {^IFTHREED
+      {do ix^DB=ixmin^DB,ixmax^DB\}
+        invr(ix^D)=1.d0/x(ix^D,1)
+        ! idim=1, idir=1
+        lambda(ix^D,1,1)=(wp(ix1+1,ix2,ix3,v1_)-wp(ix1-1,ix2,ix3,v1_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))*two*qdtmu
+        ! idim=1, idir=2
+        lambda(ix^D,1,2)=(wp(ix1+1,ix2,ix3,v2_)-wp(ix1-1,ix2,ix3,v2_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))
+        ! idim=1, idir=3
+        lambda(ix^D,1,3)=(wp(ix1+1,ix2,ix3,v3_)-wp(ix1-1,ix2,ix3,v3_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))
+        ! idim=2, idir=1
+        lambda(ix^D,2,1)=((wp(ix1,ix2+1,ix3,v1_)-wp(ix1,ix2-1,ix3,v1_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))-wp(ix^D,v2_))*invr(ix^D)
+        ! idim=2, idir=2
+        lambda(ix^D,2,2)=((wp(ix1,ix2+1,ix3,v2_)-wp(ix1,ix2-1,ix3,v2_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+wp(ix^D,v1_))*invr(ix^D)*&
+                         two*qdtmu
+        ! idim=2, idir=3
+        lambda(ix^D,2,3)=(wp(ix1,ix2+1,ix3,v3_)-wp(ix1,ix2-1,ix3,v3_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*invr(ix^D)
+        ! idim=3, idir=1
+        lambda(ix^D,3,1)=(wp(ix1,ix2,ix3+1,v1_)-wp(ix1,ix2,ix3-1,v1_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))*invr(ix^D)
+        ! idim=3, idir=2
+        lambda(ix^D,3,2)=(wp(ix1,ix2,ix3+1,v2_)-wp(ix1,ix2,ix3-1,v2_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))*invr(ix^D)
+        ! idim=3, idir=3
+        lambda(ix^D,3,3)=(wp(ix1,ix2,ix3+1,v3_)-wp(ix1,ix2,ix3-1,v3_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))*invr(ix^D)*two*qdtmu
+        ! dv_i/d_j + dv_j/d_i
+        lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+        lambda(ix^D,2,1)=lambda(ix^D,1,2)
+        lambda(ix^D,1,3)=(lambda(ix^D,1,3)+lambda(ix^D,3,1))*qdtmu
+        lambda(ix^D,3,1)=lambda(ix^D,1,3)
+        lambda(ix^D,2,3)=(lambda(ix^D,2,3)+lambda(ix^D,3,2))*qdtmu
+        lambda(ix^D,3,2)=lambda(ix^D,2,3)
+        divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2)+lambda(ix^D,3,3))
+        lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
+        lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
+        lambda(ix^D,3,3)=lambda(ix^D,3,3)-divv23
+        if(energy) then
+          vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)+wp(ix^D,v2_)*lambda(ix^D,2,1)+wp(ix^D,v3_)*lambda(ix^D,3,1)
+          vlambda(ix^D,2)=wp(ix^D,v1_)*lambda(ix^D,1,2)+wp(ix^D,v2_)*lambda(ix^D,2,2)+wp(ix^D,v3_)*lambda(ix^D,3,2)
+          vlambda(ix^D,3)=wp(ix^D,v1_)*lambda(ix^D,1,3)+wp(ix^D,v2_)*lambda(ix^D,2,3)+wp(ix^D,v3_)*lambda(ix^D,3,3)
+        end if
+      {end do\}
+      ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        w(ix^D,mom(1))=(lambda(ix1+1,ix2,ix3,1,1)-lambda(ix1-1,ix2,ix3,1,1))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,1)-lambda(ix1,ix2-1,ix3,2,1))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*invr(ix^D)+&
+                       (lambda(ix1,ix2,ix3+1,3,1)-lambda(ix1,ix2,ix3-1,3,1))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+&
+                       (lambda(ix^D,1,1)-lambda(ix^D,2,2))*invr(ix^D)+w(ix^D,mom(1))
+        w(ix^D,mom(2))=(lambda(ix1+1,ix2,ix3,1,2)-lambda(ix1-1,ix2,ix3,1,2))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,2)-lambda(ix1,ix2-1,ix3,2,2))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*invr(ix^D)+&
+                       (lambda(ix1,ix2,ix3+1,3,2)-lambda(ix1,ix2,ix3-1,3,2))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+&
+                       two*lambda(ix^D,1,2)*invr(ix^D)+w(ix^D,mom(2))
+        w(ix^D,mom(3))=(lambda(ix1+1,ix2,ix3,1,3)-lambda(ix1-1,ix2,ix3,1,3))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                       (lambda(ix1,ix2+1,ix3,2,3)-lambda(ix1,ix2-1,ix3,2,3))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*invr(ix^D)+&
+                       (lambda(ix1,ix2,ix3+1,3,3)-lambda(ix1,ix2,ix3-1,3,3))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+&
+                        lambda(ix^D,1,3)*invr(ix^D)+w(ix^D,mom(3))
+      {end do\}
+      }
+      {^IFTWOD
+      {do ix^DB=ixmin^DB,ixmax^DB\}
+        invr(ix^D)=1.d0/x(ix^D,1)
+        ! idim=1, idir=1
+        lambda(ix^D,1,1)=(wp(ix1+1,ix2,v1_)-wp(ix1-1,ix2,v1_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))*two*qdtmu
+        ! idim=1, idir=2
+        lambda(ix^D,1,2)=(wp(ix1+1,ix2,v2_)-wp(ix1-1,ix2,v2_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))
+        if(phi_==2) then
+          ! idim=2, idir=1
+          lambda(ix^D,2,1)=((wp(ix1,ix2+1,v1_)-wp(ix1,ix2-1,v1_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))-wp(ix^D,v2_))*invr(ix^D)
+          ! idim=2, idir=2
+          lambda(ix^D,2,2)=((wp(ix1,ix2+1,v2_)-wp(ix1,ix2-1,v2_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+wp(ix^D,v1_))*invr(ix^D)*&
+                           two*qdtmu
+          if(ndir==3) then
+            ! idim=2, idir=3
+            lambda(ix^D,2,3)=(wp(ix1,ix2+1,v3_)-wp(ix1,ix2-1,v3_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)
+            ! idim=3, idir=1
+            lambda(ix^D,3,1)=0.d0
+            ! idim=3, idir=2
+            lambda(ix^D,3,2)=0.d0
+            ! idim=3, idir=3
+            lambda(ix^D,3,3)=0.d0
+          end if
+        else
+          ! idim=2, idir=1
+          lambda(ix^D,2,1)=(wp(ix1,ix2+1,v1_)-wp(ix1,ix2-1,v1_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)
+          ! idim=2, idir=2
+          lambda(ix^D,2,2)=(wp(ix1,ix2+1,v2_)-wp(ix1,ix2-1,v2_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)*two*qdtmu
+          if(ndir==3) then
+            ! idim=2, idir=3
+            lambda(ix^D,2,3)=(wp(ix1,ix2+1,v3_)-wp(ix1,ix2-1,v3_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)
+            ! idim=3, idir=1
+            lambda(ix^D,3,1)=-wp(ix^D,v3_)*invr(ix^D)
+            ! idim=3, idir=2
+            lambda(ix^D,3,2)=0.d0
+            ! idim=3, idir=3
+            lambda(ix^D,3,3)=wp(ix^D,v1_)*invr(ix^D)
+          end if
+        end if
+        ! dv_i/d_j + dv_j/d_i
+        lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+        lambda(ix^D,2,1)=lambda(ix^D,1,2)
+        divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2)+lambda(ix^D,3,3))
+        lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
+        lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
+        if(ndir==3) then
+          ! idim=1, idir=3
+          lambda(ix^D,1,3)=(wp(ix1+1,ix2,v3_)-wp(ix1-1,ix2,v3_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))
+          lambda(ix^D,1,3)=(lambda(ix^D,1,3)+lambda(ix^D,3,1))*qdtmu
+          lambda(ix^D,3,1)=lambda(ix^D,1,3)
+          lambda(ix^D,2,3)=(lambda(ix^D,2,3)+lambda(ix^D,3,2))*qdtmu
+          lambda(ix^D,3,2)=lambda(ix^D,2,3)
+          lambda(ix^D,3,3)=lambda(ix^D,3,3)-divv23
+          if(energy) then
+            vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)+wp(ix^D,v2_)*lambda(ix^D,2,1)+wp(ix^D,v3_)*lambda(ix^D,3,1)
+            vlambda(ix^D,2)=wp(ix^D,v1_)*lambda(ix^D,1,2)+wp(ix^D,v2_)*lambda(ix^D,2,2)+wp(ix^D,v3_)*lambda(ix^D,3,2)
+            vlambda(ix^D,3)=wp(ix^D,v1_)*lambda(ix^D,1,3)+wp(ix^D,v2_)*lambda(ix^D,2,3)+wp(ix^D,v3_)*lambda(ix^D,3,3)
+          end if
+        else if(energy) then
+          vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)+wp(ix^D,v2_)*lambda(ix^D,2,1)
+          vlambda(ix^D,2)=wp(ix^D,v1_)*lambda(ix^D,1,2)+wp(ix^D,v2_)*lambda(ix^D,2,2)
+        end if
+      {end do\}
+      ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        if(ndir==2) then
+          if(phi_==2) then
+            w(ix^D,mom(1))=(lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)+&
+                           (lambda(ix^D,1,1)-lambda(ix^D,2,2))*invr(ix^D)+w(ix^D,mom(1))
+            w(ix^D,mom(2))=(lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)+&
+                        two*lambda(ix^D,1,2)*invr(ix^D)+w(ix^D,mom(2))
+          else
+            w(ix^D,mom(1))=(lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+&
+                            lambda(ix^D,1,1)*invr(ix^D)+w(ix^D,mom(1))
+            w(ix^D,mom(2))=(lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+&
+                            lambda(ix^D,1,2)*invr(ix^D)+w(ix^D,mom(2))
+          end if
+        else
+          if(phi_==2) then
+            w(ix^D,mom(1))=(lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)+&
+                           (lambda(ix^D,1,1)-lambda(ix^D,2,2))*invr(ix^D)+w(ix^D,mom(1))
+            w(ix^D,mom(2))=(lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)+&
+                           two*lambda(ix^D,1,2)*invr(ix^D)+w(ix^D,mom(2))
+            w(ix^D,mom(3))=(lambda(ix1+1,ix2,1,3)-lambda(ix1-1,ix2,1,3))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,3)-lambda(ix1,ix2-1,2,3))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*invr(ix^D)+&
+                            lambda(ix^D,1,3)*invr(ix^D)+w(ix^D,mom(3))
+          else
+            w(ix^D,mom(1))=(lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+&
+                           (lambda(ix^D,1,1)-lambda(ix^D,2,2))*invr(ix^D)+w(ix^D,mom(1))
+            w(ix^D,mom(2))=(lambda(ix1+1,ix2,1,3)-lambda(ix1-1,ix2,1,3))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,3)-lambda(ix1,ix2-1,2,3))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+&
+                           two*lambda(ix^D,1,3)*invr(ix^D)+w(ix^D,mom(2))
+            w(ix^D,mom(3))=(lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                           (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+&
+                            lambda(ix^D,1,2)*invr(ix^D)+w(ix^D,mom(3))
+          end if
+        end if
+      {end do\}
+      }
+      {^IFONED
+      {do ix^DB=ixmin^DB,ixmax^DB\}
+        invr(ix^D)=1.d0/x(ix^D,1)
+        if(ndir==1) then
+          ! idim=1, idir=1
+          lambda(ix^D,1,1)=(wp(ix1+1,v1_)-wp(ix1-1,v1_))/(x(ix1+1,1)-x(ix1-1,1))*two*qdtmu
+          divv23=third*lambda(ix^D,1,1)
+          lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
+          if(energy) then
+            vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)
+          end if
+        else if(ndir==2) then
+          ! idim=1, idir=1
+          lambda(ix^D,1,1)=(wp(ix1+1,v1_)-wp(ix1-1,v1_))/(x(ix1+1,1)-x(ix1-1,1))*two*qdtmu
+          ! idim=1, idir=2
+          lambda(ix^D,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))
+          if(phi_==2) then
+            ! idim=2, idir=1
+            lambda(ix^D,2,1)=-wp(ix^D,v2_)*invr(ix^D)
+            ! idim=2, idir=2
+            lambda(ix^D,2,2)=+wp(ix^D,v1_)*invr(ix^D)*two*qdtmu
+          else
+            ! idim=2, idir=1
+            lambda(ix^D,2,1)=0.d0
+            ! idim=2, idir=2
+            lambda(ix^D,2,2)=0.d0
+          end if
+          ! dv_i/d_j + dv_j/d_i
+          lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+          lambda(ix^D,2,1)=lambda(ix^D,1,2)
+          divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2))
+          lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
+          lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
+          if(energy) then
+            vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)+wp(ix^D,v2_)*lambda(ix^D,2,1)
+            vlambda(ix^D,2)=wp(ix^D,v1_)*lambda(ix^D,1,2)+wp(ix^D,v2_)*lambda(ix^D,2,2)
+          end if
+        else
+          ! idim=1, idir=1
+          lambda(ix^D,1,1)=(wp(ix1+1,v1_)-wp(ix1-1,v1_))/(x(ix1+1,1)-x(ix1-1,1))*two*qdtmu
+          ! idim=1, idir=2
+          lambda(ix^D,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))
+          ! idim=1, idir=3
+          lambda(ix^D,1,3)=(wp(ix1+1,v3_)-wp(ix1-1,v3_))/(x(ix1+1,1)-x(ix1-1,1))
+          if(phi_==2) then
+            ! idim=2, idir=1
+            lambda(ix^D,2,1)=-wp(ix^D,v2_)*invr(ix^D)
+            ! idim=2, idir=2
+            lambda(ix^D,2,2)=+wp(ix^D,v1_)*invr(ix^D)*two*qdtmu
+            ! idim=2, idir=3
+            lambda(ix^D,2,3)=0.d0
+            ! idim=3, idir=1
+            lambda(ix^D,3,1)=0.d0
+            ! idim=3, idir=2
+            lambda(ix^D,3,2)=0.d0
+            ! idim=3, idir=3
+            lambda(ix^D,3,3)=0.d0
+          else
+            ! idim=2, idir=1
+            lambda(ix^D,2,1)=0.d0
+            ! idim=2, idir=2
+            lambda(ix^D,2,2)=0.d0
+            ! idim=2, idir=3
+            lambda(ix^D,2,3)=0.d0
+            ! idim=3, idir=1
+            lambda(ix^D,3,1)=-wp(ix^D,v3_)*invr(ix^D)
+            ! idim=3, idir=2
+            lambda(ix^D,3,2)=0.d0
+            ! idim=3, idir=3
+            lambda(ix^D,3,3)=wp(ix^D,v1_)*invr(ix^D)*two*qdtmu
+          end if
+          ! dv_i/d_j + dv_j/d_i
+          lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+          lambda(ix^D,2,1)=lambda(ix^D,1,2)
+          lambda(ix^D,1,3)=(lambda(ix^D,1,3)+lambda(ix^D,3,1))*qdtmu
+          lambda(ix^D,3,1)=lambda(ix^D,1,3)
+          lambda(ix^D,2,3)=(lambda(ix^D,2,3)+lambda(ix^D,3,2))*qdtmu
+          lambda(ix^D,3,2)=lambda(ix^D,2,3)
+          divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2)+lambda(ix^D,3,3))
+          lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
+          lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
+          lambda(ix^D,3,3)=lambda(ix^D,3,3)-divv23
+          if(energy) then
+            vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)+wp(ix^D,v2_)*lambda(ix^D,2,1)+wp(ix^D,v3_)*lambda(ix^D,3,1)
+            vlambda(ix^D,2)=wp(ix^D,v1_)*lambda(ix^D,1,2)+wp(ix^D,v2_)*lambda(ix^D,2,2)+wp(ix^D,v3_)*lambda(ix^D,3,2)
+            vlambda(ix^D,3)=wp(ix^D,v1_)*lambda(ix^D,1,3)+wp(ix^D,v2_)*lambda(ix^D,2,3)+wp(ix^D,v3_)*lambda(ix^D,3,3)
+          end if
+        end if
+      {end do\}
+      ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        if(ndir==1) then
+          w(ix^D,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+w(ix^D,mom(1))
+        else if(ndir==2) then
+          if(phi_==2) then
+            w(ix^D,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+&
+                           (lambda(ix^D,1,1)-lambda(ix^D,2,2))*invr(ix^D)+w(ix^D,mom(1))
+            w(ix^D,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+&
+                           two*lambda(ix^D,1,2)*invr(ix^D)+w(ix^D,mom(2))
+          else
+            w(ix^D,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+&
+                           (lambda(ix^D,1,1)-lambda(ix^D,2,2))*invr(ix^D)+w(ix^D,mom(1))
+          end if
+        else
+          if(phi_==2) then
+            w(ix^D,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+&
+                           (lambda(ix^D,1,1)-lambda(ix^D,2,2))*invr(ix^D)+w(ix^D,mom(1))
+            w(ix^D,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+&
+                           two*lambda(ix^D,1,2)*invr(ix^D)+w(ix^D,mom(2))
+            w(ix^D,mom(3))=(lambda(ix1+1,1,3)-lambda(ix1-1,1,3))/(x(ix1+1,1)-x(ix1-1,1))+&
+                            lambda(ix^D,1,3)*invr(ix^D)+w(ix^D,mom(3))
+          else
+            w(ix^D,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+&
+                           (lambda(ix^D,1,1)-lambda(ix^D,2,2))*invr(ix^D)+w(ix^D,mom(1))
+            w(ix^D,mom(2))=(lambda(ix1+1,1,3)-lambda(ix1-1,1,3))/(x(ix1+1,1)-x(ix1-1,1))+&
+                           two*lambda(ix^D,1,3)*invr(ix^D)+w(ix^D,mom(2))
+            w(ix^D,mom(3))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+&
+                            lambda(ix^D,1,2)*invr(ix^D)+w(ix^D,mom(3))
+          end if
+        end if
+      {end do\}
+      }
+      if(energy) then
+        ! de/dt= +div(v.dot.[mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v *kr])
+        ! thus e=e+d_i v_j tensor_ji
+        call divvector(vlambda,ixI^L,ixO^L,invr)
+        w(ixO^S,e_)=w(ixO^S,e_)+invr(ixO^S)
+      end if
+
+    end if
+
+  end subroutine viscosity_add_source_cylinder
 
   subroutine viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     ! Check diffusion time limit for dt < dtdiffpar * dx**2 / (mu/rho)
@@ -585,5 +1229,16 @@ contains
     end select
 
   end subroutine visc_add_source_geom
+
+  subroutine sub_add_source(qdt,ixI^L,ixO^L,wCT,wp,w,x,&
+       energy,qsourcesplit,active)
+    use mod_global_parameters
+    use mod_geometry
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw), wp(ixI^S,1:nw)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+    logical, intent(in) :: energy,qsourcesplit
+    logical, intent(inout) :: active
+  end subroutine sub_add_source
 
 end module mod_viscosity

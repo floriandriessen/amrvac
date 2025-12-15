@@ -1323,7 +1323,7 @@ contains
     end if
 
     if(hd_viscosity) then
-      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,w,x,&
+      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
            hd_energy,qsourcesplit,active)
     end if
 

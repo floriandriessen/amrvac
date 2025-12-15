@@ -4677,7 +4677,7 @@ contains
     end if
 
     if(mhd_viscosity) then
-      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,&
+      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
            w,x,mhd_energy,qsourcesplit,active)
     end if
 

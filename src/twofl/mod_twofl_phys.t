@@ -3454,7 +3454,7 @@ contains
     end if
 !
 !    if(twofl_viscosity) then
-!      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,&
+!      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
 !           w,x,phys_energy,qsourcesplit,active)
 !    end if
 !

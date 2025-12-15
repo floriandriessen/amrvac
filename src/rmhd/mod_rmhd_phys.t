@@ -2576,7 +2576,7 @@ contains
     end if
     }
     if(rmhd_viscosity) then
-      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,&
+      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
            w,x,rmhd_energy,qsourcesplit,active)
     end if
     if(rmhd_gravity) then
