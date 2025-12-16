@@ -4734,17 +4734,27 @@ contains
     double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
-    double precision, dimension(ixI^S) :: R,Te,rho_loc,pth_loc
+    double precision :: R(ixI^S),Te(ixI^S),rho_loc(ixI^S),pth_loc(ixI^S)
     double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndim),bunitvec(ndim)
     integer :: ix^D
 
-    call mhd_get_rho(wCT,x,ixI^L,ixI^L,rho_loc)
-    call mhd_get_pthermal(wCT,x,ixI^L,ixI^L,pth_loc)
     call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
-    Te(ixI^S)=pth_loc(ixI^S)/(R(ixI^S)*rho_loc(ixI^S))
+    {do ix^DB=ixImin^DB,ixImax^DB\}
+      if(has_equi_rho0) then
+        rho_loc(ix^D)=wCTprim(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0)
+      else
+        rho_loc(ix^D)=wCTprim(ix^D,rho_)
+      end if
+      if(has_equi_pe0) then
+        pth_loc(ix^D)=wCTprim(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,0)
+      else
+        pth_loc(ix^D)=wCTprim(ix^D,p_)
+      end if
+      Te(ix^D)=pth_loc(ix^D)/(R(ix^D)*rho_loc(ix^D))
+    {end do\}
     ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
     ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
-   {^IFONED
+    {^IFONED
     ! assume magnetic field line is along the one dimension
     do ix1=ixOmin1,ixOmax1
       if(mhd_trac) then
@@ -4770,7 +4780,7 @@ contains
       end if
     end do
     }
-   {^IFTWOD
+    {^IFTWOD
     do ix2=ixOmin2,ixOmax2
       do ix1=ixOmin1,ixOmax1
         if(mhd_trac) then
@@ -4814,7 +4824,7 @@ contains
       end do
     end do
     }
-   {^IFTHREED
+    {^IFTHREED
     do ix3=ixOmin3,ixOmax3
       do ix2=ixOmin2,ixOmax2
         do ix1=ixOmin1,ixOmax1
