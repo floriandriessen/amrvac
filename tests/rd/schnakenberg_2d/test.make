@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=2
+SETUP_FLAGS := -d=2 -v=2
 TESTS := test_schnakenberg_imex.log test_schnakenberg_split.log
 
 include ../../test_rules.make

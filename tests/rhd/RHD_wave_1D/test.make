@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=1
+SETUP_FLAGS := -d=1 -v=1
 SCHEME_DIR := ../../schemes
 
 SCHEMES := IMEX_SP_tvdlf_ko IMEX_Trap_hll_w5

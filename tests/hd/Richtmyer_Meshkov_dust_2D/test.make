@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=2
+SETUP_FLAGS := -d=2 -v=2
 TESTS := RM2D_dust_sticking.log RM2D_dust_Kwok.log
 
 include ../../test_rules.make
