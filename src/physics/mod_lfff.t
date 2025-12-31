@@ -179,19 +179,23 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim),zshift
     double precision, intent(inout) :: potential(ixI^S)
 
-    double precision, dimension(ixO^S) :: zk,bigr
-    integer :: ixp1,ixp2
+    double precision :: zk
+    integer :: ixp1,ixp2,ix^D
 
-    zk(ixO^S)=x(ixO^S,3)-xprobmin3+zshift
     potential=0.d0
     ! looping Bz0 pixels see equation (2)
     !$OMP PARALLEL DO PRIVATE(bigr) REDUCTION(+:potential)
-    do ixp2=1,nx2
-      do ixp1=1,nx1
-        bigr(ixO^S)=dsqrt((x(ixO^S,1)-xa1(ixp1))**2+&
-                          (x(ixO^S,2)-xa2(ixp2))**2+&
-                          zk(ixO^S)**2)
-        potential(ixO^S)=potential(ixO^S)+0.5d0*Bz0(ixp1,ixp2)/bigr*darea/dpi
+    do ix3=ixOmin3,ixOmax3
+      zk=x(ixOmin1,ixOmin2,ix3,3)-xprobmin3+zshift
+      do ix2=ixOmin2,ixOmax2
+        do ix1=ixOmin1,ixOmax1
+          do ixp2=1,nx2
+            do ixp1=1,nx1
+              potential(ix^D)=potential(ix^D)+0.5d0*Bz0(ixp1,ixp2)*darea/&
+                 (dpi*dsqrt((x(ix^D,1)-xa1(ixp1))**2+(x(ix^D,2)-xa2(ixp2))**2+zk**2))
+            end do
+          end do
+        end do
       end do
     end do
     !$OMP END PARALLEL DO
