@@ -2567,16 +2567,28 @@ contains
   !> Calculate cmax_idim=csound+abs(v_idim) within ixO^L
   subroutine mhd_get_cmax_origin_noe(w,x,ixI^L,ixO^L,idim,cmax)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: cmax(ixI^S)
 
     double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
+    double precision :: adiabs(ixO^S), gammas(ixO^S)
     integer :: ix^D
 
     if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=mhd_gamma
+    end if
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         if(has_equi_rho0) then
@@ -2586,7 +2598,7 @@ contains
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        cmax(ix^D)=mhd_gamma*mhd_adiab*rho**gamma_1
+        cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
         ! store |B|^2 in v
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
@@ -2609,7 +2621,7 @@ contains
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        cmax(ix^D)=mhd_gamma*mhd_adiab*rho**gamma_1
+        cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
         ! store |B|^2 in v
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
@@ -2662,21 +2674,34 @@ contains
   !> Calculate cmax_idim for semirelativistic MHD
   subroutine mhd_get_cmax_semirelati_noe(w,x,ixI^L,ixO^L,idim,cmax)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(inout):: cmax(ixI^S)
 
+    double precision :: adiabs(ixO^S), gammas(ixO^S)
     double precision :: csound, AvMinCs2, idim_Alfven_speed2
     double precision :: inv_rho, Alfven_speed2, gamma2
     integer :: ix^D
+
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=mhd_gamma
+    end if
 
    {do ix^DB=ixOmin^DB,ixOmax^DB \}
       inv_rho=1.d0/w(ix^D,rho_)
       Alfven_speed2=(^C&w(ix^D,b^C_)**2+)*inv_rho
       gamma2=1.0d0/(1.d0+Alfven_speed2*inv_squared_c)
       cmax(ix^D)=1.d0-gamma2*w(ix^D,mom(idim))**2*inv_squared_c
-      csound=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
+      csound=gammas(ix^D)*adiabs(ix^D)*w(ix^D,rho_)**(gammas(ix^D)-1.d0)
       idim_Alfven_speed2=w(ix^D,mag(idim))**2*inv_rho
       ! Va_hat^2+a_hat^2 equation (57)
       ! equation (69)
@@ -3343,15 +3368,30 @@ contains
   !> Calculate fast magnetosonic wave speed
   subroutine mhd_get_csound_prim(w,x,ixI^L,ixO^L,idim,csound)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(out):: csound(ixO^S)
 
+    double precision :: adiabs(ixO^S), gammas(ixO^S)
     double precision :: inv_rho, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
     if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+
+    if(.not.mhd_energy) then
+      if(associated(usr_set_adiab)) then
+         call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+      else
+         adiabs=mhd_adiab
+      end if
+      if(associated(usr_set_gamma)) then
+         call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+      else
+         gammas=mhd_gamma
+      end if
+    end if
 
     ! store |B|^2 in v
     if(B0field) then
@@ -3360,7 +3400,7 @@ contains
         if(mhd_energy) then
           csound(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
         else
-          csound(ix^D)=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
+          csound(ix^D)=gammas(ix^D)*adiabs(ix^D)*w(ix^D,rho_)**(gammas(ix^D)-1.d0)
         end if
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+csound(ix^D)
@@ -3378,7 +3418,7 @@ contains
         if(mhd_energy) then
           csound(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
         else
-          csound(ix^D)=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
+          csound(ix^D)=gammas(ix^D)*adiabs(ix^D)*w(ix^D,rho_)**(gammas(ix^D)-1.d0)
         end if
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+csound(ix^D)
@@ -3478,19 +3518,31 @@ contains
   !> Calculate cmax_idim for semirelativistic MHD
   subroutine mhd_get_csound_semirelati_noe(w,x,ixI^L,ixO^L,idim,csound,gamma2)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     ! here w is primitive variables
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(out):: csound(ixO^S), gamma2(ixO^S)
 
+    double precision :: adiabs(ixO^S), gammas(ixO^S)
     double precision :: AvMinCs2, inv_rho, Alfven_speed2, idim_Alfven_speed2
     integer :: ix^D
 
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=mhd_gamma
+    end if
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho = 1.d0/w(ix^D,rho_)
       ! squared sound speed
-      csound(ix^D)=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
+      csound(ix^D)=gammas(ix^D)*adiabs(ix^D)*w(ix^D,rho_)**(gammas(ix^D)-1.d0)
       Alfven_speed2=(^C&w(ix^D,b^C_)**2+)*inv_rho
       gamma2(ix^D) = 1.0d0/(1.d0+Alfven_speed2*inv_squared_c)
       AvMinCs2=1.d0-gamma2(ix^D)*w(ix^D,mom(idim))**2*inv_squared_c
@@ -3509,17 +3561,33 @@ contains
   !> Calculate isothermal thermal pressure
   subroutine mhd_get_pthermal_noe(w,x,ixI^L,ixO^L,pth)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out):: pth(ixI^S)
 
-    if(has_equi_rho0) then
-      pth(ixO^S)=mhd_adiab*(w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,0))**mhd_gamma
-    else 
-      pth(ixO^S)=mhd_adiab*w(ixO^S,rho_)**mhd_gamma
+    double precision :: adiabs(ixO^S), gammas(ixO^S)
+    integer :: ix^D
+
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
     end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=mhd_gamma
+    end if
+   {do ix^DB=ixOmin^DB,ixOmax^DB\}
+      if(has_equi_rho0) then
+        pth(ix^D)=adiabs(ix^D)*(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))**gammas(ix^D)
+      else 
+        pth(ix^D)=adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)
+      end if
+   {end do\}
 
   end subroutine mhd_get_pthermal_noe
 
@@ -3897,6 +3965,7 @@ contains
   subroutine mhd_get_flux_noe(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     ! conservative w
@@ -3907,15 +3976,26 @@ contains
     double precision,intent(out) :: f(ixI^S,nwflux)
 
     double precision             :: vHall(ixI^S,1:ndir)
+    double precision             :: adiabs(ixO^S), gammas(ixO^S)
     integer                      :: iw, ix^D
 
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=mhd_gamma
+    end if
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
       f(ix^D,rho_)=w(ix^D,mom(idim))*w(ix^D,rho_)
       ! f_i[m_k]=v_i*m_k-b_k*b_i
       ^C&f(ix^D,m^C_)=wC(ix^D,mom(idim))*w(ix^D,m^C_)-w(ix^D,mag(idim))*w(ix^D,b^C_)\
       ! normal one includes total pressure
-      f(ix^D,mom(idim))=f(ix^D,mom(idim))+mhd_adiab*w(ix^D,rho_)**mhd_gamma+half*(^C&w(ix^D,b^C_)**2+)
+      f(ix^D,mom(idim))=f(ix^D,mom(idim))+adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)+half*(^C&w(ix^D,b^C_)**2+)
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
    {end do\}
@@ -4182,6 +4262,7 @@ contains
   subroutine mhd_get_flux_semirelati_noe(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     ! conservative w
@@ -4191,9 +4272,20 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision,intent(out) :: f(ixI^S,nwflux)
 
+    double precision             :: adiabs(ixO^S), gammas(ixO^S)
     double precision             :: E(ixO^S,1:ndir),e2
     integer                      :: iw, ix^D
 
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=mhd_gamma
+    end if
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
       f(ix^D,rho_)=w(ix^D,mom(idim))*w(ix^D,rho_)
@@ -4218,7 +4310,7 @@ contains
       ^C&f(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,mom(idim))*w(ix^D,m^C_)&
        -w(ix^D,mag(idim))*w(ix^D,b^C_)-E(ix^D,idim)*E(ix^D,^C)*inv_squared_c\
       ! gas pressure + magnetic pressure + electric pressure
-      f(ix^D,mom(idim))=f(ix^D,mom(idim))+mhd_adiab*w(ix^D,rho_)**mhd_gamma+half*((^C&w(ix^D,b^C_)**2+)+e2*inv_squared_c)
+      f(ix^D,mom(idim))=f(ix^D,mom(idim))+adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)+half*((^C&w(ix^D,b^C_)**2+)+e2*inv_squared_c)
       ! compute flux of magnetic field
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
@@ -5835,11 +5927,13 @@ contains
     use mod_global_parameters
     use mod_geometry
     use mod_rotating_frame, only: rotating_frame_add_source
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, dtfactor,x(ixI^S,1:ndim)
     double precision, intent(inout) :: wCT(ixI^S,1:nw),wprim(ixI^S,1:nw),w(ixI^S,1:nw)
 
+    double precision :: adiabs(ixO^S), gammas(ixO^S)
     double precision :: tmp,tmp1,invr,cot
     integer          :: ix^D
     integer :: mr_,mphi_ ! Polar var. names
@@ -5848,6 +5942,18 @@ contains
     mr_=mom(1); mphi_=mom(1)-1+phi_  ! Polar var. names
     br_=mag(1); bphi_=mag(1)-1+phi_
 
+    if(.not.mhd_energy) then
+      if(associated(usr_set_adiab)) then
+         call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+      else
+         adiabs=mhd_adiab
+      end if
+      if(associated(usr_set_gamma)) then
+         call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+      else
+         gammas=mhd_gamma
+      end if
+    end if
 
     select case (coordinate)
     case (cylindrical)
@@ -5861,7 +5967,7 @@ contains
         if(mhd_energy) then
           tmp=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma+half*(^C&wprim(ix^D,b^C_)**2+)
+          tmp=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*(^C&wprim(ix^D,b^C_)**2+)
         end if
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp-&
@@ -5890,7 +5996,7 @@ contains
         if(mhd_energy) then
           tmp1=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         else
-          tmp1=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma+half*(^C&wprim(ix^D,b^C_)**2+)
+          tmp1=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*(^C&wprim(ix^D,b^C_)**2+)
         end if
         ! m1
         {^IFONEC
@@ -5965,11 +6071,13 @@ contains
     use mod_global_parameters
     use mod_geometry
     use mod_rotating_frame, only: rotating_frame_add_source
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, dtfactor,x(ixI^S,1:ndim)
     double precision, intent(inout) :: wCT(ixI^S,1:nw),wprim(ixI^S,1:nw),w(ixI^S,1:nw)
 
+    double precision :: adiabs(ixO^S), gammas(ixO^S)
     double precision :: tmp,tmp1,tmp2,invr,cot,E(ixO^S,1:ndir)
     integer          :: ix^D
     integer :: mr_,mphi_ ! Polar var. names
@@ -5978,6 +6086,18 @@ contains
     mr_=mom(1); mphi_=mom(1)-1+phi_  ! Polar var. names
     br_=mag(1); bphi_=mag(1)-1+phi_
 
+    if(.not.mhd_energy) then
+      if(associated(usr_set_adiab)) then
+         call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+      else
+         adiabs=mhd_adiab
+      end if
+      if(associated(usr_set_gamma)) then
+         call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+      else
+         gammas=mhd_gamma
+      end if
+    end if
 
     select case (coordinate)
     case (cylindrical)
@@ -5991,7 +6111,7 @@ contains
         if(mhd_energy) then
           tmp=wprim(ix^D,p_)
         else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma
+          tmp=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)
         end if
         ! E=Bxv
         {^IFTHREEC
@@ -6050,7 +6170,7 @@ contains
         if(mhd_energy) then
           tmp1=wprim(ix^D,p_)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
         else
-          tmp1=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
+          tmp1=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
         end if
         ! m1
         {^IFONEC
@@ -6153,11 +6273,7 @@ contains
         else
           invr=qdt/x(ix^D,1)
         end if
-        if(mhd_energy) then
-          tmp=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
-        else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma+half*(^C&wprim(ix^D,b^C_)**2+)
-        end if
+        tmp=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp-&
                     wprim(ix^D,bphi_)**2+wprim(ix^D,mphi_)*wCT(ix^D,mphi_))

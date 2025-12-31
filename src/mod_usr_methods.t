@@ -108,6 +108,10 @@ module mod_usr_methods
   ! allow user to specify R factor in ideal gas law with partial ionization
   procedure(Rfactor), pointer :: usr_Rfactor => null()
 
+  ! allow user to specify adiabatic index and gamma dependent on space
+  procedure(set_adiab), pointer :: usr_set_adiab => null()
+  procedure(set_adiab), pointer :: usr_set_gamma => null()
+
   abstract interface
 
     subroutine p_no_args()
@@ -297,6 +301,15 @@ module mod_usr_methods
       double precision, intent(in)    :: w(ixI^S,1:nw)
       double precision, intent(out)   :: pth(ixI^S)
     end subroutine Rfactor
+
+    !>set adiabatic index
+    subroutine set_adiab(w,x,ixI^L,ixO^L,adiab)
+      use mod_global_parameters
+      integer, intent(in)             :: ixI^L, ixO^L
+      double precision, intent(in)    :: x(ixI^S,1:ndim)
+      double precision, intent(in)    :: w(ixI^S,1:nw)
+      double precision, intent(out)   :: adiab(ixO^S)
+    end subroutine set_adiab
 
     !> Set the "eta" array for resistive MHD based on w or the
     !> "current" variable which has components between idirmin and 3.
