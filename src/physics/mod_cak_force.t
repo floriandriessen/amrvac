@@ -37,7 +37,7 @@ module mod_cak_force
   real(8), private :: cak_gamma
 
   !> Variables needed to compute force normalisation fnorm in initialisation
-  real(8), private :: lum, dlum, drstar, dke, dclight
+  real(8), private :: lstar_cgs, lstar, rstar, kappae, clight
 
   !> To enforce a floor temperature when doing adiabatic (M)HD
   real(8), private :: tfloor
@@ -144,18 +144,20 @@ contains
   end subroutine cak_init
 
   !> Compute some (unitless) variables for CAK force normalisation
-  subroutine set_cak_force_norm(rstar,twind)
+  subroutine set_cak_force_norm(rstar_cgs,twind_cgs)
     use mod_global_parameters
     use mod_constants
 
-    real(8), intent(in) :: rstar, twind
+    real(8), intent(in) :: rstar_cgs, twind_cgs
 
-    lum     = 4.0d0*dpi * rstar**2.0d0 * const_sigma * twind**4.0d0
-    dke     = const_kappae * unit_density * unit_length
-    dclight = const_c/unit_velocity
-    dlum    = lum/(unit_density * unit_length**5.0d0 / unit_time**3.0d0)
-    drstar  = rstar/unit_length
-    tfloor  = twind/unit_temperature
+    lstar_cgs = 4.0d0*dpi * rstar_cgs**2.0d0 * const_sigma * twind_cgs**4.0d0
+
+    ! Dimensionless quantities used in this module computations
+    kappae = const_kappae * unit_density * unit_length
+    clight = const_c/unit_velocity
+    lstar  = lstar_cgs/(unit_density * unit_length**5.0d0 / unit_time**3.0d0)
+    rstar  = rstar_cgs/unit_length
+    tfloor = twind_cgs/unit_temperature
 
   end subroutine set_cak_force_norm
   
@@ -188,7 +190,7 @@ contains
       elseif (cak_vector_force) then
         call get_cak_force_vector(ixI^L,ixO^L,wCT,w,x,gl)
       else
-        call mpistop("No valid force option")
+        call mpistop("cak_add_source: no valid force option.")
       endif
 
       ! Update conservative vars: w = w + qdt*gsource
@@ -235,7 +237,7 @@ contains
 
     if (physics_type == 'hd') then
       ! Monotonic flow to avoid multiple resonances and radiative coupling
-      dvrdr(ixO^S) = abs(dvrdr(ixO^S))
+      dvrdr(ixO^S) = max(abs(dvrdr(ixO^S)), smalldouble)
     else
       ! Allow material to fallback to the star in a magnetosphere model
       dvrdr(ixO^S) = max(dvrdr(ixO^S), smalldouble)
@@ -247,22 +249,20 @@ contains
     ! Sobolev optical depth for line ensemble (tau = Qbar * t_r) and the force
     select case (cak_1d_opt)
     case(radstream, fdisc)
-      taus(ixO^S)   = gayley_qbar * dke * dclight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
-      gcak(ixO^S,1) = gayley_qbar/(1.0d0 - cak_alpha) &
-                      * ge(ixO^S)/taus(ixO^S)**cak_alpha
+      taus(ixO^S) = gayley_qbar*kappae*clight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
+      gcak(ixO^S,1) = gayley_qbar/(1.0d0 - cak_alpha) * ge(ixO^S) &
+           / taus(ixO^S)**cak_alpha
 
     case(fdisc_cutoff)
-      taus(ixO^S)   = gayley_q0 * dke * dclight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
-      gcak(ixO^S,1) = gayley_qbar * ge(ixO^S)                                  &
-                      * ( (1.0d0 + taus(ixO^S))**(1.0d0 - cak_alpha) - 1.0d0 ) &
-                      / ( (1.0d0 - cak_alpha) * taus(ixO^S) )
-    case default
-      call mpistop("Error in force computation.")
+      taus(ixO^S)   = gayley_q0*kappae*clight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
+      gcak(ixO^S,1) = gayley_qbar * ge(ixO^S) &
+           * ( (1.0d0 + taus(ixO^S))**(1.0d0 - cak_alpha) - 1.0d0 ) &
+           / ( (1.0d0 - cak_alpha) * taus(ixO^S) )
     end select
 
     ! Finite disk factor parameterisation (Owocki & Puls 1996)
     beta_fd(ixO^S) = ( 1.0d0 - vr(ixO^S)/(x(ixO^S,1) * dvrdr(ixO^S)) ) &
-                      * (drstar/x(ixO^S,1))**2.0d0
+         * (rstar/x(ixO^S,1))**2.0d0
 
     select case (cak_1d_opt)
     case(radstream)
@@ -274,10 +274,10 @@ contains
         fdfac(ixO^S) = abs(beta_fd(ixO^S))**cak_alpha / (1.0d0 + cak_alpha)
       elsewhere (abs(beta_fd(ixO^S)) > 1.0d-3)
         fdfac(ixO^S) = (1.0d0 - (1.0d0 - beta_fd(ixO^S))**(1.0d0 + cak_alpha)) &
-                       / (beta_fd(ixO^S)*(1.0d0 + cak_alpha))
+             / (beta_fd(ixO^S)*(1.0d0 + cak_alpha))
       elsewhere
         fdfac(ixO^S) = 1.0d0 - 0.5d0*cak_alpha*beta_fd(ixO^S) &
-                       * (1.0d0 + 1.0d0/3.0d0 * (1.0d0 - cak_alpha)*beta_fd(ixO^S))
+             * (1.0d0 + 1.0d0/3.0d0 * (1.0d0 - cak_alpha)*beta_fd(ixO^S))
       endwhere
     end select
 
@@ -367,12 +367,12 @@ contains
       ! Loop over the rays; first theta then phi radiation angle
       ! Get weights from current ray and their position
       do itray = 1,nthetaray
-        wyray  = wy(itray)
-        y      = ay(itray)
+        wyray = wy(itray)
+        y = ay(itray)
 
         do ipray = 1,nphiray
           wpray = wphi(ipray)
-          phiray  = aphi(ipray)
+          phiray = aphi(ipray)
 
           ! Redistribute the phi rays by a small offset
           ! if (mod(itp,3) == 1) then
@@ -384,7 +384,7 @@ contains
           ! === Geometrical factors ===
           ! Make y quadrature linear in mu, not mu**2; better for gtheta,gphi
           ! y -> mu quadrature is preserved; y=0 <=> mu=1; y=1 <=> mu=mustar
-          mustar = sqrt(max(1.0d0 - (drstar*inv_r(ix^D))**2.0d0, 0.0d0))
+          mustar = sqrt(max(1.0d0 - (rstar*inv_r(ix^D))**2.0d0, 0.0d0))
           costp  = 1.0d0 - y*(1.0d0 - mustar)
           costp2 = costp*costp
           sintp  = sqrt(max(1.0d0 - costp2, 0.0d0))
@@ -421,11 +421,11 @@ contains
       gcak(ix^D,1:3) = [gcaktmp1, gcaktmp2, gcaktmp3]
     {enddo\}
 
-    ! Normalisation for line force
+    ! Normalisation for line force array
     ! NOTE: extra 1/pi factor comes from integration in radiation Phi angle
-    gcak(ixO^S,:) = (dke*gayley_qbar)**(1.0d0 - cak_alpha)/(1.0d0 - cak_alpha)    &
-                    * dlum/(4.0d0*dpi*drstar**2.0d0 * dclight**(1.0d0+cak_alpha)) &
-                    * gcak(ixO^S,:)/dpi
+    gcak = (kappae*gayley_qbar)**(1.0d0 - cak_alpha)/(1.0d0 - cak_alpha) &
+         * lstar/(4.0d0*dpi*rstar**2.0d0 * clight**(1.0d0+cak_alpha))    &
+         * gcak/dpi
 
     if (fix_vector_force_1d) then
       gcak(ixO^S,2) = 0.0d0
@@ -447,7 +447,7 @@ contains
     real(8), intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
     real(8), intent(out):: ge(ixO^S)
 
-    ge(ixO^S) = dke * dlum/(4.0d0*dpi * dclight * x(ixO^S,1)**2.0d0)
+    ge(ixO^S) = kappae * lstar/(4.0d0*dpi * clight * x(ixO^S,1)**2.0d0)
 
   end subroutine get_gelectron
 
@@ -489,11 +489,11 @@ contains
   end subroutine cak_get_dt
 
   !> Compute velocity gradient in direction 'idir' on a non-uniform grid
-  subroutine get_velocity_gradient(ixI^L,ixO^L,vfield,x,idir,grad_vn)
+  subroutine get_velocity_gradient(ixI^L,ixO^L,vel,x,idir,grad_vn)
     use mod_global_parameters
 
     integer, intent(in)  :: ixI^L, ixO^L, idir
-    real(8), intent(in)  :: vfield(ixI^S), x(ixI^S,1:ndim)
+    real(8), intent(in)  :: vel(ixI^S), x(ixI^S,1:ndim)
     real(8), intent(out) :: grad_vn(ixO^S)
 
     ! Local variables
@@ -519,35 +519,35 @@ contains
     ! grad(v.n) on non-uniform grid according to Sundqvist & Veronis (1970)
     select case (idir)
     case(1) ! Radial forward, backward, and central derivatives
-      forw(ixO^S)  = (x(ixO^S,1) - x(hrx^S,1)) * vfield(jrx^S) &
-                      / ((x(jrx^S,1) - x(ixO^S,1)) * (x(jrx^S,1) - x(hrx^S,1)))
+      forw(ixO^S) = (x(ixO^S,1) - x(hrx^S,1)) * vel(jrx^S) &
+           / ((x(jrx^S,1) - x(ixO^S,1)) * (x(jrx^S,1) - x(hrx^S,1)))
 
-      backw(ixO^S) = -(x(jrx^S,1) - x(ixO^S,1)) * vfield(hrx^S) &
-                      / ((x(ixO^S,1) - x(hrx^S,1)) * (x(jrx^S,1) - x(hrx^S,1)))
+      backw(ixO^S) = -(x(jrx^S,1) - x(ixO^S,1)) * vel(hrx^S) &
+           / ((x(ixO^S,1) - x(hrx^S,1)) * (x(jrx^S,1) - x(hrx^S,1)))
 
-      cent(ixO^S)  = (x(jrx^S,1) + x(hrx^S,1) - 2.0d0*x(ixO^S,1)) * vfield(ixO^S) &
-                      / ((x(ixO^S,1) - x(hrx^S,1)) * (x(jrx^S,1) - x(ixO^S,1)))
+      cent(ixO^S) = (x(jrx^S,1) + x(hrx^S,1) - 2.0d0*x(ixO^S,1)) * vel(ixO^S) &
+           / ((x(ixO^S,1) - x(hrx^S,1)) * (x(jrx^S,1) - x(ixO^S,1)))
     {^NOONED
     case(2) ! Polar forward, backward, and central derivatives
-      forw(ixO^S)  = (x(ixO^S,2) - x(htx^S,2)) * vfield(jtx^S) &
-                      / (x(ixO^S,1) * (x(jtx^S,2) - x(ixO^S,2)) * (x(jtx^S,2) - x(htx^S,2)))
+      forw(ixO^S) = (x(ixO^S,2) - x(htx^S,2)) * vel(jtx^S) &
+           / (x(ixO^S,1) * (x(jtx^S,2) - x(ixO^S,2)) * (x(jtx^S,2) - x(htx^S,2)))
 
-      backw(ixO^S) = -(x(jtx^S,2) - x(ixO^S,2)) * vfield(htx^S) &
-                      / ( x(ixO^S,1) * (x(ixO^S,2) - x(htx^S,2)) * (x(jtx^S,2) - x(htx^S,2)))
+      backw(ixO^S) = -(x(jtx^S,2) - x(ixO^S,2)) * vel(htx^S) &
+           / ( x(ixO^S,1) * (x(ixO^S,2) - x(htx^S,2)) * (x(jtx^S,2) - x(htx^S,2)))
 
-      cent(ixO^S)  = (x(jtx^S,2) + x(htx^S,2) - 2.0d0*x(ixO^S,2)) * vfield(ixO^S) &
-                      / ( x(ixO^S,1) * (x(ixO^S,2) - x(htx^S,2)) * (x(jtx^S,2) - x(ixO^S,2)))
+      cent(ixO^S) = (x(jtx^S,2) + x(htx^S,2) - 2.0d0*x(ixO^S,2)) * vel(ixO^S) &
+           / ( x(ixO^S,1) * (x(ixO^S,2) - x(htx^S,2)) * (x(jtx^S,2) - x(ixO^S,2)))
     }
     {^IFTHREED
     case(3) ! Azimuthal forward, backward, and central derivatives
-      forw(ixO^S)  = (x(ixO^S,3) - x(hpx^S,3)) *  vfield(jpx^S) &
-                      / ( x(ixO^S,1)*sin(x(ixO^S,2)) * (x(jpx^S,3) - x(ixO^S,3)) * (x(jpx^S,3) - x(hpx^S,3)))
+      forw(ixO^S) = (x(ixO^S,3) - x(hpx^S,3)) * vel(jpx^S) &
+           / ( x(ixO^S,1)*sin(x(ixO^S,2)) * (x(jpx^S,3) - x(ixO^S,3)) * (x(jpx^S,3) - x(hpx^S,3)))
 
-      backw(ixO^S) = -(x(jpx^S,3) - x(ixO^S,3)) *  vfield(hpx^S) &
-                      / ( x(ixO^S,1)*sin(x(ixO^S,2)) * (x(ixO^S,3) - x(hpx^S,3)) * (x(jpx^S,3) - x(hpx^S,3)))
+      backw(ixO^S) = -(x(jpx^S,3) - x(ixO^S,3)) * vel(hpx^S) &
+           / ( x(ixO^S,1)*sin(x(ixO^S,2)) * (x(ixO^S,3) - x(hpx^S,3)) * (x(jpx^S,3) - x(hpx^S,3)))
 
-      cent(ixO^S)  = (x(jpx^S,3) + x(hpx^S,3) - 2.0d0*x(ixO^S,3)) *  vfield(ixO^S) &
-                      / ( x(ixO^S,1)*sin(x(ixO^S,2)) * (x(ixO^S,3) - x(hpx^S,3)) * (x(jpx^S,3) - x(ixO^S,3)))
+      cent(ixO^S) = (x(jpx^S,3) + x(hpx^S,3) - 2.0d0*x(ixO^S,3)) * vel(ixO^S) &
+           / ( x(ixO^S,1)*sin(x(ixO^S,2)) * (x(ixO^S,3) - x(hpx^S,3)) * (x(jpx^S,3) - x(ixO^S,3)))
     }
     end select
 
