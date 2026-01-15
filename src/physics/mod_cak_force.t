@@ -183,8 +183,6 @@ contains
       call get_gelectron(ixI^L,ixO^L,wCT,x,ge)
 
       ! CAK line force
-      gl(ixO^S,1:3) = 0.0d0
-
       if (cak_1d_force) then
         call get_cak_force_radial(ixI^L,ixO^L,wCT,w,x,gl)
       elseif (cak_vector_force) then
@@ -226,7 +224,7 @@ contains
     integer, intent(in)    :: ixI^L, ixO^L
     real(8), intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
     real(8), intent(inout) :: w(ixI^S,1:nw)
-    real(8), intent(inout) :: gcak(ixO^S,1:3)
+    real(8), intent(out)   :: gcak(ixO^S,1:3)
   
     ! Local variables
     real(8) :: vr(ixI^S), dvrdr(ixO^S)
@@ -303,18 +301,22 @@ contains
     integer, intent(in)    :: ixI^L, ixO^L
     real(8), intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
     real(8), intent(inout) :: w(ixI^S,1:nw)
-    real(8), intent(inout) :: gcak(ixO^S,1:3)
+    real(8), intent(out)   :: gcak(ixO^S,1:3)
 
     ! Local variables
     real(8) :: a1, a2, a3, wyray, y, wpray, phiray, wtot, mustar, dvndn
     real(8) :: costp, costp2, sintp, cospp, sinpp, cott0
-    real(8) :: vr(ixI^S), vt(ixI^S), vp(ixI^S)
+    real(8) :: vr(ixI^S), vt(ixI^S), vp(ixI^S), inv_rho(ixI^S), inv_r(ixI^S)
     real(8) :: vrr(ixI^S), vtr(ixI^S), vpr(ixI^S)
     real(8) :: dvrdr(ixO^S), dvtdr(ixO^S), dvpdr(ixO^S)
     real(8) :: dvrdt(ixO^S), dvtdt(ixO^S), dvpdt(ixO^S)
     real(8) :: dvrdp(ixO^S), dvtdp(ixO^S), dvpdp(ixO^S)
     integer :: ix^D, itray, ipray
-    
+    real(8) :: gcaktmp1, gcaktmp2, gcaktmp3
+
+    inv_rho(ixI^S) = 1.0d0/wCT(ixI^S,iw_rho)
+    inv_r(ixI^S)   = 1.0d0/x(ixI^S,1)
+
     ! Initialisation to have full velocity strain tensor expression at all times
     vt(ixO^S) = 0.0d0; vtr(ixO^S) = 0.0d0
     vp(ixO^S) = 0.0d0; vpr(ixO^S) = 0.0d0
@@ -324,16 +326,16 @@ contains
     dvrdp(ixO^S) = 0.0d0; dvtdp(ixO^S) = 0.0d0; dvpdp(ixO^S) = 0.0d0
 
     ! Populate velocity field(s) depending on dimensions and directions
-    vr(ixI^S)  = wCT(ixI^S,iw_mom(1)) / wCT(ixI^S,iw_rho)
-    vrr(ixI^S) = vr(ixI^S) / x(ixI^S,1)
+    vr(ixI^S)  = wCT(ixI^S,iw_mom(1)) * inv_rho(ixI^S)
+    vrr(ixI^S) = vr(ixI^S) * inv_r(ixI^S)
 
     {^NOONED
-    vt(ixI^S)  = wCT(ixI^S,iw_mom(2)) / wCT(ixI^S,iw_rho)
-    vtr(ixI^S) = vt(ixI^S) / x(ixI^S,1)
+    vt(ixI^S)  = wCT(ixI^S,iw_mom(2)) * inv_rho(ixI^S)
+    vtr(ixI^S) = vt(ixI^S) * inv_r(ixI^S)
     
     if (ndir > 2) then
-      vp(ixI^S)  = wCT(ixI^S,iw_mom(3)) / wCT(ixI^S,iw_rho)
-      vpr(ixI^S) = vp(ixI^S) / x(ixI^S,1)
+      vp(ixI^S)  = wCT(ixI^S,iw_mom(3)) * inv_rho(ixI^S)
+      vpr(ixI^S) = vp(ixI^S) * inv_r(ixI^S)
     endif
     }
     
@@ -358,6 +360,10 @@ contains
 
     ! Get total acceleration from all rays at a certain grid point
     {do ix^DB=ixOmin^DB,ixOmax^DB\}
+      gcaktmp1 = 0.0d0
+      gcaktmp2 = 0.0d0
+      gcaktmp3 = 0.0d0
+
       ! Loop over the rays; first theta then phi radiation angle
       ! Get weights from current ray and their position
       do itray = 1,nthetaray
@@ -378,18 +384,18 @@ contains
           ! === Geometrical factors ===
           ! Make y quadrature linear in mu, not mu**2; better for gtheta,gphi
           ! y -> mu quadrature is preserved; y=0 <=> mu=1; y=1 <=> mu=mustar
-          mustar = sqrt(max(1.0d0 - (drstar/x(ix^D,1))**2.0d0, 0.0d0))
+          mustar = sqrt(max(1.0d0 - (drstar*inv_r(ix^D))**2.0d0, 0.0d0))
           costp  = 1.0d0 - y*(1.0d0 - mustar)
           costp2 = costp*costp
           sintp  = sqrt(max(1.0d0 - costp2, 0.0d0))
           sinpp  = sin(phiray)
           cospp  = cos(phiray)
-          {^NOONED cott0  = cos(x(ix^D,2))/sin(x(ix^D,2))}
+          {^NOONED cott0  = cos(x(ix^D,2))/max(sin(x(ix^D,2)), smalldouble)}
 
           ! More weight close to star, less farther away
           wtot  = wyray * wpray * (1.0d0 - mustar)
 
-          ! Convenients a la Cranmer & Owocki (1995)
+          ! Convenients a la Cranmer & Owocki (1995), ApJ 440, eq. 42
           a1 = costp
           a2 = sintp * cospp
           a3 = sintp * sinpp
@@ -406,11 +412,13 @@ contains
 
           ! Convert gradient back from wind coordinates (r',theta',phi') to
           ! stellar coordinates (r,theta,phi)
-          gcak(ix^D,1) = gcak(ix^D,1) + (dvndn/wCT(ix^D,iw_rho))**cak_alpha * a1 * wtot
-          gcak(ix^D,2) = gcak(ix^D,2) + (dvndn/wCT(ix^D,iw_rho))**cak_alpha * a2 * wtot
-          gcak(ix^D,3) = gcak(ix^D,3) + (dvndn/wCT(ix^D,iw_rho))**cak_alpha * a3 * wtot
+          gcaktmp1 = gcaktmp1 + (dvndn*inv_rho(ix^D))**cak_alpha * a1 * wtot
+          gcaktmp2 = gcaktmp2 + (dvndn*inv_rho(ix^D))**cak_alpha * a2 * wtot
+          gcaktmp3 = gcaktmp3 + (dvndn*inv_rho(ix^D))**cak_alpha * a3 * wtot
         enddo
       enddo
+
+      gcak(ix^D,1:3) = [gcaktmp1, gcaktmp2, gcaktmp3]
     {enddo\}
 
     ! Normalisation for line force
