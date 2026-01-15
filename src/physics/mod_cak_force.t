@@ -18,10 +18,9 @@
 !>  4. In usr_init of mod_usr.t call the set_cak_force_norm routine and pass
 !>     along the stellar radius and wind temperature---this is needed to
 !>     correctly compute the (initial) force normalisation inside mod_cak_force
-!>  5. Ensure that the order of calls in usr_init is similar as for test problem
-!>     CAKwind_spherical_1D: first reading usr.par list; then set unit scales;
-!>     then call (M)HD_activate; then call set_cak_force_norm. This order avoids
-!>     an incorrect force normalisation and code crash
+!>  5. Always ensure that the set_cak_force_norm routine is called in mod_usr.t
+!      either in usr_init or in usr_set_parameters and after the hydro unit
+!      variables have been set/computed
 !>
 !> Developed by Florian Driessen (2022)
 module mod_cak_force
@@ -124,17 +123,22 @@ contains
       call rays_init(nthetaray,nphiray)
     endif
 
+    if (cak_split) any_source_split = .true.
+
     ! Some sanity checks
+    if (slab_uniform) &
+         call mpistop('cak_init: Cartesian geometry not supported.')
+
     if ((cak_alpha <= 0.0d0) .or. (cak_alpha > 1.0d0)) then
-      call mpistop('CAK error: choose alpha in [0,1[')
+      call mpistop('cak_init: choose alpha in [0,1[')
     endif
 
     if ((gayley_qbar < 0.0d0) .or. (gayley_q0 < 0.0d0)) then
-      call mpistop('CAK error: chosen Qbar or Q0 is < 0')
+      call mpistop('cak_init: chosen Qbar or Q0 is < 0')
     endif
 
     if (cak_1d_force .and. cak_vector_force) then
-      call mpistop('CAK error: choose either 1-D or vector force')
+      call mpistop('cak_init: choose either 1-D or vector force')
     endif
 
   end subroutine cak_init
