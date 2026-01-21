@@ -20,7 +20,7 @@ contains
   use mod_global_parameters
 
   double precision                         :: time
-  integer                                  :: nctot, ix^D, ixp^D
+  integer                                  :: ix^D, ixp^D
   integer                                  :: idim
   integer,dimension(^ND)                   :: sendbuff
   character(len=*), intent(in)             :: filename
@@ -35,7 +35,7 @@ contains
      open(unit,file=filename,status='unknown')
      ! The header information:
      read(unit,'(A)') outfilehead
-     read(unit,*) nctot,nc^D
+     read(unit,*) nc^D
      read(unit,*) time
      
      ! Allocate and read the grid and variables:
