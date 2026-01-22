@@ -112,8 +112,8 @@ contains
     if (add_bc) nwfluxbc = nwfluxbc + 1
 
     if (.not. present(ix)) then
-      prim_wnames(nwflux) = name_cons
-      cons_wnames(nwflux) = name_prim
+      cons_wnames(nwflux) = name_cons
+      prim_wnames(nwflux) = name_prim
     else
       write(cons_wnames(nwflux),"(A,I0)") name_cons, ix
       write(prim_wnames(nwflux),"(A,I0)") name_prim, ix
