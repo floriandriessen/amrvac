@@ -320,6 +320,12 @@ contains
         if(mype==0) write(*,*) 'WARNING: set mhd_hydrodynamic_e=F when mhd_internal_e=T'
       end if
     end if
+    if(mhd_hydrodynamic_e) then
+      if(mhd_internal_e) then
+        mhd_internal_e=.false.
+        if(mype==0) write(*,*) 'WARNING: set mhd_internal_e=F when mhd_hydrodynamic_e=T'
+      end if
+    end if
 
     if(mhd_semirelativistic) then
       if(B0field) B0fieldAllocCoarse=.true.
@@ -338,9 +344,9 @@ contains
         mhd_thermal_conduction=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_thermal_conduction=F when mhd_energy=F'
       end if
-      if(mhd_thermal_conduction) then
+      if(mhd_hyperbolic_thermal_conduction) then
         mhd_hyperbolic_thermal_conduction=.false.
-        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_thermal_conduction=F'
+        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_thermal_conduction=F when mhd_energy=F'
       end if
       if(mhd_radiative_cooling) then
         mhd_radiative_cooling=.false.
@@ -377,6 +383,10 @@ contains
     if(mhd_hyperbolic_thermal_conduction) then
       mhd_thermal_conduction=.false.
       if(mype==0) write(*,*) 'WARNING: turn off parabolic TC when using hyperbolic TC'
+    end if
+    if(mhd_thermal_conduction) then
+      mhd_hyperbolic_thermal_conduction=.false.
+      if(mype==0) write(*,*) 'WARNING: turn off hyperbolic TC when using parabolic TC'
     end if
 
 
@@ -423,7 +433,6 @@ contains
     end if
     phys_trac_mask=mhd_trac_mask
 
-    ! set default gamma for polytropic/isothermal process
     use_particles=mhd_particles
     if(ndim==1) typedivbfix='none'
     select case (typedivbfix)
@@ -551,8 +560,8 @@ contains
 
     nvector      = 2 ! No. vector vars
     allocate(iw_vector(nvector))
-    iw_vector(1) = mom(1) - 1   ! TODO: why like this?
-    iw_vector(2) = mag(1) - 1   ! TODO: why like this?
+    iw_vector(1) = mom(1) - 1
+    iw_vector(2) = mag(1) - 1
 
     ! Check whether custom flux types have been defined
     if (.not. allocated(flux_type)) then
@@ -783,15 +792,6 @@ contains
 
     if(mhd_hyperbolic_thermal_conduction) then
       hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
-    end if
-    if(.not. mhd_energy .and. mhd_thermal_conduction) then
-      call mpistop("thermal conduction needs mhd_energy=T")
-    end if
-    if(.not. mhd_energy .and. mhd_hyperbolic_thermal_conduction) then
-      call mpistop("hyperbolic thermal conduction needs mhd_energy=T")
-    end if
-    if(.not. mhd_energy .and. mhd_radiative_cooling) then
-      call mpistop("radiative cooling needs mhd_energy=T")
     end if
 
     ! initialize thermal conduction module
@@ -1055,7 +1055,7 @@ contains
      case ('no','none')
        fl%tc_slope_limiter = 0
      case ('MC')
-       ! montonized central limiter Woodward and Collela limiter (eq.3.51h), a factor of 2 is pulled out
+       ! monotonized central limiter Woodward and Collela limiter (eq.3.51h)
        fl%tc_slope_limiter = 1
      case('minmod')
        ! minmod limiter
@@ -1067,7 +1067,7 @@ contains
        ! Barry Koren Right variant
        fl%tc_slope_limiter = 4
      case default
-       call mpistop("Unknown tc_slope_limiter, choose MC, minmod")
+       call mpistop("Unknown tc_slope_limiter, choose MC, minmod, superbee, koren")
     end select
   end subroutine tc_params_read_mhd
 !!end th cond
@@ -2589,53 +2589,24 @@ contains
     else
        gammas=mhd_gamma
     end if
-    if(B0field) then
-     {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
-          rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
-        else
-          rho=w(ix^D,rho_)
-        end if
-        inv_rho=1.d0/rho
-        ! sound speed**2 
-        cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
-        ! store |B|^2 in v
-        b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
-        cfast2=b2*inv_rho+cmax(ix^D)
-        AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*(w(ix^D,mag(idim))+block%B0(ix^D,idim,b0i))**2*inv_rho
-        if(AvMinCs2<zero) AvMinCs2=zero
-        cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
-          ! take the Hall velocity into account: most simple estimate, high k limit:
-          ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
-          cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
-        end if
-        cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
-     {end do\}
-    else
-     {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
-          rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
-        else
-          rho=w(ix^D,rho_)
-        end if
-        inv_rho=1.d0/rho
-        ! sound speed**2 
-        cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
-        ! store |B|^2 in v
-        b2=(^C&w(ix^D,b^C_)**2+)
-        cfast2=b2*inv_rho+cmax(ix^D)
-        AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
-        if(AvMinCs2<zero) AvMinCs2=zero
-        cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
-          ! take the Hall velocity into account: most simple estimate, high k limit:
-          ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
-          cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
-        end if
-        cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
-     {end do\}
-    end if
+   {do ix^DB=ixOmin^DB,ixOmax^DB \}
+       rho=w(ix^D,rho_)
+       inv_rho=1.d0/rho
+       ! sound speed**2 
+       cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
+       ! store |B|^2 in v
+       b2=(^C&w(ix^D,b^C_)**2+)
+       cfast2=b2*inv_rho+cmax(ix^D)
+       AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
+       if(AvMinCs2<zero) AvMinCs2=zero
+       cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
+       if(MHD_Hall) then
+         ! take the Hall velocity into account: most simple estimate, high k limit:
+         ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
+         cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
+       end if
+       cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
+   {end do\}
 
   end subroutine mhd_get_cmax_origin_noe
 
@@ -3558,7 +3529,7 @@ contains
 
   end subroutine mhd_get_csound_semirelati_noe
 
-  !> Calculate isothermal thermal pressure
+  !> Calculate thermal pressure from polytropic closure
   subroutine mhd_get_pthermal_noe(w,x,ixI^L,ixO^L,pth)
     use mod_global_parameters
     use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
@@ -3582,11 +3553,7 @@ contains
        gammas=mhd_gamma
     end if
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      if(has_equi_rho0) then
-        pth(ix^D)=adiabs(ix^D)*(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))**gammas(ix^D)
-      else 
-        pth(ix^D)=adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)
-      end if
+      pth(ix^D)=adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)
    {end do\}
 
   end subroutine mhd_get_pthermal_noe
