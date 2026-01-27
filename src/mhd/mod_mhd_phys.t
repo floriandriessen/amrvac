@@ -157,10 +157,8 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_cak_force = .false.
   !> MHD fourth order
   logical, public, protected              :: mhd_4th_order = .false.
-  !> whether split off equilibrium density
-  logical, public :: has_equi_rho0 = .false.
-  !> whether split off equilibrium thermal pressure
-  logical, public :: has_equi_pe0 = .false.
+  !> whether split off equilibrium density and pressure
+  logical, public :: has_equi_rho_and_p = .false.
   logical, public :: mhd_equi_thermal = .false.
   !> whether dump full variables (when splitting is used) in a separate dat file
   logical, public, protected              :: mhd_dump_full_vars = .false.
@@ -259,7 +257,7 @@ contains
       typedivbdiff, type_ct, compactres, divbwave, He_abundance, &
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
-      particles_eta, particles_etah,has_equi_rho0, has_equi_pe0,mhd_equi_thermal,&
+      particles_eta, particles_etah,has_equi_rho_and_p,mhd_equi_thermal,&
       boundary_divbfix, boundary_divbfix_skip, mhd_divb_nth, mhd_semirelativistic,&
       mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
       mhd_hydrodynamic_e, mhd_trac, mhd_trac_type, mhd_trac_mask, mhd_trac_finegrid, mhd_cak_force, &
@@ -325,6 +323,14 @@ contains
         mhd_internal_e=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_internal_e=F when mhd_hydrodynamic_e=T'
       end if
+      if(B0field) then
+        B0field=.false.
+        if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_hydrodynamic_e=T'
+      end if
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_hydrodynamic_e=T'
+      end if
     end if
 
     if(mhd_semirelativistic) then
@@ -364,13 +370,9 @@ contains
         B0field=.false.
         if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_energy=F'
       end if
-      if(has_equi_rho0) then
-        has_equi_rho0=.false.
-        if(mype==0) write(*,*) 'WARNING: set has_equi_rho0=F when mhd_energy=F'
-      end if
-      if(has_equi_pe0) then
-        has_equi_pe0=.false.
-        if(mype==0) write(*,*) 'WARNING: set has_equi_pe0=F when mhd_energy=F'
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_energy=F'
       end if
     end if
     if(.not.eq_state_units) then
@@ -544,12 +546,10 @@ contains
 
     ! set indices of equi vars and update number_equi_vars
     number_equi_vars = 0
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       number_equi_vars = number_equi_vars + 1
       equi_rho0_ = number_equi_vars
       iw_equi_rho = equi_rho0_
-    endif
-    if(has_equi_pe0) then
       number_equi_vars = number_equi_vars + 1
       equi_pe0_ = number_equi_vars
       iw_equi_p = equi_pe0_
@@ -607,7 +607,7 @@ contains
     phys_get_a2max           => mhd_get_a2max
     phys_get_tcutoff         => mhd_get_tcutoff
     phys_get_H_speed         => mhd_get_H_speed
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       phys_get_cbounds         => mhd_get_cbounds_split_rho
     else if(mhd_semirelativistic) then
       phys_get_cbounds         => mhd_get_cbounds_semirelati
@@ -632,7 +632,7 @@ contains
         mhd_to_conserved         => mhd_to_conserved_semirelati_noe
       end if
     else
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         phys_to_primitive        => mhd_to_primitive_split_rho
         mhd_to_primitive         => mhd_to_primitive_split_rho
         phys_to_conserved        => mhd_to_conserved_split_rho
@@ -663,7 +663,7 @@ contains
         phys_get_flux            => mhd_get_flux_semirelati_noe
       end if
     else
-      if(B0field.or.has_equi_rho0.or.has_equi_pe0) then
+      if(B0field.or.has_equi_rho_and_p) then
         phys_get_flux            => mhd_get_flux_split
       else if(mhd_energy) then
         phys_get_flux            => mhd_get_flux
@@ -674,7 +674,7 @@ contains
     phys_get_v                 => mhd_get_v
     if(mhd_semirelativistic) then
       phys_add_source_geom     => mhd_add_source_geom_semirelati
-    else if(B0field.or.has_equi_rho0) then
+    else if(B0field.or.has_equi_rho_and_p) then
       phys_add_source_geom     => mhd_add_source_geom_split
     else
       phys_add_source_geom     => mhd_add_source_geom
@@ -695,7 +695,7 @@ contains
       phys_handle_small_values => mhd_handle_small_values_semirelati
       mhd_handle_small_values  => mhd_handle_small_values_semirelati
       phys_check_w             => mhd_check_w_semirelati
-    else if(has_equi_rho0) then
+    else if(has_equi_rho_and_p) then
       phys_handle_small_values => mhd_handle_small_values_split
       mhd_handle_small_values  => mhd_handle_small_values_split
       phys_check_w             => mhd_check_w_split
@@ -748,7 +748,7 @@ contains
       mhd_get_temperature => mhd_get_temperature_from_Te
     else
       if(mhd_internal_e) then
-        if(has_equi_pe0 .and. has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           mhd_get_temperature => mhd_get_temperature_from_eint_with_equi
         else
           mhd_get_temperature => mhd_get_temperature_from_eint
@@ -807,7 +807,7 @@ contains
         call add_sts_method(mhd_get_tc_dt_mhd,mhd_sts_set_source_tc_mhd,e_,1,e_,1,.false.)
       endif
       if(phys_internal_e) then
-        if(has_equi_pe0 .and. has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint_with_equi
         else
           tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint
@@ -815,7 +815,7 @@ contains
       else
         tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_etot
       end if
-      if(has_equi_pe0 .and. has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         tc_fl%get_temperature_from_eint => mhd_get_temperature_from_eint_with_equi
         if(mhd_equi_thermal) then
           tc_fl%has_equi = .true.
@@ -852,7 +852,7 @@ contains
       rc_fl%get_var_Rfactor => mhd_get_Rfactor
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
-      if(has_equi_pe0 .and. has_equi_rho0 .and. mhd_equi_thermal) then
+      if(has_equi_rho_and_p .and. mhd_equi_thermal) then
         rc_fl%has_equi = .true.
         rc_fl%get_rho_equi => mhd_get_rho_equi
         rc_fl%get_pthermal_equi => mhd_get_pe_equi
@@ -1184,7 +1184,7 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision   :: wnew(ixO^S, 1:nwc)
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       wnew(ixO^S,rho_)=w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,0)
     else
       wnew(ixO^S,rho_)=w(ixO^S,rho_)
@@ -1200,7 +1200,7 @@ contains
 
     if(mhd_energy) then
       wnew(ixO^S,e_)=w(ixO^S,e_)
-      if(has_equi_pe0) then
+      if(has_equi_rho_and_p) then
         wnew(ixO^S,e_)=wnew(ixO^S,e_)+block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1
       end if
       if(B0field .and. total_energy) then
@@ -1984,7 +1984,7 @@ contains
 
     integer :: ix^D
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! Calculate e = ei + ek + eb
         w(ix^D,e_)=w(ix^D,e_)&
@@ -2041,7 +2041,7 @@ contains
 
     integer :: ix^D
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! Calculate ei = e - ek - eb
         w(ix^D,e_)=w(ix^D,e_)&
@@ -2508,14 +2508,14 @@ contains
 
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         else
           rho=w(ix^D,rho_)
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
            cmax(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         else
            cmax(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
@@ -2535,14 +2535,14 @@ contains
      {end do\}
     else
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         else
           rho=w(ix^D,rho_)
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
            cmax(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         else
            cmax(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
@@ -3422,7 +3422,7 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         end if
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
@@ -3439,7 +3439,7 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         end if
         b2=(^C&w(ix^D,b^C_)**2+)
@@ -3571,7 +3571,7 @@ contains
     integer :: iw, ix^D
 
    {do ix^DB= ixOmin^DB,ixOmax^DB\}
-      if(has_equi_pe0) then
+      if(has_equi_rho_and_p) then
         pth(ix^D)=gamma_1*w(ix^D,e_)+block%equi_vars(ix^D,equi_pe0_,0)
       else
         pth(ix^D)=gamma_1*w(ix^D,e_)
@@ -3613,15 +3613,12 @@ contains
     integer :: iw, ix^D
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))&
-             +(^C&w(ix^D,b^C_)**2+)))
+             +(^C&w(ix^D,b^C_)**2+))) +block%equi_vars(ix^D,equi_pe0_,0)
       else
         pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
              +(^C&w(ix^D,b^C_)**2+)))
-      end if
-      if(has_equi_pe0) then
-        pth(ix^D)=pth(ix^D)+block%equi_vars(ix^D,equi_pe0_,0)
       end if
       if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
    {end do\}
@@ -3928,7 +3925,8 @@ contains
 
   end subroutine mhd_get_flux
 
-  !> Calculate fluxes within ixO^L without any splitting
+  !> Calculate fluxes within ixO^L for case without energy equation, hence without splitting
+  !> and assuming polytropic closure
   subroutine mhd_get_flux_noe(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
@@ -4066,7 +4064,7 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         f(ix^D,rho_)=w(ix^D,mom(idim))*(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
       else
         f(ix^D,rho_)=w(ix^D,mom(idim))*w(ix^D,rho_)
@@ -4606,7 +4604,7 @@ contains
   !> multiply res by the ambipolar coefficient
   !> The ambipolar coefficient is calculated as -mhd_eta_ambi/rho^2
   !> The user may mask its value in the user file
-  !> by implemneting usr_mask_ambipolar subroutine
+  !> by implementing usr_mask_ambipolar subroutine
   subroutine multiplyAmbiCoef(ixI^L,ixO^L,res,w,x)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
@@ -4616,7 +4614,6 @@ contains
     double precision :: rho(ixI^S)
 
     call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    tmp=0.d0
     tmp(ixO^S)=-mhd_eta_ambi/rho(ixO^S)**2
     if (associated(usr_mask_ambipolar)) then
       call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp)
@@ -4651,7 +4648,7 @@ contains
         active = .true.
         call add_source_internal_e(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       else
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           active = .true.
           call add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCTprim,w,x)
         end if
@@ -4799,14 +4796,11 @@ contains
 
     call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
     {do ix^DB=ixImin^DB,ixImax^DB\}
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         rho_loc(ix^D)=wCTprim(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0)
-      else
-        rho_loc(ix^D)=wCTprim(ix^D,rho_)
-      end if
-      if(has_equi_pe0) then
         pth_loc(ix^D)=wCTprim(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,0)
       else
+        rho_loc(ix^D)=wCTprim(ix^D,rho_)
         pth_loc(ix^D)=wCTprim(ix^D,p_)
       end if
       Te(ix^D)=pth_loc(ix^D)/(R(ix^D)*rho_loc(ix^D))
@@ -4980,7 +4974,7 @@ contains
     double precision              :: rho(ixI^S)
 
     ! mhd_get_rho cannot be used as x is not a param
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       rho(ixO^S) = w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i)
     else
       rho(ixO^S) = w(ixO^S,rho_)
@@ -5007,7 +5001,7 @@ contains
     double precision, intent(in)  :: w(ixI^S,1:nw),x(ixI^S,1:ndim)
     double precision, intent(out) :: rho(ixI^S)
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       rho(ixO^S) = w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i)
     else
       rho(ixO^S) = w(ixO^S,rho_)
@@ -5029,7 +5023,7 @@ contains
     logical :: flag(ixI^S,1:nw)
 
     flag=.false.
-    if(has_equi_pe0) then
+    if(has_equi_rho_and_p) then
       where(w(ixO^S,ie)+block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1<small_e)&
              flag(ixO^S,ie)=.true.
     else
@@ -5038,7 +5032,7 @@ contains
     if(any(flag(ixO^S,ie))) then
       select case (small_values_method)
       case ("replace")
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           where(flag(ixO^S,ie)) w(ixO^S,ie)=small_e - &
                   block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1
         else
