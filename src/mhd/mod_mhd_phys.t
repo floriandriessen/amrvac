@@ -143,7 +143,6 @@ module mod_mhd_phys
   integer, public, protected              :: mhd_trac_finegrid=4
   !> Whether internal energy is solved instead of total energy
   logical, public, protected              :: mhd_internal_e = .false.
-  !TODO this does not work with the splitting: check mhd_check_w_hde and mhd_handle_small_values_hde
   !> Whether hydrodynamic energy is solved instead of total energy
   logical, public, protected              :: mhd_hydrodynamic_e = .false.
   !> Whether divB cleaning sources are added splitting from fluid solver
@@ -316,6 +315,10 @@ contains
       if(mhd_hydrodynamic_e) then
         mhd_hydrodynamic_e=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_hydrodynamic_e=F when mhd_internal_e=T'
+      end if
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_internal_e=T'
       end if
     end if
     if(mhd_hydrodynamic_e) then
@@ -2501,7 +2504,7 @@ contains
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: cmax(ixI^S)
 
-    double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
+    double precision :: rho, inv_rho, ploc, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
     if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
@@ -2510,17 +2513,15 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         if(has_equi_rho_and_p) then
           rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
+          ploc=(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))
         else
           rho=w(ix^D,rho_)
+          ploc=w(ix^D,p_)
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        if(has_equi_rho_and_p) then
-           cmax(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        else
-           cmax(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
-        endif
-        ! store |B|^2 in v
+        cmax(ix^D)=mhd_gamma*ploc*inv_rho
+        ! store |B|^2 
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
         AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*(w(ix^D,mag(idim))+block%B0(ix^D,idim,b0i))**2*inv_rho
@@ -2537,17 +2538,15 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         if(has_equi_rho_and_p) then
           rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
+          ploc=(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))
         else
           rho=w(ix^D,rho_)
+          ploc=w(ix^D,p_)
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        if(has_equi_rho_and_p) then
-           cmax(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        else
-           cmax(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
-        endif
-        ! store |B|^2 in v
+        cmax(ix^D)=mhd_gamma*ploc*inv_rho
+        ! store |B|^2 
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
         AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
@@ -4614,6 +4613,7 @@ contains
     double precision :: rho(ixI^S)
 
     call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
+    tmp=0.d0
     tmp(ixO^S)=-mhd_eta_ambi/rho(ixO^S)**2
     if (associated(usr_mask_ambipolar)) then
       call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp)
