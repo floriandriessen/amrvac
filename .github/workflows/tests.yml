@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        compiler: [gfortran-11, gfortran-12, gfortran-13, gfortran-14, gfortran-15]
+        compiler: [gfortran-11, gfortran-12, gfortran-13, gfortran-14]
 
     env:
       FC: ${{ matrix.compiler }}
@@ -58,8 +58,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        FC_compiler: [gfortran-15]
-        CC_compiler: [gcc-15]
+        FC_compiler: [gfortran-14]
+        CC_compiler: [gcc-14]
         suite: [rho, hd, rhd, rmhd, ffhd, mhd, rd, ard, mg, twofl]
 
     env:
