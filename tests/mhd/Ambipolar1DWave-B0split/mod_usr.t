@@ -6,12 +6,12 @@ module mod_usr
 
 
   !!user defined
-  double precision:: Period=5
-  double precision:: ampl=1d-3
+  double precision:: Period=5.0d0
+  double precision:: ampl=1.0d-3
   
   logical :: maskAmbi = .true.
-  double precision :: xLambi = 1.65
-  double precision :: wLambi = 0.01
+  double precision :: xLambi = 1.65d0
+  double precision :: wLambi = 0.01d0
   logical :: ambi_mask_smooth  = .true.
   integer, parameter :: MASK_DISC = 1
   integer, parameter :: MASK_TANH = 2
@@ -346,7 +346,6 @@ contains
     usr_set_J0              => specialset_J0
 
     usr_set_parameters  => init_params_usr
-    !usr_process_grid => special_process_filter
 
     if (maskAmbi) then
       usr_mask_ambipolar => special_ambipolar
