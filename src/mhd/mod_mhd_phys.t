@@ -4609,17 +4609,17 @@ contains
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: res(ixI^S)
-    double precision :: tmp(ixI^S)
+    double precision :: tmp1(ixI^S)
     double precision :: rho(ixI^S)
 
     call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    tmp=0.d0
-    tmp(ixO^S)=-mhd_eta_ambi/rho(ixO^S)**2
+    tmp1(ixI^S)=0.d0
+    tmp1(ixO^S)=-mhd_eta_ambi/rho(ixO^S)**2
     if (associated(usr_mask_ambipolar)) then
-      call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp)
+      call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp1)
     end if
 
-    res(ixO^S) = tmp(ixO^S) * res(ixO^S)
+    res(ixO^S) = tmp1(ixO^S) * res(ixO^S)
   end subroutine multiplyAmbiCoef
 
   !> w[iws]=w[iws]+qdt*S[iws,wCT] where S is the source based on wCT within ixO
