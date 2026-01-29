@@ -943,7 +943,7 @@ contains
     ! Initialize CAK radiation force module
     if (mhd_cak_force) then
        if(mhd_internal_e.or.mhd_semirelativistic) then
-          call mpistop("CAK force implementation not available for internal or semirelativistic variants")
+          call mpistop("CAK implementation not available in internal or semirelativistic variants")
        endif
        if(has_equi_rho_and_p) then
           call mpistop("CAK force implementation not available for split off pressure and density")
