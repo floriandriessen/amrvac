@@ -809,7 +809,7 @@ contains
       else
         call add_sts_method(mhd_get_tc_dt_mhd,mhd_sts_set_source_tc_mhd,e_,1,e_,1,.false.)
       endif
-      if(phys_internal_e) then
+      if(mhd_internal_e) then
         if(has_equi_rho_and_p) then
           tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint_with_equi
         else
@@ -879,7 +879,13 @@ contains
     end if
 
     ! Initialize rotating frame module
-    if(mhd_rotating_frame) call rotating_frame_init()
+    if(mhd_rotating_frame) then
+      if(has_equi_rho_and_p) then
+        ! mod_rotating_frame does not handle splitting of density
+        call mpistop("Must have has_equi_rho_and_p=F when mhd_rotating_frame=T")
+      end if
+      call rotating_frame_init()
+    endif
 
     ! Initialize particles module
     if(mhd_particles) then
@@ -935,7 +941,15 @@ contains
     if(mhd_partial_ionization) call ionization_degree_init()
 
     ! Initialize CAK radiation force module
-    if (mhd_cak_force) call cak_init(mhd_gamma)
+    if (mhd_cak_force) then
+       if(mhd_internal_e.or.mhd_semirelativistic) then
+          call mpistop("CAK force implementation not available for internal or semirelativistic variants")
+       endif
+       if(has_equi_rho_and_p) then
+          call mpistop("CAK force implementation not available for split off pressure and density")
+       endif
+       call cak_init(mhd_gamma)
+    endif
 
   end subroutine mhd_phys_init
 
@@ -3570,11 +3584,7 @@ contains
     integer :: iw, ix^D
 
    {do ix^DB= ixOmin^DB,ixOmax^DB\}
-      if(has_equi_rho_and_p) then
-        pth(ix^D)=gamma_1*w(ix^D,e_)+block%equi_vars(ix^D,equi_pe0_,0)
-      else
-        pth(ix^D)=gamma_1*w(ix^D,e_)
-      end if
+      pth(ix^D)=gamma_1*w(ix^D,e_)
       if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
    {end do\}
 

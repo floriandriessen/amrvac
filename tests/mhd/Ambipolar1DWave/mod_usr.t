@@ -340,23 +340,24 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision, intent(inout) :: ambiCoef(ixI^S)
+    double precision :: ambiCoef_presmooth(ixI^S)
 
     integer :: ii
-
+    
     if(ambi_mask_method .eq. MASK_DISC .or. ambi_mask_method .eq. MASK_TANH) then
       if(ambi_mask_method .eq. MASK_DISC) then
         !!METHOD 1
         where(x(:,1) .ge. xLambi) 
-          ambiCoef=0.0
+          ambiCoef=0.0d0
         endwhere
       else
         !!METHOD 2
         ambiCoef(ixO^S) = ambiCoef(ixO^S) * 0.5 * (1.0 - tanh(  (x(ixO^S,1)-xLambi)/(wLambi) ))
-  
       endif
+      ambiCoef_presmooth(ixI^S)=ambiCoef(ixI^S)
       if(ambi_mask_smooth) then
         forall (ii = ixO^S)
-          ambiCoef(ii) = (ambiCoef(ii-1) + ambiCoef(ii) + ambiCoef(ii+1))/3d0  
+          ambiCoef(ii) = (ambiCoef_presmooth(ii-1) + ambiCoef_presmooth(ii) + ambiCoef_presmooth(ii+1))/3d0  
         endforall
       endif
     endif
