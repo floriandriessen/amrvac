@@ -126,8 +126,7 @@ contains
     if (cak_split) any_source_split = .true.
 
     ! Some sanity checks
-    if (slab_uniform) &
-         call mpistop('cak_init: Cartesian geometry not supported.')
+    if (slab) call mpistop('cak_init: Cartesian geometry not supported.')
 
     if ((cak_alpha <= 0.0d0) .or. (cak_alpha > 1.0d0)) then
       call mpistop('cak_init: choose alpha in [0,1[')
