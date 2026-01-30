@@ -9,6 +9,7 @@
 !>   where vc_mu is the dynamic viscosity coefficient (g cm^-1 s^-1).
 module mod_viscosity
   use mod_comm_lib, only: mpistop
+  use mod_physics, only: phys_get_rho
   implicit none
 
   !> Viscosity coefficient

@@ -120,7 +120,7 @@ module mod_mhd_phys
   !> Whether rotating frame is activated
   logical, public, protected              :: mhd_rotating_frame = .false.
   !> Whether Hall-MHD is used
-  logical, public, protected              :: mhd_Hall = .false.
+  logical, public, protected              :: mhd_hall = .false.
   !> Whether Ambipolar term is used
   logical, public, protected              :: mhd_ambipolar = .false.
   !> Whether Ambipolar term is implemented using supertimestepping
@@ -251,7 +251,7 @@ contains
 
     namelist /mhd_list/ mhd_energy, mhd_n_tracer, mhd_gamma, mhd_adiab,&
       mhd_eta, mhd_eta_hyper, mhd_etah, mhd_eta_ambi, mhd_glm_alpha, mhd_glm_extended, mhd_magnetofriction,&
-      mhd_thermal_conduction, mhd_radiative_cooling, mhd_Hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
+      mhd_thermal_conduction, mhd_radiative_cooling, mhd_hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
       mhd_rotating_frame,mhd_viscosity, mhd_4th_order, typedivbfix, source_split_divb, divbdiff,&
       typedivbdiff, type_ct, compactres, divbwave, He_abundance, &
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
@@ -913,6 +913,10 @@ contains
     ! in mhd_get_flux: assuming one additional ghost layer (two for FOURTHORDER) was
     ! added in nghostcells.
     if(mhd_hall) then
+      if(mhd_semirelativistic) then
+        ! semirelativistic does not incorporate hall terms
+        call mpistop("Must have mhd_hall=F when mhd_semirelativistic=T")
+      end if
       if(mhd_4th_order) then
         phys_wider_stencil = 2
       else
@@ -2527,7 +2531,7 @@ contains
     double precision :: rho, inv_rho, ploc, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
@@ -2547,7 +2551,7 @@ contains
         AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*(w(ix^D,mag(idim))+block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           ! take the Hall velocity into account: most simple estimate, high k limit:
           ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
           cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
@@ -2572,7 +2576,7 @@ contains
         AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           ! take the Hall velocity into account: most simple estimate, high k limit:
           ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
           cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
@@ -2596,7 +2600,7 @@ contains
     double precision :: adiabs(ixO^S), gammas(ixO^S)
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     if(associated(usr_set_adiab)) then
        call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
@@ -2619,7 +2623,7 @@ contains
        AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
        if(AvMinCs2<zero) AvMinCs2=zero
        cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-       if(MHD_Hall) then
+       if(mhd_hall) then
          ! take the Hall velocity into account: most simple estimate, high k limit:
          ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
          cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
@@ -3368,7 +3372,7 @@ contains
     double precision :: inv_rho, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     if(.not.mhd_energy) then
       if(associated(usr_set_adiab)) then
@@ -3398,7 +3402,7 @@ contains
          block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3415,7 +3419,7 @@ contains
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3434,7 +3438,7 @@ contains
     double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     ! store |B|^2 in v
     if(B0field) then
@@ -3450,7 +3454,7 @@ contains
          block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3466,7 +3470,7 @@ contains
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3905,7 +3909,7 @@ contains
         ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
      {end do\}
     end if
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         if(total_energy) then
@@ -3979,7 +3983,7 @@ contains
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
    {end do\}
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
@@ -4030,7 +4034,7 @@ contains
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
    {end do\}
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
@@ -4123,7 +4127,7 @@ contains
      {end do\}
     end if
 
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
