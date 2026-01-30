@@ -871,7 +871,13 @@ contains
     phys_te_images => mhd_te_images
 }
     ! Initialize viscosity module
-    if (mhd_viscosity) call viscosity_init(phys_wider_stencil)
+    if (mhd_viscosity) then
+      if(mhd_internal_e) then
+        ! not implemented in viscosity module
+        call mpistop("Viscosity module not compatible with mhd_internal_e=T")
+      end if
+       call viscosity_init(phys_wider_stencil)
+    end if
 
     ! Initialize gravity module
     if(mhd_gravity) then
