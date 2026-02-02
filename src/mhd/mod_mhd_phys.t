@@ -147,7 +147,6 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_hydrodynamic_e = .false.
   !> Whether divB cleaning sources are added splitting from fluid solver
   logical, public, protected              :: source_split_divb = .false.
-  !TODO this does not work with the splitting: check mhd_check_w_semirelati and mhd_handle_small_values_semirelati
   !> Whether semirelativistic MHD equations (Gombosi 2002 JCP) are solved
   logical, public, protected              :: mhd_semirelativistic = .false.
   !> Whether plasma is partially ionized
@@ -321,6 +320,7 @@ contains
         if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_internal_e=T'
       end if
     end if
+
     if(mhd_hydrodynamic_e) then
       if(mhd_internal_e) then
         mhd_internal_e=.false.
@@ -337,7 +337,18 @@ contains
     end if
 
     if(mhd_semirelativistic) then
-      if(B0field) B0fieldAllocCoarse=.true.
+      if(B0field) then
+        B0field=.false.
+        if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_semirelativistic=T'
+      endif
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_semirelativistic=T'
+      end if
+      if(mhd_hydrodynamic_e) then
+        mhd_hydrodynamic_e=.false.
+        if(mype==0) write(*,*) 'WARNING: set mhd_hydrodynamic_e=F when mhd_semirelativistic=T'
+      end if
     end if
 
     if(.not. mhd_energy) then
@@ -1734,7 +1745,7 @@ contains
         w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
                    +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
                    +(^C&w(ix^D,b^C_)**2+)&
-                   +(^C&e(ix^D,^C)**2+)*inv_squared_c)
+                   +(^C&E(ix^D,^C)**2+)*inv_squared_c)
       end if
 
       ! Convert velocity to momentum, equation (9)
@@ -1913,7 +1924,7 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: b(ixO^S,1:ndir), tmp, b2, gamma2, inv_rho
+    double precision :: b(ixO^S,1:ndir), tmp, b2c2, factor, rho
     integer :: ix^D
 
     if (fix_small_values) then
@@ -1922,22 +1933,14 @@ contains
     end if
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2=(^C&w(ix^D,b^C_)**2+)
-      if(b2>smalldouble) then
-        tmp=1.d0/sqrt(b2)
-      else
-        tmp=0.d0
-      end if
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
+      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+      rho=w(ix^D,rho_)
+      factor=1.0d0/(rho*(rho+b2c2))
 
-      inv_rho=1.d0/w(ix^D,rho_)
-      ! Va^2/c^2
-      b2=b2*inv_rho*inv_squared_c
-      ! equation (15)
-      gamma2=1.d0/(1.d0+b2)
       ! Convert momentum to velocity
-      ^C&w(ix^D,m^C_)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+      ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
 
       if(mhd_internal_e) then
         ! internal energy to pressure
@@ -1973,8 +1976,8 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: b(ixO^S,1:ndir),tmp,b2,gamma2,inv_rho
-    integer :: ix^D, idir
+    double precision :: b(ixO^S,1:ndir),tmp,b2c2,factor,rho
+    integer :: ix^D
 
     if (fix_small_values) then
       ! fix small values preventing NaN numbers in the following converting
@@ -1982,22 +1985,14 @@ contains
     end if
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2=(^C&w(ix^D,b^C_)**2+)
-      if(b2>smalldouble) then
-        tmp=1.d0/sqrt(b2)
-      else
-        tmp=0.d0
-      end if
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
+      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+      rho=w(ix^D,rho_)
+      factor=1.0d0/(rho*(rho+b2c2))
 
-      inv_rho=1.d0/w(ix^D,rho_)
-      ! Va^2/c^2
-      b2=b2*inv_rho*inv_squared_c
-      ! equation (15)
-      gamma2=1.d0/(1.d0+b2)
       ! Convert momentum to velocity
-      ^C&w(ix^D,m^C_)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+      ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
    {end do\}
 
   end subroutine mhd_to_primitive_semirelati_noe
@@ -4065,6 +4060,10 @@ contains
   end subroutine mhd_get_flux_hde
 
   !> Calculate fluxes within ixO^L with possible splitting
+  !> this covers four cases: B0field=T and mhd_internal_e=T (where has_equi_rho_and_p=F)
+  !>                         B0field=T and has_equi_rho_and_p=F for total_energy=T
+  !>                         B0field=F and has_equi_rho_and_p=T for total_energy=T
+  !>                         B0field=T and has_equi_rho_and_p=T for total_energy=T
   subroutine mhd_get_flux_split(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
@@ -4131,7 +4130,7 @@ contains
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
-        ^C&f(ix^D,b^C_)=f(ix^D,b^C_)+vHall(ix^D,idim)*w(ix^D,b^C_)-vHall(ix^D,^C)*w(ix^D,mag(idim))\
+        ^C&f(ix^D,b^C_)=f(ix^D,b^C_)+vHall(ix^D,idim)*btotal(ix^D,^C)-btotal(ix^D,idim)*vHall(ix^D,^C)\
         if(total_energy) then
           ! f_i[e]= f_i[e] + vHall_i*(b_k*b_k) - b_i*(vHall_k*b_k)
           f(ix^D,e_)=f(ix^D,e_)+vHall(ix^D,idim)*(^C&w(ix^D,b^C_)*btotal(ix^D,^C)+)&
