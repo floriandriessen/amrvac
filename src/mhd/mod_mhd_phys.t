@@ -1713,27 +1713,28 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: E(ixO^S,1:ndir), S(ixO^S,1:ndir)
+    ! electric field and poynting flux S
+    double precision :: ef(ixO^S,1:ndir), S(ixO^S,1:ndir)
     integer :: ix^D
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       {^IFTHREEC
-      E(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
-      E(ix^D,2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
-      E(ix^D,3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-      S(ix^D,1)=E(ix^D,2)*w(ix^D,b3_)-E(ix^D,3)*w(ix^D,b2_)
-      S(ix^D,2)=E(ix^D,3)*w(ix^D,b1_)-E(ix^D,1)*w(ix^D,b3_)
-      S(ix^D,3)=E(ix^D,1)*w(ix^D,b2_)-E(ix^D,2)*w(ix^D,b1_)
+      ef(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
+      ef(ix^D,2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
+      ef(ix^D,3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
+      S(ix^D,1)=ef(ix^D,2)*w(ix^D,b3_)-ef(ix^D,3)*w(ix^D,b2_)
+      S(ix^D,2)=ef(ix^D,3)*w(ix^D,b1_)-ef(ix^D,1)*w(ix^D,b3_)
+      S(ix^D,3)=ef(ix^D,1)*w(ix^D,b2_)-ef(ix^D,2)*w(ix^D,b1_)
       }
       {^IFTWOC
-      E(ix^D,1)=zero
+      ef(ix^D,1)=zero
       ! switch 3 with 2 to add 3 when ^C from 1 to 2
-      E(ix^D,2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-      S(ix^D,1)=-E(ix^D,2)*w(ix^D,b2_)
-      S(ix^D,2)=E(ix^D,2)*w(ix^D,b1_)
+      ef(ix^D,2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
+      S(ix^D,1)=-ef(ix^D,2)*w(ix^D,b2_)
+      S(ix^D,2)=ef(ix^D,2)*w(ix^D,b1_)
       }
       {^IFONEC
-      E(ix^D,1)=zero
+      ef(ix^D,1)=zero
       S(ix^D,1)=zero
       }
       if(mhd_internal_e) then
@@ -1745,7 +1746,7 @@ contains
         w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
                    +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
                    +(^C&w(ix^D,b^C_)**2+)&
-                   +(^C&E(ix^D,^C)**2+)*inv_squared_c)
+                   +(^C&ef(ix^D,^C)**2+)*inv_squared_c)
       end if
 
       ! Convert velocity to momentum, equation (9)
