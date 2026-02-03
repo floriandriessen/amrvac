@@ -1445,8 +1445,8 @@ contains
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,nw)
 
-    double precision :: tmp,b2,b(ixO^S,1:ndir)
-    double precision :: v(ixO^S,1:ndir),gamma2,inv_rho
+    double precision :: tmp,b2c2,b(ixO^S,1:ndir)
+    double precision :: v(ixO^S,1:ndir),factor,rho
     integer :: ix^D
 
     flag=.false.
@@ -1462,21 +1462,13 @@ contains
          {end do\}
         else
          {do ix^DB=ixOmin^DB,ixOmax^DB \}
-            b2=(^C&w(ix^D,b^C_)**2+)
-            if(b2>smalldouble) then
-              tmp=1.d0/sqrt(b2)
-            else 
-              tmp=0.d0
-            end if
-            ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-            tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-            inv_rho = 1d0/w(ix^D,rho_)
-            ! Va^2/c^2
-            b2=b2*inv_rho*inv_squared_c
-            ! equation (15)
-            gamma2=1.d0/(1.d0+b2)
+            b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+            ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+            tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+            rho=w(ix^D,rho_)
+            factor=1.0d0/(rho*(rho+b2c2))
             ! Convert momentum to velocity
-            ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp*inv_rho)\
+            ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
             ! E=Bxv
             {^IFTHREEC
             b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
@@ -2130,7 +2122,7 @@ contains
     character(len=*), intent(in)    :: subname
 
     double precision :: b(ixI^S,1:ndir), pressure(ixI^S), v(ixI^S,1:ndir)
-    double precision :: tmp, b2, gamma2, inv_rho
+    double precision :: tmp, b2c2, factor, rho
     integer :: ix^D
     logical :: flag(ixI^S,1:nw)
 
@@ -2142,21 +2134,13 @@ contains
         where(w(ixO^S,p_) < small_pressure) flag(ixO^S,e_) = .true.
       else
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
-          b2=(^C&w(ix^D,b^C_)**2+)
-          if(b2>smalldouble) then
-            tmp=1.d0/sqrt(b2)
-          else
-            tmp=0.d0
-          end if
-          ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-          tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-          inv_rho=1.d0/w(ix^D,rho_)
-          ! Va^2/c^2
-          b2=b2*inv_rho*inv_squared_c
-          ! equation (15)
-          gamma2=1.d0/(1.d0+b2)
+          b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+          ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+          tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+          rho=w(ix^D,rho_)
+          factor=1.0d0/(rho*(rho+b2c2))
           ! Convert momentum to velocity
-          ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+          ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
           ! E=Bxv
           {^IFTHREEC
           b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
@@ -3031,7 +3015,11 @@ contains
     ixA^L=ixO^L^LADD1;
     allocate(tmp(ixA^S))
     do id=1,ndim
-      call mhd_get_csound_prim(wprim,x,ixI^L,ixA^L,id,tmp)
+      if(has_equi_rho_and_p) then
+         call mhd_get_csound_prim_split(wprim,x,ixI^L,ixA^L,id,tmp)
+      else
+         call mhd_get_csound_prim(wprim,x,ixI^L,ixA^L,id,tmp)
+      endif
       csound(ixA^S,id)=tmp(ixA^S)
     end do
     ixCmax^D=ixOmax^D;
@@ -3423,7 +3411,8 @@ contains
 
   end subroutine mhd_get_csound_prim
 
-  !> Calculate fast magnetosonic wave speed
+  !> Calculate fast magnetosonic wave speed when rho and p are split
+  !> hence has_equi_rho_and_p=T
   subroutine mhd_get_csound_prim_split(w,x,ixI^L,ixO^L,idim,csound)
     use mod_global_parameters
 
@@ -3441,9 +3430,7 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
-        if(has_equi_rho_and_p) then
-          csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        end if
+        csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+csound(ix^D)
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*(w(ix^D,mag(idim))+&
@@ -3458,9 +3445,7 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
-        if(has_equi_rho_and_p) then
-          csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        end if
+        csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+csound(ix^D)
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*w(ix^D,mag(idim))**2*inv_rho
@@ -3669,26 +3654,17 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out):: pth(ixI^S)
 
-    double precision :: b(ixO^S,1:ndir), v(ixO^S,1:ndir), tmp, b2, gamma2, inv_rho
+    double precision :: b(ixO^S,1:ndir), v(ixO^S,1:ndir), tmp, b2c2, factor, rho
     integer :: iw, ix^D
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2=(^C&w(ix^D,b^C_)**2+)
-      if(b2>smalldouble) then
-        tmp=1.d0/sqrt(b2)
-      else
-        tmp=0.d0
-      end if
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-
-      inv_rho=1.d0/w(ix^D,rho_)
-      ! Va^2/c^2
-      b2=b2*inv_rho*inv_squared_c
-      ! equation (15)
-      gamma2=1.d0/(1.d0+b2)
+      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+      rho=w(ix^D,rho_)
+      factor=1.0d0/(rho*(rho+b2c2))
       ! Convert momentum to velocity
-      ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+      ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
 
       ! E=Bxv
       {^IFTHREEC
@@ -4289,6 +4265,7 @@ contains
       }
       {^IFONEC
       E(ix^D,1)=zero
+      e2=zero
       }
       ! Get flux of momentum
       ^C&f(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,mom(idim))*w(ix^D,m^C_)&
@@ -4983,37 +4960,6 @@ contains
 
     call cross_product(ixI^L,ixO^L,a,b,JxB)
   end subroutine get_Lorentz_force
-
-  !> Compute 1/(1+v_A^2/c^2) for semirelativistic MHD, where v_A is the Alfven
-  !> velocity
-  subroutine mhd_gamma2_alfven(ixI^L, ixO^L, w, gamma_A2)
-    use mod_global_parameters
-    integer, intent(in)           :: ixI^L, ixO^L
-    double precision, intent(in)  :: w(ixI^S, nw)
-    double precision, intent(out) :: gamma_A2(ixO^S)
-    double precision              :: rho(ixI^S)
-
-    ! mhd_get_rho cannot be used as x is not a param
-    if(has_equi_rho_and_p) then
-      rho(ixO^S) = w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i)
-    else
-      rho(ixO^S) = w(ixO^S,rho_)
-    endif
-    ! Compute the inverse of 1 + B^2/(rho * c^2)
-    gamma_A2(ixO^S) = 1.0d0/(1.0d0+mhd_mag_en_all(w, ixI^L, ixO^L)/rho(ixO^S)*inv_squared_c)
-  end subroutine mhd_gamma2_alfven
-
-  !> Compute 1/sqrt(1+v_A^2/c^2) for semirelativisitic MHD, where v_A is the
-  !> Alfven velocity
-  function mhd_gamma_alfven(w, ixI^L, ixO^L) result(gamma_A)
-    use mod_global_parameters
-    integer, intent(in)           :: ixI^L, ixO^L
-    double precision, intent(in)  :: w(ixI^S, nw)
-    double precision              :: gamma_A(ixO^S)
-
-    call mhd_gamma2_alfven(ixI^L, ixO^L, w, gamma_A)
-    gamma_A = sqrt(gamma_A)
-  end function mhd_gamma_alfven
 
   subroutine mhd_get_rho(w,x,ixI^L,ixO^L,rho)
     use mod_global_parameters
