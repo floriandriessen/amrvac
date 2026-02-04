@@ -208,7 +208,6 @@ mod_ffhd_phys.o: mod_supertimestepping.mod
 mod_ffhd_phys.o: mod_thermal_conduction.mod
 mod_ffhd_phys.o: mod_thermal_emission.mod
 mod_ffhd_phys.o: mod_usr_methods.mod
-mod_ffhd_phys.o: mod_viscosity.mod
 mod_finite_difference.o: mod_comm_lib.mod
 mod_finite_difference.o: mod_finite_volume.mod
 mod_finite_difference.o: mod_global_parameters.mod
@@ -723,5 +722,6 @@ mod_venk.o: mod_global_parameters.mod
 mod_viscosity.o: mod_comm_lib.mod
 mod_viscosity.o: mod_geometry.mod
 mod_viscosity.o: mod_global_parameters.mod
+mod_viscosity.o: mod_physics.mod
 mod_weno.o: mod_global_parameters.mod
 mod_weno.o: mod_physics.mod

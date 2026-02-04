@@ -32,9 +32,6 @@ module mod_ffhd_phys
   !> type of fluid for radiative cooling
   type(rc_fluid), public, allocatable     :: rc_fl
 
-  !> Whether viscosity is added
-  logical, public, protected              :: ffhd_viscosity = .false.
-
   !> Whether gravity is added
   logical, public, protected              :: ffhd_gravity = .false.
 
@@ -153,7 +150,7 @@ contains
 
     namelist /ffhd_list/ ffhd_energy, ffhd_gamma, ffhd_adiab, &
       ffhd_thermal_conduction, ffhd_hyperbolic_thermal_conduction, ffhd_htc_sat, ffhd_radiative_cooling, ffhd_gravity,&
-      ffhd_viscosity, He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit,&
+      He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit,&
       B0field, Busr, ffhd_partial_ionization, ffhd_trac, ffhd_trac_type, ffhd_trac_mask, ffhd_trac_finegrid
 
     do n = 1, size(files)
@@ -185,7 +182,6 @@ contains
     use mod_global_parameters
     use mod_thermal_conduction
     use mod_radiative_cooling
-    use mod_viscosity, only: viscosity_init
     use mod_gravity, only: gravity_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
@@ -410,8 +406,6 @@ contains
 {^IFTHREED
     phys_te_images => ffhd_te_images
 }
-    ! Initialize viscosity module
-    if(ffhd_viscosity) call viscosity_init(phys_wider_stencil)
 
     ! Initialize gravity module
     if(ffhd_gravity) then
@@ -1217,7 +1211,6 @@ contains
   subroutine ffhd_add_source(qdt,dtfactor,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     use mod_global_parameters
     use mod_radiative_cooling, only: radiative_cooling_add_source
-    use mod_viscosity, only: viscosity_add_source
     use mod_gravity, only: gravity_add_source
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt,dtfactor
@@ -1237,11 +1230,6 @@ contains
     if(ffhd_radiative_cooling) then
       call radiative_cooling_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
            w,x,qsourcesplit,active, rc_fl)
-    end if
-
-    if(ffhd_viscosity) then
-      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
-           w,x,ffhd_energy,qsourcesplit,active)
     end if
 
     if(ffhd_gravity) then
@@ -1338,7 +1326,6 @@ contains
     use mod_global_parameters
     use mod_usr_methods
     use mod_radiative_cooling, only: cooling_get_dt
-    use mod_viscosity, only: viscosity_get_dt
     use mod_gravity, only: gravity_get_dt
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
@@ -1350,10 +1337,6 @@ contains
 
     if(ffhd_radiative_cooling) then
       call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl)
-    end if
-
-    if(ffhd_viscosity) then
-      call viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
 
     if(ffhd_gravity) then

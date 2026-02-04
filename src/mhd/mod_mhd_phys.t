@@ -120,7 +120,7 @@ module mod_mhd_phys
   !> Whether rotating frame is activated
   logical, public, protected              :: mhd_rotating_frame = .false.
   !> Whether Hall-MHD is used
-  logical, public, protected              :: mhd_Hall = .false.
+  logical, public, protected              :: mhd_hall = .false.
   !> Whether Ambipolar term is used
   logical, public, protected              :: mhd_ambipolar = .false.
   !> Whether Ambipolar term is implemented using supertimestepping
@@ -143,12 +143,10 @@ module mod_mhd_phys
   integer, public, protected              :: mhd_trac_finegrid=4
   !> Whether internal energy is solved instead of total energy
   logical, public, protected              :: mhd_internal_e = .false.
-  !TODO this does not work with the splitting: check mhd_check_w_hde and mhd_handle_small_values_hde
   !> Whether hydrodynamic energy is solved instead of total energy
   logical, public, protected              :: mhd_hydrodynamic_e = .false.
   !> Whether divB cleaning sources are added splitting from fluid solver
   logical, public, protected              :: source_split_divb = .false.
-  !TODO this does not work with the splitting: check mhd_check_w_semirelati and mhd_handle_small_values_semirelati
   !> Whether semirelativistic MHD equations (Gombosi 2002 JCP) are solved
   logical, public, protected              :: mhd_semirelativistic = .false.
   !> Whether plasma is partially ionized
@@ -157,10 +155,8 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_cak_force = .false.
   !> MHD fourth order
   logical, public, protected              :: mhd_4th_order = .false.
-  !> whether split off equilibrium density
-  logical, public :: has_equi_rho0 = .false.
-  !> whether split off equilibrium thermal pressure
-  logical, public :: has_equi_pe0 = .false.
+  !> whether split off equilibrium density and pressure
+  logical, public :: has_equi_rho_and_p = .false.
   logical, public :: mhd_equi_thermal = .false.
   !> whether dump full variables (when splitting is used) in a separate dat file
   logical, public, protected              :: mhd_dump_full_vars = .false.
@@ -254,12 +250,12 @@ contains
 
     namelist /mhd_list/ mhd_energy, mhd_n_tracer, mhd_gamma, mhd_adiab,&
       mhd_eta, mhd_eta_hyper, mhd_etah, mhd_eta_ambi, mhd_glm_alpha, mhd_glm_extended, mhd_magnetofriction,&
-      mhd_thermal_conduction, mhd_radiative_cooling, mhd_Hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
+      mhd_thermal_conduction, mhd_radiative_cooling, mhd_hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
       mhd_rotating_frame,mhd_viscosity, mhd_4th_order, typedivbfix, source_split_divb, divbdiff,&
       typedivbdiff, type_ct, compactres, divbwave, He_abundance, &
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
-      particles_eta, particles_etah,has_equi_rho0, has_equi_pe0,mhd_equi_thermal,&
+      particles_eta, particles_etah,has_equi_rho_and_p,mhd_equi_thermal,&
       boundary_divbfix, boundary_divbfix_skip, mhd_divb_nth, mhd_semirelativistic,&
       mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
       mhd_hydrodynamic_e, mhd_trac, mhd_trac_type, mhd_trac_mask, mhd_trac_finegrid, mhd_cak_force, &
@@ -319,10 +315,40 @@ contains
         mhd_hydrodynamic_e=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_hydrodynamic_e=F when mhd_internal_e=T'
       end if
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_internal_e=T'
+      end if
+    end if
+
+    if(mhd_hydrodynamic_e) then
+      if(mhd_internal_e) then
+        mhd_internal_e=.false.
+        if(mype==0) write(*,*) 'WARNING: set mhd_internal_e=F when mhd_hydrodynamic_e=T'
+      end if
+      if(B0field) then
+        B0field=.false.
+        if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_hydrodynamic_e=T'
+      end if
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_hydrodynamic_e=T'
+      end if
     end if
 
     if(mhd_semirelativistic) then
-      if(B0field) B0fieldAllocCoarse=.true.
+      if(B0field) then
+        B0field=.false.
+        if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_semirelativistic=T'
+      endif
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_semirelativistic=T'
+      end if
+      if(mhd_hydrodynamic_e) then
+        mhd_hydrodynamic_e=.false.
+        if(mype==0) write(*,*) 'WARNING: set mhd_hydrodynamic_e=F when mhd_semirelativistic=T'
+      end if
     end if
 
     if(.not. mhd_energy) then
@@ -338,9 +364,9 @@ contains
         mhd_thermal_conduction=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_thermal_conduction=F when mhd_energy=F'
       end if
-      if(mhd_thermal_conduction) then
+      if(mhd_hyperbolic_thermal_conduction) then
         mhd_hyperbolic_thermal_conduction=.false.
-        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_thermal_conduction=F'
+        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_thermal_conduction=F when mhd_energy=F'
       end if
       if(mhd_radiative_cooling) then
         mhd_radiative_cooling=.false.
@@ -358,13 +384,9 @@ contains
         B0field=.false.
         if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_energy=F'
       end if
-      if(has_equi_rho0) then
-        has_equi_rho0=.false.
-        if(mype==0) write(*,*) 'WARNING: set has_equi_rho0=F when mhd_energy=F'
-      end if
-      if(has_equi_pe0) then
-        has_equi_pe0=.false.
-        if(mype==0) write(*,*) 'WARNING: set has_equi_pe0=F when mhd_energy=F'
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_energy=F'
       end if
     end if
     if(.not.eq_state_units) then
@@ -377,6 +399,10 @@ contains
     if(mhd_hyperbolic_thermal_conduction) then
       mhd_thermal_conduction=.false.
       if(mype==0) write(*,*) 'WARNING: turn off parabolic TC when using hyperbolic TC'
+    end if
+    if(mhd_thermal_conduction) then
+      mhd_hyperbolic_thermal_conduction=.false.
+      if(mype==0) write(*,*) 'WARNING: turn off hyperbolic TC when using parabolic TC'
     end if
 
 
@@ -423,7 +449,6 @@ contains
     end if
     phys_trac_mask=mhd_trac_mask
 
-    ! set default gamma for polytropic/isothermal process
     use_particles=mhd_particles
     if(ndim==1) typedivbfix='none'
     select case (typedivbfix)
@@ -535,12 +560,10 @@ contains
 
     ! set indices of equi vars and update number_equi_vars
     number_equi_vars = 0
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       number_equi_vars = number_equi_vars + 1
       equi_rho0_ = number_equi_vars
       iw_equi_rho = equi_rho0_
-    endif
-    if(has_equi_pe0) then
       number_equi_vars = number_equi_vars + 1
       equi_pe0_ = number_equi_vars
       iw_equi_p = equi_pe0_
@@ -551,8 +574,8 @@ contains
 
     nvector      = 2 ! No. vector vars
     allocate(iw_vector(nvector))
-    iw_vector(1) = mom(1) - 1   ! TODO: why like this?
-    iw_vector(2) = mag(1) - 1   ! TODO: why like this?
+    iw_vector(1) = mom(1) - 1
+    iw_vector(2) = mag(1) - 1
 
     ! Check whether custom flux types have been defined
     if (.not. allocated(flux_type)) then
@@ -598,7 +621,7 @@ contains
     phys_get_a2max           => mhd_get_a2max
     phys_get_tcutoff         => mhd_get_tcutoff
     phys_get_H_speed         => mhd_get_H_speed
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       phys_get_cbounds         => mhd_get_cbounds_split_rho
     else if(mhd_semirelativistic) then
       phys_get_cbounds         => mhd_get_cbounds_semirelati
@@ -623,7 +646,7 @@ contains
         mhd_to_conserved         => mhd_to_conserved_semirelati_noe
       end if
     else
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         phys_to_primitive        => mhd_to_primitive_split_rho
         mhd_to_primitive         => mhd_to_primitive_split_rho
         phys_to_conserved        => mhd_to_conserved_split_rho
@@ -654,7 +677,7 @@ contains
         phys_get_flux            => mhd_get_flux_semirelati_noe
       end if
     else
-      if(B0field.or.has_equi_rho0.or.has_equi_pe0) then
+      if(B0field.or.has_equi_rho_and_p) then
         phys_get_flux            => mhd_get_flux_split
       else if(mhd_energy) then
         phys_get_flux            => mhd_get_flux
@@ -665,7 +688,7 @@ contains
     phys_get_v                 => mhd_get_v
     if(mhd_semirelativistic) then
       phys_add_source_geom     => mhd_add_source_geom_semirelati
-    else if(B0field.or.has_equi_rho0) then
+    else if(B0field.or.has_equi_rho_and_p) then
       phys_add_source_geom     => mhd_add_source_geom_split
     else
       phys_add_source_geom     => mhd_add_source_geom
@@ -686,7 +709,7 @@ contains
       phys_handle_small_values => mhd_handle_small_values_semirelati
       mhd_handle_small_values  => mhd_handle_small_values_semirelati
       phys_check_w             => mhd_check_w_semirelati
-    else if(has_equi_rho0) then
+    else if(has_equi_rho_and_p) then
       phys_handle_small_values => mhd_handle_small_values_split
       mhd_handle_small_values  => mhd_handle_small_values_split
       phys_check_w             => mhd_check_w_split
@@ -739,7 +762,7 @@ contains
       mhd_get_temperature => mhd_get_temperature_from_Te
     else
       if(mhd_internal_e) then
-        if(has_equi_pe0 .and. has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           mhd_get_temperature => mhd_get_temperature_from_eint_with_equi
         else
           mhd_get_temperature => mhd_get_temperature_from_eint
@@ -784,15 +807,6 @@ contains
     if(mhd_hyperbolic_thermal_conduction) then
       hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
     end if
-    if(.not. mhd_energy .and. mhd_thermal_conduction) then
-      call mpistop("thermal conduction needs mhd_energy=T")
-    end if
-    if(.not. mhd_energy .and. mhd_hyperbolic_thermal_conduction) then
-      call mpistop("hyperbolic thermal conduction needs mhd_energy=T")
-    end if
-    if(.not. mhd_energy .and. mhd_radiative_cooling) then
-      call mpistop("radiative cooling needs mhd_energy=T")
-    end if
 
     ! initialize thermal conduction module
     if (mhd_thermal_conduction) then
@@ -806,8 +820,8 @@ contains
       else
         call add_sts_method(mhd_get_tc_dt_mhd,mhd_sts_set_source_tc_mhd,e_,1,e_,1,.false.)
       endif
-      if(phys_internal_e) then
-        if(has_equi_pe0 .and. has_equi_rho0) then
+      if(mhd_internal_e) then
+        if(has_equi_rho_and_p) then
           tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint_with_equi
         else
           tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint
@@ -815,7 +829,7 @@ contains
       else
         tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_etot
       end if
-      if(has_equi_pe0 .and. has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         tc_fl%get_temperature_from_eint => mhd_get_temperature_from_eint_with_equi
         if(mhd_equi_thermal) then
           tc_fl%has_equi = .true.
@@ -852,7 +866,7 @@ contains
       rc_fl%get_var_Rfactor => mhd_get_Rfactor
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
-      if(has_equi_pe0 .and. has_equi_rho0 .and. mhd_equi_thermal) then
+      if(has_equi_rho_and_p .and. mhd_equi_thermal) then
         rc_fl%has_equi = .true.
         rc_fl%get_rho_equi => mhd_get_rho_equi
         rc_fl%get_pthermal_equi => mhd_get_pe_equi
@@ -868,7 +882,13 @@ contains
     phys_te_images => mhd_te_images
 }
     ! Initialize viscosity module
-    if (mhd_viscosity) call viscosity_init(phys_wider_stencil)
+    if (mhd_viscosity) then
+      if(mhd_internal_e) then
+        ! not implemented in viscosity module
+        call mpistop("Viscosity module not compatible with mhd_internal_e=T")
+      end if
+       call viscosity_init(phys_wider_stencil)
+    end if
 
     ! Initialize gravity module
     if(mhd_gravity) then
@@ -876,7 +896,13 @@ contains
     end if
 
     ! Initialize rotating frame module
-    if(mhd_rotating_frame) call rotating_frame_init()
+    if(mhd_rotating_frame) then
+      if(has_equi_rho_and_p) then
+        ! mod_rotating_frame does not handle splitting of density
+        call mpistop("Must have has_equi_rho_and_p=F when mhd_rotating_frame=T")
+      end if
+      call rotating_frame_init()
+    endif
 
     ! Initialize particles module
     if(mhd_particles) then
@@ -898,6 +924,10 @@ contains
     ! in mhd_get_flux: assuming one additional ghost layer (two for FOURTHORDER) was
     ! added in nghostcells.
     if(mhd_hall) then
+      if(mhd_semirelativistic) then
+        ! semirelativistic does not incorporate hall terms
+        call mpistop("Must have mhd_hall=F when mhd_semirelativistic=T")
+      end if
       if(mhd_4th_order) then
         phys_wider_stencil = 2
       else
@@ -932,7 +962,15 @@ contains
     if(mhd_partial_ionization) call ionization_degree_init()
 
     ! Initialize CAK radiation force module
-    if (mhd_cak_force) call cak_init(mhd_gamma)
+    if (mhd_cak_force) then
+       if(mhd_internal_e.or.mhd_semirelativistic) then
+          call mpistop("CAK implementation not available in internal or semirelativistic variants")
+       endif
+       if(has_equi_rho_and_p) then
+          call mpistop("CAK force implementation not available for split off pressure and density")
+       endif
+       call cak_init(mhd_gamma)
+    endif
 
   end subroutine mhd_phys_init
 
@@ -1055,7 +1093,7 @@ contains
      case ('no','none')
        fl%tc_slope_limiter = 0
      case ('MC')
-       ! montonized central limiter Woodward and Collela limiter (eq.3.51h), a factor of 2 is pulled out
+       ! monotonized central limiter Woodward and Collela limiter (eq.3.51h)
        fl%tc_slope_limiter = 1
      case('minmod')
        ! minmod limiter
@@ -1067,7 +1105,7 @@ contains
        ! Barry Koren Right variant
        fl%tc_slope_limiter = 4
      case default
-       call mpistop("Unknown tc_slope_limiter, choose MC, minmod")
+       call mpistop("Unknown tc_slope_limiter, choose MC, minmod, superbee, koren")
     end select
   end subroutine tc_params_read_mhd
 !!end th cond
@@ -1184,7 +1222,7 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision   :: wnew(ixO^S, 1:nwc)
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       wnew(ixO^S,rho_)=w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,0)
     else
       wnew(ixO^S,rho_)=w(ixO^S,rho_)
@@ -1200,7 +1238,7 @@ contains
 
     if(mhd_energy) then
       wnew(ixO^S,e_)=w(ixO^S,e_)
-      if(has_equi_pe0) then
+      if(has_equi_rho_and_p) then
         wnew(ixO^S,e_)=wnew(ixO^S,e_)+block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1
       end if
       if(B0field .and. total_energy) then
@@ -1407,8 +1445,8 @@ contains
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,nw)
 
-    double precision :: tmp,b2,b(ixO^S,1:ndir)
-    double precision :: v(ixO^S,1:ndir),gamma2,inv_rho
+    double precision :: tmp,b2c2,b(ixO^S,1:ndir)
+    double precision :: v(ixO^S,1:ndir),factor,rho
     integer :: ix^D
 
     flag=.false.
@@ -1424,21 +1462,13 @@ contains
          {end do\}
         else
          {do ix^DB=ixOmin^DB,ixOmax^DB \}
-            b2=(^C&w(ix^D,b^C_)**2+)
-            if(b2>smalldouble) then
-              tmp=1.d0/sqrt(b2)
-            else 
-              tmp=0.d0
-            end if
-            ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-            tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-            inv_rho = 1d0/w(ix^D,rho_)
-            ! Va^2/c^2
-            b2=b2*inv_rho*inv_squared_c
-            ! equation (15)
-            gamma2=1.d0/(1.d0+b2)
+            b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+            ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+            tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+            rho=w(ix^D,rho_)
+            factor=1.0d0/(rho*(rho+b2c2))
             ! Convert momentum to velocity
-            ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp*inv_rho)\
+            ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
             ! E=Bxv
             {^IFTHREEC
             b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
@@ -1675,27 +1705,28 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: E(ixO^S,1:ndir), S(ixO^S,1:ndir)
+    ! electric field and poynting flux S
+    double precision :: ef(ixO^S,1:ndir), S(ixO^S,1:ndir)
     integer :: ix^D
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       {^IFTHREEC
-      E(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
-      E(ix^D,2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
-      E(ix^D,3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-      S(ix^D,1)=E(ix^D,2)*w(ix^D,b3_)-E(ix^D,3)*w(ix^D,b2_)
-      S(ix^D,2)=E(ix^D,3)*w(ix^D,b1_)-E(ix^D,1)*w(ix^D,b3_)
-      S(ix^D,3)=E(ix^D,1)*w(ix^D,b2_)-E(ix^D,2)*w(ix^D,b1_)
+      ef(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
+      ef(ix^D,2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
+      ef(ix^D,3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
+      S(ix^D,1)=ef(ix^D,2)*w(ix^D,b3_)-ef(ix^D,3)*w(ix^D,b2_)
+      S(ix^D,2)=ef(ix^D,3)*w(ix^D,b1_)-ef(ix^D,1)*w(ix^D,b3_)
+      S(ix^D,3)=ef(ix^D,1)*w(ix^D,b2_)-ef(ix^D,2)*w(ix^D,b1_)
       }
       {^IFTWOC
-      E(ix^D,1)=zero
+      ef(ix^D,1)=zero
       ! switch 3 with 2 to add 3 when ^C from 1 to 2
-      E(ix^D,2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-      S(ix^D,1)=-E(ix^D,2)*w(ix^D,b2_)
-      S(ix^D,2)=E(ix^D,2)*w(ix^D,b1_)
+      ef(ix^D,2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
+      S(ix^D,1)=-ef(ix^D,2)*w(ix^D,b2_)
+      S(ix^D,2)=ef(ix^D,2)*w(ix^D,b1_)
       }
       {^IFONEC
-      E(ix^D,1)=zero
+      ef(ix^D,1)=zero
       S(ix^D,1)=zero
       }
       if(mhd_internal_e) then
@@ -1707,7 +1738,7 @@ contains
         w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
                    +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
                    +(^C&w(ix^D,b^C_)**2+)&
-                   +(^C&e(ix^D,^C)**2+)*inv_squared_c)
+                   +(^C&ef(ix^D,^C)**2+)*inv_squared_c)
       end if
 
       ! Convert velocity to momentum, equation (9)
@@ -1886,7 +1917,7 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: b(ixO^S,1:ndir), tmp, b2, gamma2, inv_rho
+    double precision :: b(ixO^S,1:ndir), tmp, b2c2, factor, rho
     integer :: ix^D
 
     if (fix_small_values) then
@@ -1895,22 +1926,14 @@ contains
     end if
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2=(^C&w(ix^D,b^C_)**2+)
-      if(b2>smalldouble) then
-        tmp=1.d0/sqrt(b2)
-      else
-        tmp=0.d0
-      end if
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
+      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+      rho=w(ix^D,rho_)
+      factor=1.0d0/(rho*(rho+b2c2))
 
-      inv_rho=1.d0/w(ix^D,rho_)
-      ! Va^2/c^2
-      b2=b2*inv_rho*inv_squared_c
-      ! equation (15)
-      gamma2=1.d0/(1.d0+b2)
       ! Convert momentum to velocity
-      ^C&w(ix^D,m^C_)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+      ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
 
       if(mhd_internal_e) then
         ! internal energy to pressure
@@ -1946,8 +1969,8 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: b(ixO^S,1:ndir),tmp,b2,gamma2,inv_rho
-    integer :: ix^D, idir
+    double precision :: b(ixO^S,1:ndir),tmp,b2c2,factor,rho
+    integer :: ix^D
 
     if (fix_small_values) then
       ! fix small values preventing NaN numbers in the following converting
@@ -1955,22 +1978,14 @@ contains
     end if
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2=(^C&w(ix^D,b^C_)**2+)
-      if(b2>smalldouble) then
-        tmp=1.d0/sqrt(b2)
-      else
-        tmp=0.d0
-      end if
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
+      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+      rho=w(ix^D,rho_)
+      factor=1.0d0/(rho*(rho+b2c2))
 
-      inv_rho=1.d0/w(ix^D,rho_)
-      ! Va^2/c^2
-      b2=b2*inv_rho*inv_squared_c
-      ! equation (15)
-      gamma2=1.d0/(1.d0+b2)
       ! Convert momentum to velocity
-      ^C&w(ix^D,m^C_)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+      ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
    {end do\}
 
   end subroutine mhd_to_primitive_semirelati_noe
@@ -1984,7 +1999,7 @@ contains
 
     integer :: ix^D
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! Calculate e = ei + ek + eb
         w(ix^D,e_)=w(ix^D,e_)&
@@ -2041,7 +2056,7 @@ contains
 
     integer :: ix^D
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! Calculate ei = e - ek - eb
         w(ix^D,e_)=w(ix^D,e_)&
@@ -2107,7 +2122,7 @@ contains
     character(len=*), intent(in)    :: subname
 
     double precision :: b(ixI^S,1:ndir), pressure(ixI^S), v(ixI^S,1:ndir)
-    double precision :: tmp, b2, gamma2, inv_rho
+    double precision :: tmp, b2c2, factor, rho
     integer :: ix^D
     logical :: flag(ixI^S,1:nw)
 
@@ -2119,21 +2134,13 @@ contains
         where(w(ixO^S,p_) < small_pressure) flag(ixO^S,e_) = .true.
       else
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
-          b2=(^C&w(ix^D,b^C_)**2+)
-          if(b2>smalldouble) then
-            tmp=1.d0/sqrt(b2)
-          else
-            tmp=0.d0
-          end if
-          ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-          tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-          inv_rho=1.d0/w(ix^D,rho_)
-          ! Va^2/c^2
-          b2=b2*inv_rho*inv_squared_c
-          ! equation (15)
-          gamma2=1.d0/(1.d0+b2)
+          b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+          ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+          tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+          rho=w(ix^D,rho_)
+          factor=1.0d0/(rho*(rho+b2c2))
           ! Convert momentum to velocity
-          ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+          ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
           ! E=Bxv
           {^IFTHREEC
           b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
@@ -2501,32 +2508,30 @@ contains
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: cmax(ixI^S)
 
-    double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
+    double precision :: rho, inv_rho, ploc, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
+          ploc=(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))
         else
           rho=w(ix^D,rho_)
+          ploc=w(ix^D,p_)
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        if(has_equi_pe0) then
-           cmax(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        else
-           cmax(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
-        endif
-        ! store |B|^2 in v
+        cmax(ix^D)=mhd_gamma*ploc*inv_rho
+        ! store |B|^2 
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
         AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*(w(ix^D,mag(idim))+block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           ! take the Hall velocity into account: most simple estimate, high k limit:
           ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
           cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
@@ -2535,25 +2540,23 @@ contains
      {end do\}
     else
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
+          ploc=(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))
         else
           rho=w(ix^D,rho_)
+          ploc=w(ix^D,p_)
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        if(has_equi_pe0) then
-           cmax(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        else
-           cmax(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
-        endif
-        ! store |B|^2 in v
+        cmax(ix^D)=mhd_gamma*ploc*inv_rho
+        ! store |B|^2 
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
         AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           ! take the Hall velocity into account: most simple estimate, high k limit:
           ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
           cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
@@ -2577,7 +2580,7 @@ contains
     double precision :: adiabs(ixO^S), gammas(ixO^S)
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     if(associated(usr_set_adiab)) then
        call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
@@ -2589,53 +2592,24 @@ contains
     else
        gammas=mhd_gamma
     end if
-    if(B0field) then
-     {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
-          rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
-        else
-          rho=w(ix^D,rho_)
-        end if
-        inv_rho=1.d0/rho
-        ! sound speed**2 
-        cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
-        ! store |B|^2 in v
-        b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
-        cfast2=b2*inv_rho+cmax(ix^D)
-        AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*(w(ix^D,mag(idim))+block%B0(ix^D,idim,b0i))**2*inv_rho
-        if(AvMinCs2<zero) AvMinCs2=zero
-        cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
-          ! take the Hall velocity into account: most simple estimate, high k limit:
-          ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
-          cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
-        end if
-        cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
-     {end do\}
-    else
-     {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
-          rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
-        else
-          rho=w(ix^D,rho_)
-        end if
-        inv_rho=1.d0/rho
-        ! sound speed**2 
-        cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
-        ! store |B|^2 in v
-        b2=(^C&w(ix^D,b^C_)**2+)
-        cfast2=b2*inv_rho+cmax(ix^D)
-        AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
-        if(AvMinCs2<zero) AvMinCs2=zero
-        cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
-          ! take the Hall velocity into account: most simple estimate, high k limit:
-          ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
-          cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
-        end if
-        cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
-     {end do\}
-    end if
+   {do ix^DB=ixOmin^DB,ixOmax^DB \}
+       rho=w(ix^D,rho_)
+       inv_rho=1.d0/rho
+       ! sound speed**2 
+       cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
+       ! store |B|^2 in v
+       b2=(^C&w(ix^D,b^C_)**2+)
+       cfast2=b2*inv_rho+cmax(ix^D)
+       AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
+       if(AvMinCs2<zero) AvMinCs2=zero
+       cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
+       if(mhd_hall) then
+         ! take the Hall velocity into account: most simple estimate, high k limit:
+         ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
+         cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
+       end if
+       cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
+   {end do\}
 
   end subroutine mhd_get_cmax_origin_noe
 
@@ -3041,7 +3015,11 @@ contains
     ixA^L=ixO^L^LADD1;
     allocate(tmp(ixA^S))
     do id=1,ndim
-      call mhd_get_csound_prim(wprim,x,ixI^L,ixA^L,id,tmp)
+      if(has_equi_rho_and_p) then
+         call mhd_get_csound_prim_split(wprim,x,ixI^L,ixA^L,id,tmp)
+      else
+         call mhd_get_csound_prim(wprim,x,ixI^L,ixA^L,id,tmp)
+      endif
       csound(ixA^S,id)=tmp(ixA^S)
     end do
     ixCmax^D=ixOmax^D;
@@ -3378,7 +3356,7 @@ contains
     double precision :: inv_rho, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     if(.not.mhd_energy) then
       if(associated(usr_set_adiab)) then
@@ -3408,7 +3386,7 @@ contains
          block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3425,7 +3403,7 @@ contains
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3433,7 +3411,8 @@ contains
 
   end subroutine mhd_get_csound_prim
 
-  !> Calculate fast magnetosonic wave speed
+  !> Calculate fast magnetosonic wave speed when rho and p are split
+  !> hence has_equi_rho_and_p=T
   subroutine mhd_get_csound_prim_split(w,x,ixI^L,ixO^L,idim,csound)
     use mod_global_parameters
 
@@ -3444,23 +3423,21 @@ contains
     double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     ! store |B|^2 in v
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
-        if(has_equi_pe0) then
-          csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        end if
+        csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+csound(ix^D)
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*(w(ix^D,mag(idim))+&
          block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3468,15 +3445,13 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
-        if(has_equi_pe0) then
-          csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        end if
+        csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+csound(ix^D)
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3558,7 +3533,7 @@ contains
 
   end subroutine mhd_get_csound_semirelati_noe
 
-  !> Calculate isothermal thermal pressure
+  !> Calculate thermal pressure from polytropic closure
   subroutine mhd_get_pthermal_noe(w,x,ixI^L,ixO^L,pth)
     use mod_global_parameters
     use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
@@ -3582,11 +3557,7 @@ contains
        gammas=mhd_gamma
     end if
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      if(has_equi_rho0) then
-        pth(ix^D)=adiabs(ix^D)*(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))**gammas(ix^D)
-      else 
-        pth(ix^D)=adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)
-      end if
+      pth(ix^D)=adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)
    {end do\}
 
   end subroutine mhd_get_pthermal_noe
@@ -3604,11 +3575,7 @@ contains
     integer :: iw, ix^D
 
    {do ix^DB= ixOmin^DB,ixOmax^DB\}
-      if(has_equi_pe0) then
-        pth(ix^D)=gamma_1*w(ix^D,e_)+block%equi_vars(ix^D,equi_pe0_,0)
-      else
-        pth(ix^D)=gamma_1*w(ix^D,e_)
-      end if
+      pth(ix^D)=gamma_1*w(ix^D,e_)
       if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
    {end do\}
 
@@ -3646,15 +3613,12 @@ contains
     integer :: iw, ix^D
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))&
-             +(^C&w(ix^D,b^C_)**2+)))
+             +(^C&w(ix^D,b^C_)**2+))) +block%equi_vars(ix^D,equi_pe0_,0)
       else
         pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
              +(^C&w(ix^D,b^C_)**2+)))
-      end if
-      if(has_equi_pe0) then
-        pth(ix^D)=pth(ix^D)+block%equi_vars(ix^D,equi_pe0_,0)
       end if
       if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
    {end do\}
@@ -3690,26 +3654,17 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out):: pth(ixI^S)
 
-    double precision :: b(ixO^S,1:ndir), v(ixO^S,1:ndir), tmp, b2, gamma2, inv_rho
+    double precision :: b(ixO^S,1:ndir), v(ixO^S,1:ndir), tmp, b2c2, factor, rho
     integer :: iw, ix^D
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2=(^C&w(ix^D,b^C_)**2+)
-      if(b2>smalldouble) then
-        tmp=1.d0/sqrt(b2)
-      else
-        tmp=0.d0
-      end if
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-
-      inv_rho=1.d0/w(ix^D,rho_)
-      ! Va^2/c^2
-      b2=b2*inv_rho*inv_squared_c
-      ! equation (15)
-      gamma2=1.d0/(1.d0+b2)
+      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
+      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
+      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
+      rho=w(ix^D,rho_)
+      factor=1.0d0/(rho*(rho+b2c2))
       ! Convert momentum to velocity
-      ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+      ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
 
       ! E=Bxv
       {^IFTHREEC
@@ -3926,7 +3881,7 @@ contains
         ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
      {end do\}
     end if
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         if(total_energy) then
@@ -3961,7 +3916,8 @@ contains
 
   end subroutine mhd_get_flux
 
-  !> Calculate fluxes within ixO^L without any splitting
+  !> Calculate fluxes within ixO^L for case without energy equation, hence without splitting
+  !> and assuming polytropic closure
   subroutine mhd_get_flux_noe(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
@@ -3999,7 +3955,7 @@ contains
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
    {end do\}
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
@@ -4050,7 +4006,7 @@ contains
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
    {end do\}
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
@@ -4081,6 +4037,10 @@ contains
   end subroutine mhd_get_flux_hde
 
   !> Calculate fluxes within ixO^L with possible splitting
+  !> this covers four cases: B0field=T and mhd_internal_e=T (where has_equi_rho_and_p=F)
+  !>                         B0field=T and has_equi_rho_and_p=F for total_energy=T
+  !>                         B0field=F and has_equi_rho_and_p=T for total_energy=T
+  !>                         B0field=T and has_equi_rho_and_p=T for total_energy=T
   subroutine mhd_get_flux_split(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
@@ -4099,7 +4059,7 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         f(ix^D,rho_)=w(ix^D,mom(idim))*(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
       else
         f(ix^D,rho_)=w(ix^D,mom(idim))*w(ix^D,rho_)
@@ -4143,11 +4103,11 @@ contains
      {end do\}
     end if
 
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
-        ^C&f(ix^D,b^C_)=f(ix^D,b^C_)+vHall(ix^D,idim)*w(ix^D,b^C_)-vHall(ix^D,^C)*w(ix^D,mag(idim))\
+        ^C&f(ix^D,b^C_)=f(ix^D,b^C_)+vHall(ix^D,idim)*btotal(ix^D,^C)-btotal(ix^D,idim)*vHall(ix^D,^C)\
         if(total_energy) then
           ! f_i[e]= f_i[e] + vHall_i*(b_k*b_k) - b_i*(vHall_k*b_k)
           f(ix^D,e_)=f(ix^D,e_)+vHall(ix^D,idim)*(^C&w(ix^D,b^C_)*btotal(ix^D,^C)+)&
@@ -4305,6 +4265,7 @@ contains
       }
       {^IFONEC
       E(ix^D,1)=zero
+      e2=zero
       }
       ! Get flux of momentum
       ^C&f(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,mom(idim))*w(ix^D,m^C_)&
@@ -4639,23 +4600,23 @@ contains
   !> multiply res by the ambipolar coefficient
   !> The ambipolar coefficient is calculated as -mhd_eta_ambi/rho^2
   !> The user may mask its value in the user file
-  !> by implemneting usr_mask_ambipolar subroutine
+  !> by implementing usr_mask_ambipolar subroutine
   subroutine multiplyAmbiCoef(ixI^L,ixO^L,res,w,x)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: res(ixI^S)
-    double precision :: tmp(ixI^S)
+    double precision :: tmp1(ixI^S)
     double precision :: rho(ixI^S)
 
     call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    tmp=0.d0
-    tmp(ixO^S)=-mhd_eta_ambi/rho(ixO^S)**2
+    tmp1(ixI^S)=0.d0
+    tmp1(ixO^S)=-mhd_eta_ambi/rho(ixO^S)**2
     if (associated(usr_mask_ambipolar)) then
-      call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp)
+      call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp1)
     end if
 
-    res(ixO^S) = tmp(ixO^S) * res(ixO^S)
+    res(ixO^S) = tmp1(ixO^S) * res(ixO^S)
   end subroutine multiplyAmbiCoef
 
   !> w[iws]=w[iws]+qdt*S[iws,wCT] where S is the source based on wCT within ixO
@@ -4684,7 +4645,7 @@ contains
         active = .true.
         call add_source_internal_e(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       else
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           active = .true.
           call add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCTprim,w,x)
         end if
@@ -4832,14 +4793,11 @@ contains
 
     call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
     {do ix^DB=ixImin^DB,ixImax^DB\}
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         rho_loc(ix^D)=wCTprim(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0)
-      else
-        rho_loc(ix^D)=wCTprim(ix^D,rho_)
-      end if
-      if(has_equi_pe0) then
         pth_loc(ix^D)=wCTprim(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,0)
       else
+        rho_loc(ix^D)=wCTprim(ix^D,rho_)
         pth_loc(ix^D)=wCTprim(ix^D,p_)
       end if
       Te(ix^D)=pth_loc(ix^D)/(R(ix^D)*rho_loc(ix^D))
@@ -5003,44 +4961,13 @@ contains
     call cross_product(ixI^L,ixO^L,a,b,JxB)
   end subroutine get_Lorentz_force
 
-  !> Compute 1/(1+v_A^2/c^2) for semirelativistic MHD, where v_A is the Alfven
-  !> velocity
-  subroutine mhd_gamma2_alfven(ixI^L, ixO^L, w, gamma_A2)
-    use mod_global_parameters
-    integer, intent(in)           :: ixI^L, ixO^L
-    double precision, intent(in)  :: w(ixI^S, nw)
-    double precision, intent(out) :: gamma_A2(ixO^S)
-    double precision              :: rho(ixI^S)
-
-    ! mhd_get_rho cannot be used as x is not a param
-    if(has_equi_rho0) then
-      rho(ixO^S) = w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i)
-    else
-      rho(ixO^S) = w(ixO^S,rho_)
-    endif
-    ! Compute the inverse of 1 + B^2/(rho * c^2)
-    gamma_A2(ixO^S) = 1.0d0/(1.0d0+mhd_mag_en_all(w, ixI^L, ixO^L)/rho(ixO^S)*inv_squared_c)
-  end subroutine mhd_gamma2_alfven
-
-  !> Compute 1/sqrt(1+v_A^2/c^2) for semirelativisitic MHD, where v_A is the
-  !> Alfven velocity
-  function mhd_gamma_alfven(w, ixI^L, ixO^L) result(gamma_A)
-    use mod_global_parameters
-    integer, intent(in)           :: ixI^L, ixO^L
-    double precision, intent(in)  :: w(ixI^S, nw)
-    double precision              :: gamma_A(ixO^S)
-
-    call mhd_gamma2_alfven(ixI^L, ixO^L, w, gamma_A)
-    gamma_A = sqrt(gamma_A)
-  end function mhd_gamma_alfven
-
   subroutine mhd_get_rho(w,x,ixI^L,ixO^L,rho)
     use mod_global_parameters
     integer, intent(in)           :: ixI^L, ixO^L
     double precision, intent(in)  :: w(ixI^S,1:nw),x(ixI^S,1:ndim)
     double precision, intent(out) :: rho(ixI^S)
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       rho(ixO^S) = w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i)
     else
       rho(ixO^S) = w(ixO^S,rho_)
@@ -5062,7 +4989,7 @@ contains
     logical :: flag(ixI^S,1:nw)
 
     flag=.false.
-    if(has_equi_pe0) then
+    if(has_equi_rho_and_p) then
       where(w(ixO^S,ie)+block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1<small_e)&
              flag(ixO^S,ie)=.true.
     else
@@ -5071,7 +4998,7 @@ contains
     if(any(flag(ixO^S,ie))) then
       select case (small_values_method)
       case ("replace")
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           where(flag(ixO^S,ie)) w(ixO^S,ie)=small_e - &
                   block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1
         else

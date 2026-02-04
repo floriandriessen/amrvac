@@ -6,12 +6,11 @@ module mod_usr
 
 
   !!user defined
-  double precision:: Period=5
-  double precision:: ampl=1d-3
-  
+  double precision:: Period=5.0d0
+  double precision:: ampl=1.0d-3
   logical :: maskAmbi = .true.
-  double precision :: xLambi = 1.65
-  double precision :: wLambi = 0.01
+  double precision :: xLambi = 1.65d0
+  double precision :: wLambi = 0.01d0
   logical :: ambi_mask_smooth  = .true.
   integer, parameter :: MASK_DISC = 1
   integer, parameter :: MASK_TANH = 2
@@ -307,7 +306,7 @@ contains
     !use mod_variables
 
     unit_length        = 1.d6                                         ! m
-    unit_temperature   = 5d3                                         ! K
+    unit_temperature   = 5.d3                                         ! K
     unit_numberdensity = 1.d20                                        !/m^3
 
     call usr_params_read(par_files)
@@ -320,10 +319,9 @@ contains
 
     usr_init_one_grid => initonegrid_usr
     usr_special_bc    => specialbound_usr
-    usr_gravity         => gravity
+    usr_gravity       => gravity
 
     usr_set_parameters  => init_params_usr
-    !usr_process_grid => special_process_filter
 
     if (maskAmbi) then
       usr_mask_ambipolar => special_ambipolar
@@ -342,23 +340,24 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision, intent(inout) :: ambiCoef(ixI^S)
+    double precision :: ambiCoef_presmooth(ixI^S)
 
     integer :: ii
-
+    
     if(ambi_mask_method .eq. MASK_DISC .or. ambi_mask_method .eq. MASK_TANH) then
       if(ambi_mask_method .eq. MASK_DISC) then
         !!METHOD 1
         where(x(:,1) .ge. xLambi) 
-          ambiCoef=0.0
+          ambiCoef=0.0d0
         endwhere
       else
         !!METHOD 2
         ambiCoef(ixO^S) = ambiCoef(ixO^S) * 0.5 * (1.0 - tanh(  (x(ixO^S,1)-xLambi)/(wLambi) ))
-  
       endif
+      ambiCoef_presmooth(ixI^S)=ambiCoef(ixI^S)
       if(ambi_mask_smooth) then
         forall (ii = ixO^S)
-          ambiCoef(ii) = (ambiCoef(ii-1) + ambiCoef(ii) + ambiCoef(ii+1))/3d0  
+          ambiCoef(ii) = (ambiCoef_presmooth(ii-1) + ambiCoef_presmooth(ii) + ambiCoef_presmooth(ii+1))/3d0  
         endforall
       endif
     endif
@@ -369,6 +368,7 @@ contains
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
+    w(ixI^S,1:nw)=0.0d0
     call set_equi_vars2(x(ixO^S,1), w(ixO^S,p_), w(ixO^S,rho_), w(ixO^S,mag(3)))
     call mhd_to_conserved(ixI^L,ixO^L,w,x)
   end subroutine initonegrid_usr
@@ -405,6 +405,7 @@ contains
     double precision,allocatable, dimension(:) :: pe0, rho0, bx0
     integer :: ixG^L
 
+    w(ixO^S,1:nw)= 0.0d0
     ixGmin1 = ixOmin1-nghostcells
     ixGmax1 = ixOmin1-1
     call mhd_to_primitive(ixI^L,ixG^L,w,x)
@@ -440,6 +441,8 @@ contains
     double precision,allocatable, dimension(:) :: pe0, rho0, bx0
     integer :: ixG^L
 
+
+    w(ixO^S,1:nw)= 0.0d0
 
     omega = 2*dpi/(Period /unit_time)!normalized omega
     ixG^L=ixO^L;

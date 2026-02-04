@@ -1098,7 +1098,6 @@ contains
   subroutine hd_get_flux(wC, w, x, ixI^L, ixO^L, idim, f)
     use mod_global_parameters
     use mod_dust, only: dust_get_flux_prim
-    use mod_viscosity, only: visc_get_flux_prim ! viscInDiv
 
     integer, intent(in)             :: ixI^L, ixO^L, idim
     ! conservative w
@@ -1139,11 +1138,6 @@ contains
       call dust_get_flux_prim(w, x, ixI^L, ixO^L, idim, f)
     end if
 
-    ! Viscosity fluxes - viscInDiv
-    if (hd_viscosity) then
-      call visc_get_flux_prim(w, x, ixI^L, ixO^L, idim, f, hd_energy)
-    endif
-
   end subroutine hd_get_flux
 
   !> Add geometrical source terms to w
@@ -1156,7 +1150,6 @@ contains
   subroutine hd_add_source_geom(qdt, dtfactor, ixI^L, ixO^L, wCT, wprim, w, x)
     use mod_global_parameters
     use mod_usr_methods, only: usr_set_surface, usr_set_pthermal
-    use mod_viscosity, only: visc_add_source_geom ! viscInDiv
     use mod_rotating_frame, only: rotating_frame_add_source
     use mod_dust, only: dust_n_species, dust_mom, dust_rho
     use mod_geometry
@@ -1280,8 +1273,6 @@ contains
        end if
        }
     end select
-
-    if (hd_viscosity) call visc_add_source_geom(qdt,ixI^L,ixO^L,wprim,w,x)
 
     if (hd_rotating_frame) then
        if (hd_dust) then
