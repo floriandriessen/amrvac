@@ -138,7 +138,7 @@ contains
       {^IFTHREED
       {do ix^DB=ixmin^DB,ixmax^DB\}
         ! idim=1, idir=1
-        lambda(ix^D,1,1)=(wp(ix1+1,ix2,ix3,v1_)-wp(ix1-1,ix2,ix3,v1_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))*two*qdtmu
+        lambda(ix^D,1,1)=(wp(ix1+1,ix2,ix3,v1_)-wp(ix1-1,ix2,ix3,v1_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))
         ! idim=1, idir=2
         lambda(ix^D,1,2)=(wp(ix1+1,ix2,ix3,v2_)-wp(ix1-1,ix2,ix3,v2_))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))
         ! idim=1, idir=3
@@ -146,7 +146,7 @@ contains
         ! idim=2, idir=1
         lambda(ix^D,2,1)=(wp(ix1,ix2+1,ix3,v1_)-wp(ix1,ix2-1,ix3,v1_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))
         ! idim=2, idir=2
-        lambda(ix^D,2,2)=(wp(ix1,ix2+1,ix3,v2_)-wp(ix1,ix2-1,ix3,v2_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))*two*qdtmu
+        lambda(ix^D,2,2)=(wp(ix1,ix2+1,ix3,v2_)-wp(ix1,ix2-1,ix3,v2_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))
         ! idim=2, idir=3
         lambda(ix^D,2,3)=(wp(ix1,ix2+1,ix3,v3_)-wp(ix1,ix2-1,ix3,v3_))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))
         ! idim=3, idir=1
@@ -154,18 +154,18 @@ contains
         ! idim=3, idir=2
         lambda(ix^D,3,2)=(wp(ix1,ix2,ix3+1,v2_)-wp(ix1,ix2,ix3-1,v2_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))
         ! idim=3, idir=3
-        lambda(ix^D,3,3)=(wp(ix1,ix2,ix3+1,v3_)-wp(ix1,ix2,ix3-1,v3_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))*two*qdtmu
+        lambda(ix^D,3,3)=(wp(ix1,ix2,ix3+1,v3_)-wp(ix1,ix2,ix3-1,v3_))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))
         ! dv_i/d_j + dv_j/d_i
-        lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+        lambda(ix^D,1,2)=lambda(ix^D,1,2)+lambda(ix^D,2,1)
         lambda(ix^D,2,1)=lambda(ix^D,1,2)
-        lambda(ix^D,1,3)=(lambda(ix^D,1,3)+lambda(ix^D,3,1))*qdtmu
+        lambda(ix^D,1,3)=lambda(ix^D,1,3)+lambda(ix^D,3,1)
         lambda(ix^D,3,1)=lambda(ix^D,1,3)
-        lambda(ix^D,2,3)=(lambda(ix^D,2,3)+lambda(ix^D,3,2))*qdtmu
+        lambda(ix^D,2,3)=lambda(ix^D,2,3)+lambda(ix^D,3,2)
         lambda(ix^D,3,2)=lambda(ix^D,2,3)
-        divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2)+lambda(ix^D,3,3))
-        lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
-        lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
-        lambda(ix^D,3,3)=lambda(ix^D,3,3)-divv23
+        divv23=two*third*(lambda(ix^D,1,1)+lambda(ix^D,2,2)+lambda(ix^D,3,3))
+        lambda(ix^D,1,1)=two*lambda(ix^D,1,1)-divv23
+        lambda(ix^D,2,2)=two*lambda(ix^D,2,2)-divv23
+        lambda(ix^D,3,3)=two*lambda(ix^D,3,3)-divv23
         if(energy) then
           vlambda(ix^D,1)=wp(ix^D,v1_)*lambda(ix^D,1,1)+wp(ix^D,v2_)*lambda(ix^D,2,1)+wp(ix^D,v3_)*lambda(ix^D,3,1)
           vlambda(ix^D,2)=wp(ix^D,v1_)*lambda(ix^D,1,2)+wp(ix^D,v2_)*lambda(ix^D,2,2)+wp(ix^D,v3_)*lambda(ix^D,3,2)
@@ -174,38 +174,38 @@ contains
       {end do\}
       ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        w(ix^D,mom(1))=(lambda(ix1+1,ix2,ix3,1,1)-lambda(ix1-1,ix2,ix3,1,1))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
-                       (lambda(ix1,ix2+1,ix3,2,1)-lambda(ix1,ix2-1,ix3,2,1))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
-                       (lambda(ix1,ix2,ix3+1,3,1)-lambda(ix1,ix2,ix3-1,3,1))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+w(ix^D,mom(1))
-        w(ix^D,mom(2))=(lambda(ix1+1,ix2,ix3,1,2)-lambda(ix1-1,ix2,ix3,1,2))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
-                       (lambda(ix1,ix2+1,ix3,2,2)-lambda(ix1,ix2-1,ix3,2,2))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
-                       (lambda(ix1,ix2,ix3+1,3,2)-lambda(ix1,ix2,ix3-1,3,2))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+w(ix^D,mom(2))
-        w(ix^D,mom(3))=(lambda(ix1+1,ix2,ix3,1,3)-lambda(ix1-1,ix2,ix3,1,3))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
-                       (lambda(ix1,ix2+1,ix3,2,3)-lambda(ix1,ix2-1,ix3,2,3))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
-                       (lambda(ix1,ix2,ix3+1,3,3)-lambda(ix1,ix2,ix3-1,3,3))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3))+w(ix^D,mom(3))
+        w(ix^D,mom(1))=((lambda(ix1+1,ix2,ix3,1,1)-lambda(ix1-1,ix2,ix3,1,1))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                        (lambda(ix1,ix2+1,ix3,2,1)-lambda(ix1,ix2-1,ix3,2,1))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
+                        (lambda(ix1,ix2,ix3+1,3,1)-lambda(ix1,ix2,ix3-1,3,1))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3)))*qdtmu+w(ix^D,mom(1))
+        w(ix^D,mom(2))=((lambda(ix1+1,ix2,ix3,1,2)-lambda(ix1-1,ix2,ix3,1,2))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                        (lambda(ix1,ix2+1,ix3,2,2)-lambda(ix1,ix2-1,ix3,2,2))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
+                        (lambda(ix1,ix2,ix3+1,3,2)-lambda(ix1,ix2,ix3-1,3,2))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3)))*qdtmu+w(ix^D,mom(2))
+        w(ix^D,mom(3))=((lambda(ix1+1,ix2,ix3,1,3)-lambda(ix1-1,ix2,ix3,1,3))/(x(ix1+1,ix2,ix3,1)-x(ix1-1,ix2,ix3,1))+&
+                        (lambda(ix1,ix2+1,ix3,2,3)-lambda(ix1,ix2-1,ix3,2,3))/(x(ix1,ix2+1,ix3,2)-x(ix1,ix2-1,ix3,2))+&
+                        (lambda(ix1,ix2,ix3+1,3,3)-lambda(ix1,ix2,ix3-1,3,3))/(x(ix1,ix2,ix3+1,3)-x(ix1,ix2,ix3-1,3)))*qdtmu+w(ix^D,mom(3))
       {end do\}
       }
       {^IFTWOD
       {do ix^DB=ixmin^DB,ixmax^DB\}
         ! idim=1, idir=1
-        lambda(ix^D,1,1)=(wp(ix1+1,ix2,v1_)-wp(ix1-1,ix2,v1_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))*two*qdtmu
+        lambda(ix^D,1,1)=(wp(ix1+1,ix2,v1_)-wp(ix1-1,ix2,v1_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))
         ! idim=1, idir=2
         lambda(ix^D,1,2)=(wp(ix1+1,ix2,v2_)-wp(ix1-1,ix2,v2_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))
         ! idim=2, idir=1
         lambda(ix^D,2,1)=(wp(ix1,ix2+1,v1_)-wp(ix1,ix2-1,v1_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))
         ! idim=2, idir=2
-        lambda(ix^D,2,2)=(wp(ix1,ix2+1,v2_)-wp(ix1,ix2-1,v2_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*two*qdtmu
+        lambda(ix^D,2,2)=(wp(ix1,ix2+1,v2_)-wp(ix1,ix2-1,v2_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))
         ! dv_i/d_j + dv_j/d_i
-        lambda(ix^D,1,2)=(lambda(ix^D,1,2)+lambda(ix^D,2,1))*qdtmu
+        lambda(ix^D,1,2)=lambda(ix^D,1,2)+lambda(ix^D,2,1)
         lambda(ix^D,2,1)=lambda(ix^D,1,2)
-        divv23=third*(lambda(ix^D,1,1)+lambda(ix^D,2,2))
-        lambda(ix^D,1,1)=lambda(ix^D,1,1)-divv23
-        lambda(ix^D,2,2)=lambda(ix^D,2,2)-divv23
+        divv23=two*third*(lambda(ix^D,1,1)+lambda(ix^D,2,2))
+        lambda(ix^D,1,1)=two*lambda(ix^D,1,1)-divv23
+        lambda(ix^D,2,2)=two*lambda(ix^D,2,2)-divv23
         if(ndir==3) then
           ! idim=1, idir=3
-          lambda(ix1,ix2,1,3)=(wp(ix1+1,ix2,v3_)-wp(ix1-1,ix2,v3_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))*qdtmu
+          lambda(ix1,ix2,1,3)=(wp(ix1+1,ix2,v3_)-wp(ix1-1,ix2,v3_))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))
           ! idim=2, idir=3
-          lambda(ix1,ix2,2,3)=(wp(ix1,ix2+1,v3_)-wp(ix1,ix2-1,v3_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))*qdtmu
+          lambda(ix1,ix2,2,3)=(wp(ix1,ix2+1,v3_)-wp(ix1,ix2-1,v3_))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))
           lambda(ix1,ix2,3,1)=lambda(ix1,ix2,1,3)
           lambda(ix1,ix2,3,2)=lambda(ix1,ix2,2,3)
           lambda(ix1,ix2,3,3)=-divv23
@@ -221,26 +221,26 @@ contains
       {end do\}
       ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        w(ix^D,mom(1))=(lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
-                       (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+w(ix^D,mom(1))
-        w(ix^D,mom(2))=(lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
-                       (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+w(ix^D,mom(2))
+        w(ix^D,mom(1))=((lambda(ix1+1,ix2,1,1)-lambda(ix1-1,ix2,1,1))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                        (lambda(ix1,ix2+1,2,1)-lambda(ix1,ix2-1,2,1))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2)))*qdtmu+w(ix^D,mom(1))
+        w(ix^D,mom(2))=((lambda(ix1+1,ix2,1,2)-lambda(ix1-1,ix2,1,2))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                        (lambda(ix1,ix2+1,2,2)-lambda(ix1,ix2-1,2,2))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2)))*qdtmu+w(ix^D,mom(2))
         if(ndir==3) then
-          w(ix1,ix2,mom(3))=(lambda(ix1+1,ix2,1,3)-lambda(ix1-1,ix2,1,3))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
-                         (lambda(ix1,ix2+1,2,3)-lambda(ix1,ix2-1,2,3))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2))+w(ix1,ix2,mom(3))
+          w(ix1,ix2,mom(3))=((lambda(ix1+1,ix2,1,3)-lambda(ix1-1,ix2,1,3))/(x(ix1+1,ix2,1)-x(ix1-1,ix2,1))+&
+                             (lambda(ix1,ix2+1,2,3)-lambda(ix1,ix2-1,2,3))/(x(ix1,ix2+1,2)-x(ix1,ix2-1,2)))*qdtmu+w(ix1,ix2,mom(3))
         end if
       {end do\}
       }
       {^IFONED
       do ix1=ixmin1,ixmax1
         ! idim=1, idir=1
-        lambda(ix1,1,1)=(wp(ix1+1,v1_)-wp(ix1-1,v1_))/(x(ix1+1,1)-x(ix1-1,1))*two*qdtmu
+        lambda(ix1,1,1)=(wp(ix1+1,v1_)-wp(ix1-1,v1_))/(x(ix1+1,1)-x(ix1-1,1))
         ! dv_i/d_j + dv_j/d_i
-        divv23=third*lambda(ix1,1,1)
-        lambda(ix1,1,1)=lambda(ix1,1,1)-divv23
+        divv23=two*third*lambda(ix1,1,1)
+        lambda(ix1,1,1)=two*lambda(ix1,1,1)-divv23
         if(ndir==2) then
           ! idim=1, idir=2
-          lambda(ix1,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu
+          lambda(ix1,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))
           ! dv_i/d_j + dv_j/d_i
           lambda(ix1,2,1)=lambda(ix1,1,2)
           lambda(ix1,2,2)=-divv23
@@ -250,12 +250,12 @@ contains
           end if
         else if(ndir==3) then
           ! idim=1, idir=2
-          lambda(ix1,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu
+          lambda(ix1,1,2)=(wp(ix1+1,v2_)-wp(ix1-1,v2_))/(x(ix1+1,1)-x(ix1-1,1))
           ! dv_i/d_j + dv_j/d_i
           lambda(ix1,2,1)=lambda(ix1,1,2)
           lambda(ix1,2,2)=-divv23
           ! idim=1, idir=3
-          lambda(ix1,1,3)=(wp(ix1+1,v3_)-wp(ix1-1,v3_))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu
+          lambda(ix1,1,3)=(wp(ix1+1,v3_)-wp(ix1-1,v3_))/(x(ix1+1,1)-x(ix1-1,1))
           lambda(ix1,3,1)=lambda(ix1,1,3)
           lambda(ix1,3,3)=-divv23
           if(energy) then
@@ -270,14 +270,14 @@ contains
       ! dm/dt= +div(mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v * kr)
       do ix1=ixOmin1,ixOmax1
         if(ndir==1) then
-          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(1))
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu+w(ix1,mom(1))
         else if(ndir==2) then
-          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(1))
-          w(ix1,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(2))
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu+w(ix1,mom(1))
+          w(ix1,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu+w(ix1,mom(2))
         else
-          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(1))
-          w(ix1,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(2))
-          w(ix1,mom(3))=(lambda(ix1+1,1,3)-lambda(ix1-1,1,3))/(x(ix1+1,1)-x(ix1-1,1))+w(ix1,mom(3))
+          w(ix1,mom(1))=(lambda(ix1+1,1,1)-lambda(ix1-1,1,1))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu+w(ix1,mom(1))
+          w(ix1,mom(2))=(lambda(ix1+1,1,2)-lambda(ix1-1,1,2))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu+w(ix1,mom(2))
+          w(ix1,mom(3))=(lambda(ix1+1,1,3)-lambda(ix1-1,1,3))/(x(ix1+1,1)-x(ix1-1,1))*qdtmu+w(ix1,mom(3))
         end if
       end do
       }
@@ -285,7 +285,7 @@ contains
         ! de/dt= +div(v.dot.[mu*[d_j v_i+d_i v_j]-(2*mu/3)* div v *kr])
         ! thus e=e+d_i v_j tensor_ji
         call divvector(vlambda,ixI^L,ixO^L,tmp)
-        w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)
+        w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)*qdtmu
       end if
     end if
 
