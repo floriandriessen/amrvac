@@ -814,7 +814,6 @@ contains
 }
 
     ! Initialize viscosity module
-    !!TODO
     !if (twofl_viscosity) call viscosity_init(phys_wider_stencil)
 
     ! Initialize gravity module
@@ -3328,11 +3327,6 @@ contains
       end if
       ! add u_n * a in the flux
       f(ixO^S, e_n_) = w(ixO^S,mom_n(idim)) * pgas(ixO^S)
-
-      ! Viscosity fluxes - viscInDiv
-      !if (hd_viscosity) then
-      !  call visc_get_flux_prim(w, x, ixI^L, ixO^L, idim, f, phys_energy)
-      !endif
     end if
 
   end subroutine twofl_get_flux

@@ -883,10 +883,6 @@ contains
 }
     ! Initialize viscosity module
     if (mhd_viscosity) then
-      if(mhd_internal_e) then
-        ! not implemented in viscosity module
-        call mpistop("Viscosity module not compatible with mhd_internal_e=T")
-      end if
        call viscosity_init(phys_wider_stencil)
     end if
 
