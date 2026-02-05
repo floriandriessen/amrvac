@@ -1441,8 +1441,7 @@ contains
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,nw)
 
-    double precision :: tmp,b2c2,b(ixO^S,1:ndir)
-    double precision :: v(ixO^S,1:ndir),factor,rho
+    double precision :: tmp,b(1:ndir),v(1:ndir),factor
     integer :: ix^D
 
     flag=.false.
@@ -1458,30 +1457,27 @@ contains
          {end do\}
         else
          {do ix^DB=ixOmin^DB,ixOmax^DB \}
-            b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
-            ^C&b(ix^D,^C)=w(ix^D,b^C_)\
-            tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
-            rho=w(ix^D,rho_)
-            factor=1.0d0/(rho*(rho+b2c2))
             ! Convert momentum to velocity
-            ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
+            tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
+            factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
+            ^C&v(^C)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
             ! E=Bxv
             {^IFTHREEC
-            b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
-            b(ix^D,2)=w(ix^D,b3_)*v(ix^D,1)-w(ix^D,b1_)*v(ix^D,3)
-            b(ix^D,3)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+            b(1)=w(ix^D,b2_)*v(3)-w(ix^D,b3_)*v(2)
+            b(2)=w(ix^D,b3_)*v(1)-w(ix^D,b1_)*v(3)
+            b(3)=w(ix^D,b1_)*v(2)-w(ix^D,b2_)*v(1)
             }
             {^IFTWOC
-            b(ix^D,1)=zero
+            b(1)=zero
             ! switch 3 with 2 to allow ^C from 1 to 2
-            b(ix^D,2)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+            b(2)=w(ix^D,b1_)*v(2)-w(ix^D,b2_)*v(1)
             }
             {^IFONEC
-            b(ix^D,1)=zero
+            b(1)=zero
             }
             ! Calculate internal e = e-eK-eB-eE
-            tmp=w(ix^D,e_)-half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-               +(^C&w(ix^D,b^C_)**2+)+(^C&b(ix^D,^C)**2+)*inv_squared_c)
+            tmp=w(ix^D,e_)-half*((^C&v(^C)**2+)*w(ix^D,rho_)&
+               +(^C&w(ix^D,b^C_)**2+)+(^C&b(^C)**2+)*inv_squared_c)
             if(tmp<small_e) flag(ix^D,e_)=.true.
          {end do\}
         end if
@@ -1913,7 +1909,7 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: b(ixO^S,1:ndir), tmp, b2c2, factor, rho
+    double precision :: e(1:ndir), tmp, factor
     integer :: ix^D
 
     if (fix_small_values) then
@@ -1922,14 +1918,10 @@ contains
     end if
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
-      rho=w(ix^D,rho_)
-      factor=1.0d0/(rho*(rho+b2c2))
-
       ! Convert momentum to velocity
-      ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
+      tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
+      factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
+      ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
 
       if(mhd_internal_e) then
         ! internal energy to pressure
@@ -1937,22 +1929,22 @@ contains
       else
         ! E=Bxv
         {^IFTHREEC
-        b(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
-        b(ix^D,2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
-        b(ix^D,3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
+        e(1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
+        e(2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
+        e(3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
         }
         {^IFTWOC
-        b(ix^D,1)=zero
-        b(ix^D,2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
+        e(1)=zero
+        e(2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
         }
         {^IFONEC
-        b(ix^D,1)=zero
+        e(1)=zero
         }
         ! Calculate pressure = (gamma-1) * (e-eK-eB-eE)
         w(ix^D,p_)=gamma_1*(w(ix^D,e_)&
                    -half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
                    +(^C&w(ix^D,b^C_)**2+)&
-                   +(^C&b(ix^D,^C)**2+)*inv_squared_c))
+                   +(^C&e(^C)**2+)*inv_squared_c))
       end if
    {end do\}
 
@@ -1965,7 +1957,7 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: b(ixO^S,1:ndir),tmp,b2c2,factor,rho
+    double precision :: tmp, factor
     integer :: ix^D
 
     if (fix_small_values) then
@@ -1974,14 +1966,10 @@ contains
     end if
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
-      rho=w(ix^D,rho_)
-      factor=1.0d0/(rho*(rho+b2c2))
-
       ! Convert momentum to velocity
-      ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
+      tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
+      factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
+      ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
    {end do\}
 
   end subroutine mhd_to_primitive_semirelati_noe
@@ -2117,8 +2105,8 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     character(len=*), intent(in)    :: subname
 
-    double precision :: b(ixI^S,1:ndir), pressure(ixI^S), v(ixI^S,1:ndir)
-    double precision :: tmp, b2c2, factor, rho
+    double precision :: e(ixI^S,1:ndir), pressure(ixI^S), v(ixI^S,1:ndir)
+    double precision :: tmp, factor
     integer :: ix^D
     logical :: flag(ixI^S,1:nw)
 
@@ -2130,31 +2118,27 @@ contains
         where(w(ixO^S,p_) < small_pressure) flag(ixO^S,e_) = .true.
       else
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
-          b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
-          ^C&b(ix^D,^C)=w(ix^D,b^C_)\
-          tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
-          rho=w(ix^D,rho_)
-          factor=1.0d0/(rho*(rho+b2c2))
           ! Convert momentum to velocity
-          ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
+          tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
+          factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
+          ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
           ! E=Bxv
           {^IFTHREEC
-          b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
-          b(ix^D,2)=w(ix^D,b3_)*v(ix^D,1)-w(ix^D,b1_)*v(ix^D,3)
-          b(ix^D,3)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+          e(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
+          e(ix^D,2)=w(ix^D,b3_)*v(ix^D,1)-w(ix^D,b1_)*v(ix^D,3)
+          e(ix^D,3)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
           }
           {^IFTWOC
-          b(ix^D,1)=zero
-          b(ix^D,2)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+          e(ix^D,1)=zero
+          e(ix^D,2)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
           }
           {^IFONEC
-          b(ix^D,1)=zero
+          e(ix^D,1)=zero
           }
           ! Calculate pressure = (gamma-1) * (e-eK-eB-eE)
           pressure(ix^D)=gamma_1*(w(ix^D,e_)&
                      -half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-                     +(^C&w(ix^D,b^C_)**2+)&
-                     +(^C&b(ix^D,^C)**2+)*inv_squared_c))
+                     +(^C&w(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c))
           if(pressure(ix^D) < small_pressure) flag(ix^D,p_) = .true.
        {end do\}
       end if
@@ -2174,7 +2158,7 @@ contains
             else
               if(flag(ix^D,e_)) then
                 w(ix^D,e_)=small_pressure*inv_gamma_1+half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-                           +(^C&w(ix^D,b^C_)**2+)+(^C&b(ix^D,^C)**2+)*inv_squared_c)
+                           +(^C&w(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
               end if
             end if
           end if
@@ -2190,7 +2174,7 @@ contains
             call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1+half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-                          +(^C&w(ix^D,b^C_)**2+)+(^C&b(ix^D,^C)**2+)*inv_squared_c)
+                          +(^C&w(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
             {end do\}
           end if
         end if
@@ -3650,36 +3634,32 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out):: pth(ixI^S)
 
-    double precision :: b(ixO^S,1:ndir), v(ixO^S,1:ndir), tmp, b2c2, factor, rho
+    double precision :: e(1:ndir), v(1:ndir), tmp, factor
     integer :: iw, ix^D
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2c2=(^C&w(ix^D,b^C_)**2+)*inv_squared_c
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)*inv_squared_c
-      rho=w(ix^D,rho_)
-      factor=1.0d0/(rho*(rho+b2c2))
       ! Convert momentum to velocity
-      ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*rho+b(ix^D,^C)*tmp)\
+      tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
+      factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
+      ^C&v(^C)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
 
       ! E=Bxv
       {^IFTHREEC
-      b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
-      b(ix^D,2)=w(ix^D,b3_)*v(ix^D,1)-w(ix^D,b1_)*v(ix^D,3)
-      b(ix^D,3)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+      e(1)=w(ix^D,b2_)*v(3)-w(ix^D,b3_)*v(2)
+      e(2)=w(ix^D,b3_)*v(1)-w(ix^D,b1_)*v(3)
+      e(3)=w(ix^D,b1_)*v(2)-w(ix^D,b2_)*v(1)
       }
       {^IFTWOC
-      b(ix^D,1)=zero
-      b(ix^D,2)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+      e(1)=zero
+      e(2)=w(ix^D,b1_)*v(2)-w(ix^D,b2_)*v(1)
       }
       {^IFONEC
-      b(ix^D,1)=zero
+      e(1)=zero
       }
       ! Calculate pressure = (gamma-1) * (e-eK-eB-eE)
       pth(ix^D)=gamma_1*(w(ix^D,e_)&
-                 -half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-                 +(^C&w(ix^D,b^C_)**2+)&
-                 +(^C&b(ix^D,^C)**2+)*inv_squared_c))
+                 -half*((^C&v(^C)**2+)*w(ix^D,rho_)&
+                 +(^C&w(ix^D,b^C_)**2+)+(^C&e(^C)**2+)*inv_squared_c))
       if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
    {end do\}
 
