@@ -18,9 +18,9 @@ program amrvac
   use mod_multigrid_coupling
   use mod_convert, only: init_convert
   use mod_physics
-  use mod_eos, only: eos_init
+  use mod_eos, only: eos_init, prepare_eos_w_fields
   use mod_amr_grid, only: resettree, settree, resettree_convert
-  use mod_trac, only: initialize_trac_after_settree
+  ! use mod_trac, only: initialize_trac_after_settree
   use mod_convert_files, only: generate_plotfile
   use mod_comm_lib, only: comm_start, comm_finalize,mpistop
 
@@ -45,7 +45,9 @@ program amrvac
   ! the user_init routine should load a physics module
   call usr_init()
 
-  call initialize_amrvac()
+  call eos_finalise() !> associate various eos methods based on physics module
+
+  call initialize_amrvac() !> Grid bounds are set up here (ixG^D_ etc)
 
   if (restart_from_file /= undefined) then
      ! restart from previous file or dat file conversion
@@ -70,7 +72,7 @@ program amrvac
        it           = it_init
      end if
 
-     ! allow use to read extra data before filling boundary condition
+     ! allow user to read extra data before filling boundary condition
      if (associated(usr_process_grid) .or. &
           associated(usr_process_global)) then
         call process(it,global_time)
@@ -163,8 +165,11 @@ program amrvac
 
   end if
 
-  ! initialize something base on tree information
-  call initialize_trac_after_settree
+  ! ! initialize something base on tree information
+  ! call initialize_trac_after_settree
+
+  ! Populate the additional w state eos variables (if needed)
+  call prepare_eos_w_fields()
 
   if (mype==0) then
      print*,'-------------------------------------------------------------------------------'
@@ -373,8 +378,10 @@ contains
        write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*timeio_tot/timeloop,' %'
        write(*,'(a,f12.3,a)')' Time spent on ghost cells  : ',time_bc,' sec'
        write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*time_bc/timeloop,' %'
-       write(*,'(a,f12.3,a)')' Time spent on computing    : ',timeloop-timeio_tot-timegr_tot-time_bc,' sec'
-       write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*(timeloop-timeio_tot-timegr_tot-time_bc)/timeloop,' %'
+       write(*,'(a,f12.3,a)')' Time spent on eos          : ',timeeos_tot,' sec'
+       write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*timeeos_tot/timeloop,' %'
+       write(*,'(a,f12.3,a)')' Time spent on computing    : ',timeloop-timeio_tot-timeeos_tot-timegr_tot-time_bc,' sec'
+       write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*(timeloop-timeio_tot-timeeos_tot-timegr_tot-time_bc)/timeloop,' %'
        write(*,'(a,es12.3 )')' Cells updated / proc / sec : ',dble(ncells_update)*dble(nstep)/dble(npe)/timeloop
     end if
 

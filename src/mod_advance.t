@@ -613,6 +613,7 @@ contains
     use mod_ghostcells_update
     use mod_fix_conserve
     use mod_physics
+    use mod_eos
 
     integer, intent(in) :: idim^LIM
     type(state), target :: psa(max_blocks) !< Compute fluxes based on this state
@@ -637,6 +638,7 @@ contains
     do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
       block=>ps(igrid)
       ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
+      call eos%update_eos(ixG^LL,ixG^LL,psa(igrid)%w,psa(igrid)%x)
       call advect1_grid(igrid,method(block%level),qdt,dtfactor,ixG^LL,idim^LIM,&
         qtC,psa(igrid),qt,psb(igrid),rnode(rpdx1_:rnodehi,igrid),ps(igrid)%x)
     end do

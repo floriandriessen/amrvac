@@ -4,6 +4,7 @@ module mod_hd_phys
   use mod_radiative_cooling, only: rc_fluid
   use mod_thermal_emission, only: te_fluid
   use mod_physics
+  use mod_eos
   use mod_comm_lib, only: mpistop
   implicit none
   private
@@ -62,6 +63,9 @@ module mod_hd_phys
   !> Index of the gas pressure (-1 if not present) should equal e_
   integer, public, protected              :: p_
 
+  !> Index of the electron number density for LTE module
+  integer, public, protected :: Ne_
+
   !> Indices of temperature
   integer, public, protected :: Te_
 
@@ -104,16 +108,17 @@ module mod_hd_phys
   ! and not anymore through units
   logical, public, protected :: eq_state_units = .true.
 
-  procedure(sub_get_pthermal), pointer :: hd_get_Rfactor   => null()
+  ! procedure(sub_get_pthermal), pointer :: hd_get_Rfactor   => null()
   ! Public methods
   public :: hd_phys_init
   public :: hd_kin_en
   public :: hd_get_pthermal
   public :: hd_get_csound2
-  public :: hd_to_conserved
-  public :: hd_to_primitive
+  ! public :: hd_to_conserved
+  ! public :: hd_to_primitive
   public :: hd_check_params
   public :: hd_check_w
+  public :: hd_handle_small_values
 
 contains
 
@@ -235,6 +240,17 @@ contains
        p_ = -1
     end if
 
+    if (eos%eos_type == 'LTE') then
+      Ne_ = var_set_ne()
+      Te_ = var_set_te()
+    else if (hd_partial_ionization) then !  set temperature as an auxiliary variable to get ionization degree
+      Ne_ = -1
+      Te_ = var_set_auxvar('Te','Te')
+    else
+      Ne_ = -1
+      Te_ = -1
+    end if
+
     phys_get_dt              => hd_get_dt
     phys_get_cmax            => hd_get_cmax
     phys_get_a2max           => hd_get_a2max
@@ -243,15 +259,17 @@ contains
     phys_get_flux            => hd_get_flux
     phys_add_source_geom     => hd_add_source_geom
     phys_add_source          => hd_add_source
-    phys_to_conserved        => hd_to_conserved
-    phys_to_primitive        => hd_to_primitive
+    ! phys_to_conserved        => hd_to_conserved
+    ! phys_to_primitive        => hd_to_primitive
     phys_check_params        => hd_check_params
     phys_check_w             => hd_check_w
     phys_get_pthermal        => hd_get_pthermal
     phys_get_v               => hd_get_v
-    phys_get_rho             => hd_get_rho
+    ! phys_get_rho             => hd_get_rho
     phys_write_info          => hd_write_info
     phys_handle_small_values => hd_handle_small_values
+    phys_e_to_ei            => hd_e_to_ei
+    phys_ei_to_e            => hd_ei_to_e
 
     ! derive units from basic units
     call hd_physical_units()
@@ -273,12 +291,7 @@ contains
     ! set the index of the last flux variable for species 1
     stop_indices(1)=nwflux
 
-    !  set temperature as an auxiliary variable to get ionization degree
-    if(hd_partial_ionization) then
-      Te_ = var_set_auxvar('Te','Te')
-    else
-      Te_ = -1
-    end if
+    
 
     if(hd_trac) then
       Tcoff_ = var_set_wextra()
@@ -287,15 +300,15 @@ contains
       Tcoff_ = -1
     end if
 
-    ! choose Rfactor in ideal gas law
-    if(hd_partial_ionization) then
-      hd_get_Rfactor=>Rfactor_from_temperature_ionization
-      phys_update_temperature => hd_update_temperature
-    else if(associated(usr_Rfactor)) then
-      hd_get_Rfactor=>usr_Rfactor
-    else
-      hd_get_Rfactor=>Rfactor_from_constant_ionization
-    end if
+    ! ! choose Rfactor in ideal gas law
+    ! if(hd_partial_ionization) then
+    !   hd_get_Rfactor=>Rfactor_from_temperature_ionization
+    !   phys_update_temperature => hd_update_temperature
+    ! else if(associated(usr_Rfactor)) then
+    !   hd_get_Rfactor=>usr_Rfactor
+    ! else
+    !   hd_get_Rfactor=>Rfactor_from_constant_ionization
+    ! end if
 
     ! initialize thermal conduction module
     if (hd_thermal_conduction) then
@@ -310,9 +323,12 @@ contains
       call add_sts_method(hd_get_tc_dt_hd,hd_sts_set_source_tc_hd,e_,1,e_,1,.false.)
       call set_conversion_methods_to_head(hd_e_to_ei, hd_ei_to_e)
       call set_error_handling_to_head(hd_tc_handle_small_e)
-      tc_fl%get_temperature_from_conserved => hd_get_temperature_from_etot
-      tc_fl%get_temperature_from_eint => hd_get_temperature_from_eint
-      tc_fl%get_rho => hd_get_rho
+      ! tc_fl%get_temperature_from_conserved => hd_get_temperature_from_etot
+      ! tc_fl%get_temperature_from_eint => hd_get_temperature_from_eint
+      ! tc_fl%get_temperature_from_conserved => eos%get_temperature_from_etot
+      ! tc_fl%get_temperature_from_eint => eos%get_temperature_from_eint
+      ! ! tc_fl%get_rho => hd_get_rho
+      ! tc_fl%get_rho => eos%get_rho
       tc_fl%e_ = e_
     end if
 
@@ -323,16 +339,17 @@ contains
       call radiative_cooling_init_params(hd_gamma,He_abundance)
       allocate(rc_fl)
       call radiative_cooling_init(rc_fl,rc_params_read)
-      rc_fl%get_rho => hd_get_rho
-      rc_fl%get_pthermal => hd_get_pthermal
-      rc_fl%get_var_Rfactor => hd_get_Rfactor
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
     end if
     allocate(te_fl_hd)
-    te_fl_hd%get_rho=> hd_get_rho
-    te_fl_hd%get_pthermal=> hd_get_pthermal
-    te_fl_hd%get_var_Rfactor => hd_get_Rfactor
+    ! te_fl_hd%get_rho=> hd_get_rho
+    te_fl_hd%get_rho=> eos%get_rho
+    ! te_fl_hd%get_pthermal=> hd_get_pthermal
+    te_fl_hd%get_pthermal=> eos%get_thermal_pressure
+    te_fl_hd%get_var_Rfactor => eos%get_Rfactor
+
+
 {^IFTHREED
     phys_te_images => hd_te_images
 }
@@ -471,15 +488,15 @@ contains
 
     end subroutine tc_params_read_hd
 
-  subroutine hd_get_rho(w,x,ixI^L,ixO^L,rho)
-    use mod_global_parameters
-    integer, intent(in)           :: ixI^L, ixO^L
-    double precision, intent(in)  :: w(ixI^S,1:nw),x(ixI^S,1:ndim)
-    double precision, intent(out) :: rho(ixI^S)
+  ! subroutine hd_get_rho(w,x,ixI^L,ixO^L,rho)
+  !   use mod_global_parameters
+  !   integer, intent(in)           :: ixI^L, ixO^L
+  !   double precision, intent(in)  :: w(ixI^S,1:nw),x(ixI^S,1:ndim)
+  !   double precision, intent(out) :: rho(ixI^S)
 
-    rho(ixO^S) = w(ixO^S,rho_)
+  !   rho(ixO^S) = w(ixO^S,rho_) * eos%nH2rhoFactor
 
-  end subroutine hd_get_rho
+  ! end subroutine hd_get_rho
 
 !!end th cond
 !!rad cool
@@ -571,6 +588,12 @@ contains
         b=2d0+3d0*He_abundance
       end if
       RR=1d0
+    else if (eos%eos_type == 'LTE') then
+      !> Remove the assumed FI normalisation from the units and handle in EoS
+      a=1d0
+      b=1d0
+      eos%nH2rhoFactor = 1d0+4d0*He_abundance
+      RR=(2d0+3d0*eos%He_abundance) / (1d0+4d0*eos%He_abundance)
     else
       a=1d0
       b=1d0
@@ -653,85 +676,86 @@ contains
     integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, nw)
     logical, intent(inout)       :: flag(ixI^S,1:nw)
+    
     double precision             :: tmp(ixI^S)
+    double precision :: x(ixI^S, 1:ndim)
 
     flag=.false.
-
+    x(ixI^S,1:ndim)=block%x(ixI^S,1:ndim) !> Rather than redefining the hd_check_w and limiter procedure interfaces
     if (hd_energy) then
        if (primitive) then
           where(w(ixO^S, e_) < small_pressure) flag(ixO^S,e_) = .true.
        else
-          tmp(ixO^S)=(hd_gamma-1.0d0)*(w(ixO^S,e_)-&
-           half*(^C&w(ixO^S,m^C_)**2+)/w(ixO^S,rho_))
+          call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, tmp)
           where(tmp(ixO^S) < small_pressure) flag(ixO^S,e_) = .true.
        endif
     end if
 
     where(w(ixO^S, rho_) < small_density) flag(ixO^S,rho_) = .true.
 
-    if(hd_dust) call dust_check_w(ixI^L,ixO^L,w,flag)
+    if(hd_dust) call dust_check_w(ixI^L,ixO^L,w,x,flag)
 
   end subroutine hd_check_w
 
-  !> Transform primitive variables into conservative ones
-  subroutine hd_to_conserved(ixI^L, ixO^L, w, x)
-    use mod_global_parameters
-    use mod_dust, only: dust_to_conserved
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(inout) :: w(ixI^S, nw)
-    double precision, intent(in)    :: x(ixI^S, 1:ndim)
+  ! !> Transform primitive variables into conservative ones
+  ! subroutine hd_to_conserved(ixI^L, ixO^L, w, x)
+  !   use mod_global_parameters
+  !   use mod_dust, only: dust_to_conserved
+  !   integer, intent(in)             :: ixI^L, ixO^L
+  !   double precision, intent(inout) :: w(ixI^S, nw)
+  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    integer :: ix^D
+  !   integer :: ix^D
 
-    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      if (hd_energy) then
-         ! Calculate total energy from pressure and kinetic energy
-         w(ix^D,e_)=w(ix^D, e_)*inv_gamma_1+&
-          half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
-      end if
-      ! Convert velocity to momentum
-      ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
-    {end do\}
+  !   {do ix^DB=ixOmin^DB,ixOmax^DB\}
+  !     if (hd_energy) then
+  !        ! Calculate total energy from pressure and kinetic energy
+  !        w(ix^D,e_)=w(ix^D, e_)*inv_gamma_1+&
+  !         half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+  !     end if
+  !     ! Convert velocity to momentum
+  !     ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
+  !   {end do\}
 
-    if (hd_dust) then
-      call dust_to_conserved(ixI^L, ixO^L, w, x)
-    end if
+  !   if (hd_dust) then
+  !     call dust_to_conserved(ixI^L, ixO^L, w, x)
+  !   end if
 
-  end subroutine hd_to_conserved
+  ! end subroutine hd_to_conserved
 
-  !> Transform conservative variables into primitive ones
-  subroutine hd_to_primitive(ixI^L, ixO^L, w, x)
-    use mod_global_parameters
-    use mod_dust, only: dust_to_primitive
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(inout) :: w(ixI^S, nw)
-    double precision, intent(in)    :: x(ixI^S, 1:ndim)
+  ! !> Transform conservative variables into primitive ones
+  ! subroutine hd_to_primitive(ixI^L, ixO^L, w, x)
+  !   use mod_global_parameters
+  !   use mod_dust, only: dust_to_primitive
+  !   integer, intent(in)             :: ixI^L, ixO^L
+  !   double precision, intent(inout) :: w(ixI^S, nw)
+  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision                :: inv_rho
-    integer :: ix^D
+  !   double precision                :: inv_rho
+  !   integer :: ix^D
 
-    if (fix_small_values) then
-      call hd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'hd_to_primitive')
-    end if
+  !   if (fix_small_values) then
+  !     call hd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'hd_to_primitive')
+  !   end if
 
-   {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      inv_rho = 1.d0/w(ix^D,rho_)
-      ! Convert momentum to velocity
-      ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
-      ! Calculate pressure = (gamma-1) * (e-ek)
-      if(hd_energy) then
-         ! Compute pressure
-        w(ix^D,p_)=(hd_gamma-1.d0)*(w(ix^D,e_)&
-                  -half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
-      end if
-   {end do\}
+  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
+  !     inv_rho = 1.d0/w(ix^D,rho_)
+  !     ! Convert momentum to velocity
+  !     ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
+  !     ! Calculate pressure = (gamma-1) * (e-ek)
+  !     if(hd_energy) then
+  !        ! Compute pressure
+  !       w(ix^D,p_)=(hd_gamma-1.d0)*(w(ix^D,e_)&
+  !                 -half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
+  !     end if
+  !  {end do\}
 
-    ! Convert dust momentum to dust velocity
-    if (hd_dust) then
-      call dust_to_primitive(ixI^L, ixO^L, w, x)
-    end if
+  !   ! Convert dust momentum to dust velocity
+  !   if (hd_dust) then
+  !     call dust_to_primitive(ixI^L, ixO^L, w, x)
+  !   end if
 
-  end subroutine hd_to_primitive
+  ! end subroutine hd_to_primitive
 
   !> Transform internal energy to total energy
   subroutine hd_ei_to_e(ixI^L,ixO^L,w,x)
@@ -842,15 +866,19 @@ contains
     double precision, intent(out) :: tco_local, Tmax_local
 
     double precision, parameter :: trac_delta=0.25d0
-    double precision :: tmp1(ixI^S),Te(ixI^S),lts(ixI^S)
+    double precision :: tmp1(ixI^S),Te(ixI^S),lts(ixI^S), R(ixI^S)
     double precision :: ltr(ixI^S),ltrc,ltrp,tcoff(ixI^S)
     integer :: jxO^L,hxO^L
     integer :: jxP^L,hxP^L,ixP^L
     logical :: lrlt(ixI^S)
 
     {^IFONED
-    call hd_get_Rfactor(w,x,ixI^L,ixI^L,Te)
-    Te(ixI^S)=w(ixI^S,p_)/(Te(ixI^S)*w(ixI^S,rho_))
+    call eos%get_Rfactor(w,x,ixI^L,ixI^L,R)
+    Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*w(ixI^S,rho_))
+
+    if (eos%eos_type == 'LTE') then
+      Te(ixI^S) = w(ixI^S, Te_)
+    endif
 
     Tco_local=zero
     Tmax_local=maxval(Te(ixO^S))
@@ -1008,9 +1036,11 @@ contains
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(out)   :: csound2(ixI^S)
+    double precision :: pthermal(ixI^S)
 
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,csound2)
-    csound2(ixO^S)=hd_gamma*csound2(ixO^S)/w(ixO^S,rho_)
+    ! call hd_get_pthermal(w,x,ixI^L,ixO^L,pthermal)
+    call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pthermal)
+    csound2(ixO^S)=hd_gamma*pthermal(ixO^S)/w(ixO^S,rho_)
 
   end subroutine hd_get_csound2
 
@@ -1027,8 +1057,9 @@ contains
     integer                      :: iw, ix^D
 
     if (hd_energy) then
-       pth(ixO^S) = (hd_gamma - 1.0d0) * (w(ixO^S, e_) - &
-            hd_kin_en(w, ixI^L, ixO^L))
+      !  pth(ixO^S) = (hd_gamma - 1.0d0) * (w(ixO^S, e_) - &
+      !       hd_kin_en(w, ixI^L, ixO^L))
+      call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pth)
     else
        if (.not. associated(usr_set_pthermal)) then
           pth(ixO^S) = hd_adiab * w(ixO^S, rho_)**hd_gamma
@@ -1064,34 +1095,34 @@ contains
 
   end subroutine hd_get_pthermal
 
-  !> Calculate temperature=p/rho when in e_ the  total energy is stored
-  subroutine hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
+  ! !> Calculate temperature=p/rho when in e_ the  total energy is stored
+  ! subroutine hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
+  !   use mod_global_parameters
+  !   integer, intent(in)          :: ixI^L, ixO^L
+  !   double precision, intent(in) :: w(ixI^S, 1:nw)
+  !   double precision, intent(in) :: x(ixI^S, 1:ndim)
+  !   double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S)
+  !   double precision :: R(ixI^S)
 
-    call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    call hd_get_pthermal(w, x, ixI^L, ixO^L, res)
-    res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
-  end subroutine hd_get_temperature_from_etot
+  !   call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+  !   call hd_get_pthermal(w, x, ixI^L, ixO^L, res)
+  !   res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+  ! end subroutine hd_get_temperature_from_etot
 
-  !> Calculate temperature=p/rho when in e_ the  internal energy is stored
-  subroutine hd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
+  ! !> Calculate temperature=p/rho when in e_ the  internal energy is stored
+  ! subroutine hd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
+  !   use mod_global_parameters
+  !   integer, intent(in)          :: ixI^L, ixO^L
+  !   double precision, intent(in) :: w(ixI^S, 1:nw)
+  !   double precision, intent(in) :: x(ixI^S, 1:ndim)
+  !   double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S)
+  !   double precision :: R(ixI^S)
 
-    call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S) = (hd_gamma - 1.0d0) * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
-  end subroutine hd_get_temperature_from_eint
+  !   call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+  !   res(ixO^S) = (hd_gamma - 1.0d0) * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+  ! end subroutine hd_get_temperature_from_eint
 
   ! Calculate flux f_idim[iw]
   subroutine hd_get_flux(wC, w, x, ixI^L, ixO^L, idim, f)
@@ -1350,7 +1381,7 @@ contains
     if(hd_partial_ionization) then
       if(.not.qsourcesplit) then
         active = .true.
-        call hd_update_temperature(ixI^L,ixO^L,wCT,w,x)
+        call eos%update_PI_temperature(ixI^L,ixO^L,wCT,w,x)
       end if
     end if
 
@@ -1482,11 +1513,13 @@ contains
            call small_values_average(ixI^L, ixO^L, w, x, flag, rho_)
            if(hd_energy) then
              ! do averaging of pressure
-             w(ixI^S,p_)=(hd_gamma-1.d0)*(w(ixI^S,e_) &
-              -0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_))
+            !  w(ixI^S,p_)=(hd_gamma-1.d0)*(w(ixI^S,e_) &
+            !   -0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_))
+             call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, w(ixO^S,p_))
              call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
-             w(ixI^S,e_)=w(ixI^S,p_)/(hd_gamma-1.d0) &
-               +0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_)
+             call eos%p_to_e(ixI^L, ixO^L, w, x)
+              ! w(ixI^S,e_)=w(ixI^S,p_)/(hd_gamma-1.d0) &
+              !  +0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_)
            end if
            if(hd_dust)then
               do n=1,dust_n_species
@@ -1502,7 +1535,8 @@ contains
           !convert w to primitive
           ! Calculate pressure = (gamma-1) * (e-ek)
           if(hd_energy) then
-            w(ixO^S,p_)=(hd_gamma-1.d0)*(w(ixO^S,e_)-hd_kin_en(w,ixI^L,ixO^L))
+            call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, w(ixO^S,p_))
+            ! w(ixO^S,p_)=(hd_gamma-1.d0)*(w(ixO^S,e_)-hd_kin_en(w,ixI^L,ixO^L))
           end if
           ! Convert gas momentum to velocity
           do idir = 1, ndir
@@ -1514,51 +1548,5 @@ contains
       end select
     end if
   end subroutine hd_handle_small_values
-
-  subroutine Rfactor_from_temperature_ionization(w,x,ixI^L,ixO^L,Rfactor)
-    use mod_global_parameters
-    use mod_ionization_degree
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,1:nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: Rfactor(ixI^S)
-
-    double precision :: iz_H(ixO^S),iz_He(ixO^S)
-
-    call ionization_degree_from_temperature(ixI^L,ixO^L,w(ixI^S,Te_),iz_H,iz_He)
-    ! assume the first and second ionization of Helium have the same degree
-    Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/2.3d0
-
-  end subroutine Rfactor_from_temperature_ionization
-
-  subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
-    use mod_global_parameters
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,1:nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: Rfactor(ixI^S)
-
-    Rfactor(ixO^S)=RR
-
-  end subroutine Rfactor_from_constant_ionization
-
-  subroutine hd_update_temperature(ixI^L,ixO^L,wCT,w,x)
-    use mod_global_parameters
-    use mod_ionization_degree
-
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: w(ixI^S,1:nw)
-
-    double precision :: iz_H(ixO^S),iz_He(ixO^S), pth(ixI^S)
-
-    call ionization_degree_from_temperature(ixI^L,ixO^L,wCT(ixI^S,Te_),iz_H,iz_He)
-
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,pth)
-
-    w(ixO^S,Te_)=(2.d0+3.d0*He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
-     He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
-
-  end subroutine hd_update_temperature
 
 end module mod_hd_phys

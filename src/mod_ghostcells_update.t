@@ -111,6 +111,17 @@ module mod_ghostcells_update
     double precision, dimension(:^D&,:), allocatable :: w
   end type wbuffer
 
+  abstract interface
+    subroutine update_eos_bc_sub(ixI^L, ixO^L, w, x)
+      use mod_global_parameters
+      integer, intent(in)             :: ixI^L, ixO^L
+      double precision, intent(inout) :: w(ixI^S, nw)
+      double precision, intent(in)    :: x(ixI^S, 1:ndim)
+    end subroutine update_eos_bc_sub
+  end interface
+
+  procedure(update_eos_bc_sub), pointer     :: update_eos_4_bc      => null()
+
 contains
 
   subroutine init_bc()
@@ -612,6 +623,7 @@ contains
             else 
               if (neighbor_type(i^D,igrid) /= neighbor_boundary) cycle
             end if
+            call update_eos_4_bc(ixG^LL,ixM^LL,psb(igrid)%w,psb(igrid)%x) !>Ensure interior eos grid is ready for e.g., extrapolation
             call bc_phys(iside,idims,time,qdt,psb(igrid),ixG^LL,ixB^L)
           end do
         end do

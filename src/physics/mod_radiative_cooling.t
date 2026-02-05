@@ -98,6 +98,7 @@ module mod_radiative_cooling
     character(len=std_len)  :: coolmethod
 
     procedure (get_subr1), pointer, nopass :: get_rho => null()
+    procedure (get_subr1), pointer, nopass :: get_Te => null()
     procedure (get_subr1), pointer, nopass :: get_rho_equi => null()
     procedure (get_subr1), pointer, nopass :: get_pthermal => null()
     procedure (get_subr1), pointer, nopass :: get_pthermal_equi => null()
@@ -1244,10 +1245,12 @@ module mod_radiative_cooling
       ! Limit timestep to avoid cooling problems when using explicit cooling
       !
       if(fl%coolmethod == 'explicit1') then
-        call fl%get_pthermal(w,x,ixI^L,ixO^L,pth) 
+        ! call fl%get_pthermal(w,x,ixI^L,ixO^L,pth) 
         call fl%get_rho(w,x,ixI^L,ixO^L,rho) 
-        call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Rfactor)
-        Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+        ! call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Rfactor)
+        call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+        
+        ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
         {do ix^DB = ixO^LIM^DB\}
           !  Determine explicit cooling
           !  If temperature is below floor level, no cooling. 
@@ -1287,10 +1290,11 @@ module mod_radiative_cooling
       double precision :: L1,Te(ixI^S),Rfactor(ixI^S)
       integer :: ix^D
 
-      call fl%get_pthermal(w,x,ixI^L,ixO^L,pth)
+      ! call fl%get_pthermal(w,x,ixI^L,ixO^L,pth)
       call fl%get_rho(w,x,ixI^L,ixO^L,rho)
-      call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Rfactor)
-      Te(ixO^S) = pth(ixO^S) / (rho(ixO^S)*Rfactor(ixO^S))
+      ! call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Rfactor)
+      ! Te(ixO^S) = pth(ixO^S) / (rho(ixO^S)*Rfactor(ixO^S))
+      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
 
       {do ix^DB = ixO^LIM^DB\}
          ! Determine explicit cooling
@@ -1335,7 +1339,8 @@ module mod_radiative_cooling
       call fl%get_pthermal(wCT, x, ixI^L, ixO^L, pth)
       call fl%get_rho(wCT, x, ixI^L, ixO^L, rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+      call fl%get_Te(wCT, x, ixI^L, ixO^L, Te)
+      ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       call fl%get_pthermal(w, x, ixI^L, ixO^L, pnew)
       call fl%get_rho(w, x, ixI^L, ixO^L, rhonew)
@@ -1458,7 +1463,8 @@ module mod_radiative_cooling
       call fl%get_pthermal_equi(wCT,x,ixI^L,ixO^L,pth)
       call fl%get_rho_equi(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+      ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+      call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
 
       res=0d0
 
@@ -1551,7 +1557,8 @@ module mod_radiative_cooling
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
          emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
@@ -1612,7 +1619,8 @@ module mod_radiative_cooling
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
          !  Calculate explicit cooling value
@@ -1710,7 +1718,8 @@ module mod_radiative_cooling
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
          emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
@@ -1780,7 +1789,8 @@ module mod_radiative_cooling
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
          elocal   = pth(ix^D)*invgam
@@ -1847,15 +1857,16 @@ module mod_radiative_cooling
 
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      if(phys_equi_pe) then
-        ! need pressure splitting
-        call fl%get_pthermal(wCT,x,ixI^L,ixO^L,Te)
-        Te(ixO^S)=Te(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
-      else
-        Te(ixO^S)=wCTprim(ixO^S,iw_e)/(rho(ixO^S)*Rfactor(ixO^S))
-      end if
+      ! if(phys_equi_pe) then
+      !   ! need pressure splitting
+      !   call fl%get_pthermal(wCT,x,ixI^L,ixO^L,Te)
+      !   Te(ixO^S)=Te(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
+      ! else
+      !   Te(ixO^S)=wCTprim(ixO^S,iw_e)/(rho(ixO^S)*Rfactor(ixO^S))
+      ! end if
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(w,x,ixI^L,ixO^L,rhonew)
+      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
 
       fact = fl%lref*qdt/fl%tref
 

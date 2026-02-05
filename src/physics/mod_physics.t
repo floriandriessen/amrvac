@@ -55,6 +55,7 @@ module mod_physics
   procedure(sub_set_mg_bounds), pointer   :: phys_set_mg_bounds          => null()
   procedure(sub_convert), pointer         :: phys_to_conserved           => null()
   procedure(sub_convert), pointer         :: phys_to_primitive           => null()
+  procedure(sub_check_params), pointer    :: phys_bind_eos_to_source     => null()
   procedure(sub_modify_wLR), pointer      :: phys_modify_wLR             => null()
   procedure(sub_get_cmax), pointer        :: phys_get_cmax               => null()
   procedure(sub_get_a2max), pointer       :: phys_get_a2max              => null()
@@ -63,6 +64,8 @@ module mod_physics
   procedure(sub_get_H_speed), pointer     :: phys_get_H_speed            => null()
   procedure(sub_get_cbounds), pointer     :: phys_get_cbounds            => null()
   procedure(sub_get_flux), pointer        :: phys_get_flux               => null()
+  procedure(sub_e_to_ei), pointer         :: phys_e_to_ei                => null()
+  procedure(sub_e_to_ei), pointer         :: phys_ei_to_e                => null()
   procedure(sub_get_v), pointer           :: phys_get_v                  => null()
   procedure(sub_get_rho), pointer         :: phys_get_rho                => null()
   procedure(sub_get_dt), pointer          :: phys_get_dt                 => null()
@@ -192,6 +195,13 @@ module mod_physics
        double precision, intent(in)    :: x(ixI^S, 1:^ND)
        double precision, intent(out)   :: f(ixI^S, nwflux)
      end subroutine sub_get_flux
+
+     subroutine sub_e_to_ei(ixI^L,ixO^L,w,x)
+      use mod_global_parameters
+      integer, intent(in)             :: ixI^L, ixO^L
+      double precision, intent(inout) :: w(ixI^S, nw)
+      double precision, intent(in)    :: x(ixI^S, 1:ndim)
+     end subroutine sub_e_to_ei
 
      subroutine sub_add_source_geom(qdt, dtfactor, ixI^L, ixO^L, wCT, wprim, w, x)
        use mod_global_parameters
