@@ -358,7 +358,13 @@ contains
     call ffhd_physical_units()
 
     if(ffhd_hyperbolic_thermal_conduction) then
-      hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+      if(SI_unit)then
+        ! parallel conduction Spitzer
+        hypertc_kappa=8.d-12*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+      else
+        ! in cgs
+        hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+      endif
     end if
     if(.not. ffhd_energy .and. ffhd_thermal_conduction) then
       call mpistop("thermal conduction needs ffhd_energy=T")
@@ -1392,80 +1398,50 @@ contains
 
   subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
+    use mod_geometry
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: qdt
     double precision, dimension(ixI^S,1:ndim), intent(in) :: x
     double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
-    double precision, dimension(ixI^S) :: Te
+    double precision, dimension(ixI^S) :: Te,R,BgradT,gradT
     double precision :: sigma_T5,sigma_T7,sigmaT5_bgradT,f_sat,tau
-    integer :: ix^D
+    integer :: ix^D,idims
 
-    Te(ixI^S)=wCTprim(ixI^S,p_)/wCT(ixI^S,rho_)
-    ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
-    ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
-   {^IFTWOD
-    do ix2=ixOmin2,ixOmax2
-      do ix1=ixOmin1,ixOmax1
-        if(ffhd_trac) then
-          if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-            sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
-            sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
-          else
-            sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
-            sigma_T7=sigma_T5*Te(ix^D)
-          end if
-        else
-          sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
-          sigma_T7=sigma_T5*Te(ix^D)
-        end if
-        sigmaT5_bgradT=sigma_T5*(&
-           block%B0(ix^D,1,0)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
-          +block%B0(ix^D,2,0)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
-        if(ffhd_htc_sat) then
-          f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*wCT(ix^D,rho_)*(ffhd_gamma*wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0)
-          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
-          w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
-        else
-          w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-           max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
-        end if
-      end do
-    end do
+    call ffhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
+    Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*wCT(ixI^S,rho_))
+    {^IFONED
+    call gradient(Te,ixI^L,ixO^L,1,BgradT,2)
     }
-   {^IFTHREED
-    do ix3=ixOmin3,ixOmax3
-      do ix2=ixOmin2,ixOmax2
-        do ix1=ixOmin1,ixOmax1
-          if(ffhd_trac) then
-            if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-              sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
-              sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
-            else
-              sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
-              sigma_T7=sigma_T5*Te(ix^D)
-            end if
-          else
-            sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
-            sigma_T7=sigma_T5*Te(ix^D)
-          end if
-          sigmaT5_bgradT=sigma_T5*(&
-             block%B0(ix^D,1,0)*((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)&
-            +block%B0(ix^D,2,0)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
-            +block%B0(ix^D,3,0)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
-          if(ffhd_htc_sat) then
-            f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*wCT(ix^D,rho_)*(ffhd_gamma*wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0)
-            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
-            w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
-          else
-            w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-             max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
-          end if
-        end do
-      end do
-    end do
+    {^NOONED
+    BgradT(ixO^S)=zero
+    do idims=1,ndim
+       ! compute gradient conform the geometry, 4th order CD for uniform cartesian by setting 2
+       call gradient(Te,ixI^L,ixO^L,idims,gradT,2)
+       BgradT(ixO^S)=BgradT(ixO^S)+(block%B0(ixO^S,idims,0))*gradT(ixO^S)
+    enddo
     }
+   {do ix^DB=ixOmin^DB,ixOmax^DB\}
+      if(ffhd_trac) then
+         R(ix^D)=max(Te(ix^D),block%wextra(ix^D,Tcoff_))
+      else
+         R(ix^D)=Te(ix^D)
+      endif
+      sigma_T5=hypertc_kappa*dsqrt(R(ix^D)**5)
+      sigma_T7=sigma_T5*R(ix^D)
+      sigmaT5_bgradT=sigma_T5*BgradT(ix^D)
+      if(ffhd_htc_sat) then
+        f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*wCT(ix^D,rho_)*(ffhd_gamma*wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0))
+        tau=max(4.d0*dt, f_sat*sigma_T7/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+        w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+      else
+        w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
+         max(4.d0*dt, sigma_T7/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+      end if
+    {end do\}
+   
+
   end subroutine add_hypertc_source
 
 end module mod_ffhd_phys

@@ -138,6 +138,9 @@ module mod_global_parameters
   !> global fastest wave speed needed in fd scheme and glm method
   double precision :: cmax_global
 
+  !> global sound speed squared for hyperbolic TC
+  double precision :: cs2_global
+
   !> global fastest flow speed needed in glm method
   double precision :: vmax_global
 
@@ -675,6 +678,9 @@ module mod_global_parameters
 
   !> need global maximal wave speed
   logical :: need_global_cmax=.false.
+
+  !> need global squared sound speed
+  logical :: need_global_cs2=.false.
 
   !> global value for schmid scheme
   logical :: need_global_a2max=.false.

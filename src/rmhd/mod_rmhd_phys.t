@@ -425,14 +425,6 @@ contains
       tracer(itr) = var_set_fluxvar("trc", "trp", itr, need_bc=.false.)
     end do
 
-    !if(rmhd_hyperbolic_thermal_conduction) then
-    !  ! hyperbolic thermal conduction flux q
-    !  q_ = var_set_auxvar('q','q')
-    !  need_global_cmax=.true.
-    !else
-    !  q_=-1
-    !end if
-
     !  set temperature as an auxiliary variable to get ionization degree
     if(rmhd_partial_ionization) then
       Te_ = var_set_auxvar('Te','Te')
@@ -623,7 +615,13 @@ contains
     end select
 
     if(rmhd_hyperbolic_thermal_conduction) then
-      hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+      if(SI_unit)then
+        ! parallel conduction Spitzer
+        hypertc_kappa=8.d-12*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+      else
+        ! in cgs
+        hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+      endif
     end if
     if(.not. rmhd_energy .and. rmhd_thermal_conduction) then
       call mpistop("thermal conduction needs rmhd_energy=T")
@@ -2352,7 +2350,7 @@ contains
     end do
     if(rmhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -2699,6 +2697,7 @@ contains
     integer :: hxC^L,hxO^L,ixC^L,jxC^L,jxO^L,kxC^L
 
     call rmhd_get_Rfactor(wCTprim,x,ixI^L,ixI^L,R)
+
     !Te(ixI^S)=wCTprim(ixI^S,p_)/wCT(ixI^S,rho_)
     Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*w(ixI^S,rho_))
     call get_tau(ixI^L,ixO^L,wCTprim,Te,tau,sigT)
