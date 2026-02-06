@@ -406,7 +406,7 @@ contains
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
 
         !> The denominator here (2+3*He_abundance) technically depends on the normalisation set in (m)hd_physical_units etc.
-        res(ixO^S) = nH(ixO^S) * (1.0 + eos%He_abundance + (w(ixO^S,iw_ne) / nH(ixO^S))) * w(ixO^S,iw_te)
+        res(ixO^S) = nH(ixO^S) * (1.0d0 + eos%He_abundance + (w(ixO^S,iw_ne) / nH(ixO^S))) * w(ixO^S,iw_te)
 
     end subroutine get_thermal_pressure_LTE
 

@@ -184,7 +184,7 @@ contains
     phys_energy  = hd_energy
     phys_total_energy  = hd_energy
     phys_internal_e = .false.
-    phys_gamma = hd_gamma
+    phys_gamma = eos%gamma
     phys_partial_ionization=hd_partial_ionization
 
     phys_trac=hd_trac
@@ -316,7 +316,7 @@ contains
            call mpistop("thermal conduction needs hd_energy=T")
 
       call sts_init()
-      call tc_init_params(hd_gamma)
+      call tc_init_params(eos%gamma)
 
       allocate(tc_fl)
       call tc_get_hd_params(tc_fl,tc_params_read_hd)
@@ -336,7 +336,7 @@ contains
     if (hd_radiative_cooling) then
       if (.not. hd_energy) &
            call mpistop("radiative cooling needs hd_energy=T")
-      call radiative_cooling_init_params(hd_gamma,He_abundance)
+      call radiative_cooling_init_params(eos%gamma,eos%He_abundance)
       allocate(rc_fl)
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%e_ = e_
@@ -363,7 +363,7 @@ contains
     if (hd_rotating_frame) call rotating_frame_init()
 
     ! Initialize CAK radiation force module
-    if (hd_cak_force) call cak_init(hd_gamma)
+    if (hd_cak_force) call cak_init(eos%gamma)
 
     ! Initialize particles module
     if (hd_particles) then
@@ -458,7 +458,7 @@ contains
         call small_values_average(ixI^L, ixO^L, w, x, flag, e_)
       case default
         ! small values error shows primitive variables
-        w(ixO^S,e_)=w(ixO^S,e_)*(hd_gamma - 1.0d0)
+        w(ixO^S,e_)=w(ixO^S,e_)*(eos%gamma - 1.0d0)
         do idir = 1, ndir
            w(ixO^S, iw_mom(idir)) = w(ixO^S, iw_mom(idir))/w(ixO^S,rho_)
         end do
@@ -549,14 +549,14 @@ contains
     use mod_dust, only: dust_check_params, dust_implicit_update, dust_evaluate_implicit
 
     if (.not. hd_energy) then
-       if (hd_gamma <= 0.0d0) call mpistop ("Error: hd_gamma <= 0")
+       if (eos%gamma <= 0.0d0) call mpistop ("Error: eos%gamma <= 0")
        if (hd_adiab < 0.0d0) call mpistop  ("Error: hd_adiab < 0")
-       small_pressure= hd_adiab*small_density**hd_gamma
+       small_pressure= hd_adiab*small_density**eos%gamma
     else
-       if (hd_gamma <= 0.0d0 .or. hd_gamma == 1.0d0) &
-            call mpistop ("Error: hd_gamma <= 0 or hd_gamma == 1.0")
-       small_e = small_pressure/(hd_gamma - 1.0d0)
-       inv_gamma_1=1.d0/(hd_gamma-1.d0)
+       if (eos%gamma <= 0.0d0 .or. eos%gamma == 1.0d0) &
+            call mpistop ("Error: eos%gamma <= 0 or eos%gamma == 1.0")
+       small_e = small_pressure/(eos%gamma - 1.0d0)
+       inv_gamma_1=1.d0/(eos%gamma-1.d0)
     end if
 
     if (hd_dust) call dust_check_params()
@@ -819,14 +819,14 @@ contains
     double precision, intent(inout)           :: cmax(ixI^S)
 
     if(hd_energy) then
-      cmax(ixO^S)=dabs(w(ixO^S,mom(idim)))+dsqrt(hd_gamma*w(ixO^S,p_)/w(ixO^S,rho_))
+      cmax(ixO^S)=dabs(w(ixO^S,mom(idim)))+dsqrt(eos%gamma*w(ixO^S,p_)/w(ixO^S,rho_))
     else
       if (.not. associated(usr_set_pthermal)) then
-        cmax(ixO^S) = hd_adiab * w(ixO^S, rho_)**hd_gamma
+        cmax(ixO^S) = hd_adiab * w(ixO^S, rho_)**eos%gamma
       else
         call usr_set_pthermal(w,x,ixI^L,ixO^L,cmax)
       end if
-      cmax(ixO^S)=dabs(w(ixO^S,mom(idim)))+dsqrt(hd_gamma*cmax(ixO^S)/w(ixO^S,rho_))
+      cmax(ixO^S)=dabs(w(ixO^S,mom(idim)))+dsqrt(eos%gamma*cmax(ixO^S)/w(ixO^S,rho_))
     end if
 
     if (hd_dust) then
@@ -946,8 +946,8 @@ contains
       umean(ixO^S)=(wLp(ixO^S,mom(idim))*tmp1(ixO^S)+wRp(ixO^S,mom(idim))*tmp2(ixO^S))*tmp3(ixO^S)
 
       if(hd_energy) then
-        csoundL(ixO^S)=hd_gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
-        csoundR(ixO^S)=hd_gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+        csoundL(ixO^S)=eos%gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
+        csoundR(ixO^S)=eos%gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
       else
         call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
         call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
@@ -1001,8 +1001,8 @@ contains
     case (3)
       ! Miyoshi 2005 JCP 208, 315 equation (67)
       if(hd_energy) then
-        csoundL(ixO^S)=hd_gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
-        csoundR(ixO^S)=hd_gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+        csoundL(ixO^S)=eos%gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
+        csoundR(ixO^S)=eos%gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
       else
         call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
         call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
@@ -1040,7 +1040,7 @@ contains
 
     ! call hd_get_pthermal(w,x,ixI^L,ixO^L,pthermal)
     call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pthermal)
-    csound2(ixO^S)=hd_gamma*pthermal(ixO^S)/w(ixO^S,rho_)
+    csound2(ixO^S)=eos%gamma*pthermal(ixO^S)/w(ixO^S,rho_)
 
   end subroutine hd_get_csound2
 
@@ -1062,7 +1062,7 @@ contains
       call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pth)
     else
        if (.not. associated(usr_set_pthermal)) then
-          pth(ixO^S) = hd_adiab * w(ixO^S, rho_)**hd_gamma
+          pth(ixO^S) = hd_adiab * w(ixO^S, rho_)**eos%gamma
        else
           call usr_set_pthermal(w,x,ixI^L,ixO^L,pth)
        end if
@@ -1217,7 +1217,7 @@ contains
         source(ixO^S)=wprim(ixO^S, p_)
       else
         if(.not. associated(usr_set_pthermal)) then
-          source(ixO^S)=hd_adiab * wprim(ixO^S, rho_)**hd_gamma
+          source(ixO^S)=hd_adiab * wprim(ixO^S, rho_)**eos%gamma
         else
           call usr_set_pthermal(wCT,x,ixI^L,ixO^L,source)
         end if
@@ -1237,7 +1237,7 @@ contains
               source(ixO^S)=wprim(ixO^S, p_)
             else
               if(.not. associated(usr_set_pthermal)) then
-                source(ixO^S)=hd_adiab * wprim(ixO^S, rho_)**hd_gamma
+                source(ixO^S)=hd_adiab * wprim(ixO^S, rho_)**eos%gamma
               else
                 call usr_set_pthermal(wCT,x,ixI^L,ixO^L,source)
               end if
@@ -1277,7 +1277,7 @@ contains
          pth(ixO^S)=wprim(ixO^S, p_)
        else
          if(.not. associated(usr_set_pthermal)) then
-           pth(ixO^S)=hd_adiab * wprim(ixO^S, rho_)**hd_gamma
+           pth(ixO^S)=hd_adiab * wprim(ixO^S, rho_)**eos%gamma
          else
            call usr_set_pthermal(wCT,x,ixI^L,ixO^L,pth)
          end if
