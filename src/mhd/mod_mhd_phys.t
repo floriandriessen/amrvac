@@ -522,7 +522,7 @@ contains
     if(mhd_hyperbolic_thermal_conduction) then
       ! hyperbolic thermal conduction flux q
       q_ = var_set_q()
-      !need_global_cmax=.true.
+      need_global_cmax=.true.
       need_global_cs2 = .true.
     else
       q_=-1
@@ -3918,7 +3918,7 @@ contains
 
     if(mhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4038,7 +4038,7 @@ contains
 
     if(mhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4132,7 +4132,7 @@ contains
     end do
     if(mhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*btotal(ix^D,idim)/(dsqrt(^C&btotal(ix^D,^C)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*btotal(ix^D,idim)/(dsqrt(^D&btotal({ix^D},^D)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4221,7 +4221,7 @@ contains
     end do
     if(mhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4662,7 +4662,8 @@ contains
 
       if(mhd_hyperbolic_thermal_conduction) then
         active = .true.
-        call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+        !!call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+        call add_hypertc_source_orig(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
 
       ! Source for B0 splitting
@@ -4839,9 +4840,9 @@ contains
          sigmaT5_bgradT=sigma_T5*BgradT(ix^D)
       else
          if(B0field) then
-            b2=(^C&(wCT(ix^D,b^C_)+block%B0(ix^D,^C,0))**2+)
+            b2=(^D&(wCT({ix^D},b^D_)+block%B0({ix^D},^D,0))**2+)
          else
-            b2=(^C&(wCT(ix^D,b^C_))**2+)
+            b2=(^D&(wCT({ix^D},b^D_))**2+)
          endif
          sigmaT5_bgradT=sigma_T5*BgradT(ix^D)/(dsqrt(b2)+smalldouble)
       endif
@@ -4856,6 +4857,155 @@ contains
     {end do\}
     
   end subroutine add_hypertc_source
+
+  subroutine add_hypertc_source_orig(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+    use mod_global_parameters
+    integer, intent(in) :: ixI^L,ixO^L
+    double precision, intent(in) :: qdt
+    double precision, dimension(ixI^S,1:ndim), intent(in) :: x
+    double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
+    double precision, dimension(ixI^S,1:nw), intent(inout) :: w
+
+    double precision :: R(ixI^S),Te(ixI^S),rho_loc(ixI^S),pth_loc(ixI^S)
+    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndim),bunitvec(ndim)
+    integer :: ix^D
+
+    call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
+    {do ix^DB=ixImin^DB,ixImax^DB\}
+      if(has_equi_rho_and_p) then
+        rho_loc(ix^D)=wCTprim(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0)
+        pth_loc(ix^D)=wCTprim(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,0)
+      else
+        rho_loc(ix^D)=wCTprim(ix^D,rho_)
+        pth_loc(ix^D)=wCTprim(ix^D,p_)
+      end if
+      Te(ix^D)=pth_loc(ix^D)/(R(ix^D)*rho_loc(ix^D))
+    {end do\}
+    ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
+    ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
+    {^IFONED
+    ! assume magnetic field line is along the one dimension
+    do ix1=ixOmin1,ixOmax1
+       if(mhd_trac) then
+        if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
+          sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
+          sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
+        else
+          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
+          sigma_T7=sigma_T5*Te(ix^D)
+        end if
+      else
+        sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
+        sigma_T7=sigma_T5*Te(ix^D)
+      end if
+      sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
+      if(mhd_htc_sat) then
+        f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+        w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+      else
+        w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
+         max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+      end if
+    end do
+    }
+    {^IFTWOD
+    do ix2=ixOmin2,ixOmax2
+      do ix1=ixOmin1,ixOmax1
+        if(mhd_trac) then
+          if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
+            sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
+            sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
+          else
+            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
+            sigma_T7=sigma_T5*Te(ix^D)
+          end if
+        else
+          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
+          sigma_T7=sigma_T5*Te(ix^D)
+        end if
+        if(B0field) then
+          ^D&bdir(^D)=wCT({ix^D},mag(^D))+block%B0({ix^D},^D,0)\
+        else
+          ^D&bdir(^D)=wCT({ix^D},mag(^D))\
+        end if
+        if(Bdir(1)/=0.d0) then
+          bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(Bdir(2)/Bdir(1))**2)
+        else
+          bunitvec(1)=0.d0
+        end if
+        if(Bdir(2)/=0.d0) then
+          bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(Bdir(1)/Bdir(2))**2)
+        else
+          bunitvec(2)=0.d0
+        end if
+        sigmaT5_bgradT=sigma_T5*(&
+           bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
+          +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
+        if(mhd_htc_sat) then
+          f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+          w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+        else
+          w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
+           max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+        end if
+      end do
+    end do
+    }
+    {^IFTHREED
+    do ix3=ixOmin3,ixOmax3
+      do ix2=ixOmin2,ixOmax2
+        do ix1=ixOmin1,ixOmax1
+          if(mhd_trac) then
+            if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
+              sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
+              sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
+            else
+              sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
+              sigma_T7=sigma_T5*Te(ix^D)
+            end if
+          else
+            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
+            sigma_T7=sigma_T5*Te(ix^D)
+          end if
+          if(B0field) then
+            ^D&bdir(^D)=wCT({ix^D},mag(^D))+block%B0({ix^D},^D,0)\
+          else
+            ^D&bdir(^D)=wCT({ix^D},mag(^D))\
+          end if
+          if(Bdir(1)/=0.d0) then
+            bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(Bdir(2)/Bdir(1))**2+(Bdir(3)/Bdir(1))**2)
+          else
+            bunitvec(1)=0.d0
+          end if
+          if(Bdir(2)/=0.d0) then
+            bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(Bdir(1)/Bdir(2))**2+(Bdir(3)/Bdir(2))**2)
+          else
+            bunitvec(2)=0.d0
+          end if
+          if(Bdir(3)/=0.d0) then
+            bunitvec(3)=sign(1.d0,Bdir(3))/dsqrt(1.d0+(Bdir(1)/Bdir(3))**2+(Bdir(2)/Bdir(3))**2)
+          else
+            bunitvec(3)=0.d0
+          end if
+          sigmaT5_bgradT=sigma_T5*(&
+             bunitvec(1)*((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)&
+            +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
+            +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
+          if(mhd_htc_sat) then
+            f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+            w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+          else
+            w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
+             max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+          end if
+        end do
+      end do
+    end do
+    }
+  end subroutine add_hypertc_source_orig
 
   !> Compute the Lorentz force (JxB)
   subroutine get_Lorentz_force(ixI^L,ixO^L,w,JxB)
