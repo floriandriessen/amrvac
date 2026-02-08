@@ -1493,6 +1493,7 @@ contains
     double precision :: lf(ixI^S)
     integer, intent(in)  :: tc_slope_limiter
 
+    double precision, parameter :: qsmall=1.d-12
     double precision :: signf(ixI^S)
     integer :: ixB^L
 
@@ -1517,6 +1518,9 @@ contains
        lf(ixO^S)=signf(ixO^S)* &
             max(zero,min(two*dabs(f(ixO^S)),two*signf(ixO^S)*f(ixB^S),&
             (two*f(ixB^S)*signf(ixO^S)+dabs(f(ixO^S)))*third))
+     case(5)
+       ! van Leer limiter
+       lf(ixO^S)=two*max(f(ixB^S)*f(ixO^S),zero)/(f(ixO^S)+f(ixB^S)+qsmall)
      case default
        call mpistop("Unknown slope limiter for thermal conduction")
     end select

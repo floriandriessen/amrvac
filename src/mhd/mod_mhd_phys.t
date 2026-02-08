@@ -1108,8 +1108,11 @@ contains
      case ('koren')
        ! Barry Koren Right variant
        fl%tc_slope_limiter = 4
+     case ('vanleer')
+       ! van Leer limiter
+       fl%tc_slope_limiter = 5
      case default
-       call mpistop("Unknown tc_slope_limiter, choose MC, minmod, superbee, koren")
+       call mpistop("Unknown tc_slope_limiter, choose MC, minmod, superbee, koren, vanleer")
     end select
   end subroutine tc_params_read_mhd
 !!end th cond
