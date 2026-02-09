@@ -1366,7 +1366,7 @@ module mod_radiative_cooling
            if( tlocal2 <= fl%tcoolmin ) then
              l1 = lmax
            else
-             l1 = (Te(ix^D)- tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam/qdt
+             l1 = (Te(ix^D)- tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam/qdt !> This is going to need to be changed for the LTE module
            end if
            l1 = min(l1, lmax)
          end if
@@ -1421,7 +1421,7 @@ module mod_radiative_cooling
       end if
     end subroutine radiative_cooling_add_source
 
-    subroutine floortemperature(qdt,ixI^L,ixO^L,wCT,w,x,fl)
+    subroutine floortemperature(qdt,ixI^L,ixO^L,wCT,w,x,fl) !> This will need revisiting in LTE
     !  Force minimum temperature to a fixed temperature
       use mod_global_parameters
       integer, intent(in)             :: ixI^L, ixO^L
@@ -1442,7 +1442,7 @@ module mod_radiative_cooling
       {end do\}
     end subroutine floortemperature
 
-    subroutine get_cool_equi(qdt,ixI^L,ixO^L,wCT,w,x,fl,res)
+    subroutine get_cool_equi(qdt,ixI^L,ixO^L,wCT,w,x,fl,res)!> This is going to need revisiting in LTE
     ! explicit cooling routine that depends on getdt to 
     ! adjust the timestep. Accurate but incredibly slow
       use mod_global_parameters
@@ -1557,7 +1557,7 @@ module mod_radiative_cooling
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
@@ -1619,7 +1619,7 @@ module mod_radiative_cooling
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
@@ -1718,7 +1718,7 @@ module mod_radiative_cooling
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
@@ -1789,7 +1789,7 @@ module mod_radiative_cooling
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
@@ -1857,6 +1857,7 @@ module mod_radiative_cooling
 
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
+      call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
       ! if(phys_equi_pe) then
       !   ! need pressure splitting
       !   call fl%get_pthermal(wCT,x,ixI^L,ixO^L,Te)
@@ -1866,7 +1867,7 @@ module mod_radiative_cooling
       ! end if
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(w,x,ixI^L,ixO^L,rhonew)
-      call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      
 
       fact = fl%lref*qdt/fl%tref
 

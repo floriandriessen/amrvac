@@ -31,6 +31,8 @@
 !> TODO:
 !> Finish embedding the rest of the hydro module eos functions inside the new eos
 !> Need to be sure that the radiative transfer linking is safe. IonE seems to be an issue...
+!> Verified that FI in and outside of lte_eos are consistent - need to check FI relation assumptions in some places (invgam variable etc.)
+!> Check implementation within thermal conduction too - currently there are inconsistencies in FI runs when there shouldn't really be... 
 
 module mod_eos
     use mod_global_parameters
@@ -404,8 +406,6 @@ contains
         integer :: ix^D
 
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
-
-        !> The denominator here (2+3*He_abundance) technically depends on the normalisation set in (m)hd_physical_units etc.
         res(ixO^S) = nH(ixO^S) * (1.0d0 + eos%He_abundance + (w(ixO^S,iw_ne) / nH(ixO^S))) * w(ixO^S,iw_te)
 
     end subroutine get_thermal_pressure_LTE
@@ -665,6 +665,7 @@ contains
 
     end function interp_clamped_monotone_bicubic_table
 
+    
     !> routines needed for Chun's partially ionised module (From Leenaarts et al. 2012?)
     subroutine Rfactor_from_PI_temperature(w,x,ixI^L,ixO^L,Rfactor)
         use mod_global_parameters
