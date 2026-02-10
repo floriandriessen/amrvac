@@ -587,6 +587,7 @@ contains
     s%w=0.d0
     s%ixG^L=ixG^L;
     {^D& ixGsmin^D = ixGmin^D-1; ixGsmax^D = ixGmax^D|;}
+    s%ixGs^L=ixGs^L;
     if(stagger_grid) then
       allocate(s%ws(ixGs^S,1:nws))
       s%ws=0.d0
@@ -594,7 +595,6 @@ contains
         allocate(s%we(ixGs^S,1:nws))
         s%we=0.d0
       end if
-      s%ixGs^L=ixGs^L;
     end if
     if(alloc_once_for_ps) then
       ! allocate extra variables for ps state

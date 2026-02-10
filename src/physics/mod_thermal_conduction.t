@@ -1293,7 +1293,7 @@ contains
          {do ix^DB=ixCmin^DB,ixCmax^DB\}
             qdd(ix^D)=(gradT(ix1,ix2,idims)*block%surfaceC(ix1,ix2,2)&
                     +gradT(ix1+1,ix2,idims)*block%surfaceC(ix1+1,ix2,2))/&
-                 (block%surfaceC(ix1,ix2,2)+block%surfaceC(ix1+1,ix2,2))
+                 (block%surfaceC(ix1,ix2,2)+block%surfaceC(ix1+1,ix2,2)+1.d-300)
          {end do\}
         end if
        }
