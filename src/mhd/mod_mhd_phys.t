@@ -162,8 +162,6 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_dump_full_vars = .false.
   !> Whether divB is computed with a fourth order approximation
   integer, public, protected :: mhd_divb_nth = 1
-  !> Use a compact way to add resistivity
-  logical :: compactres   = .false.
   !> Add divB wave in Roe solver
   logical, public :: divbwave     = .true.
   !> clean initial divB
@@ -252,7 +250,7 @@ contains
       mhd_eta, mhd_eta_hyper, mhd_etah, mhd_eta_ambi, mhd_glm_alpha, mhd_glm_extended, mhd_magnetofriction,&
       mhd_thermal_conduction, mhd_radiative_cooling, mhd_hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
       mhd_rotating_frame,mhd_viscosity, mhd_4th_order, typedivbfix, source_split_divb, divbdiff,&
-      typedivbdiff, type_ct, compactres, divbwave, He_abundance, &
+      typedivbdiff, type_ct, divbwave, He_abundance, &
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
       particles_eta, particles_etah,has_equi_rho_and_p,mhd_equi_thermal,&
@@ -4308,7 +4306,7 @@ contains
   !> Source terms J.E in internal energy.
   !> For the ambipolar term E = ambiCoef * JxBxB=ambiCoef * B^2(-J_perpB)
   !=> the source term J.E = ambiCoef * B^2 * J_perpB^2 = ambiCoef * JxBxB^2/B^2
-  !> ambiCoef is calculated as mhd_ambi_coef/rho^2,  see also the subroutine mhd_get_Jambi
+  !> ambiCoef is calculated as mhd_ambi_coef/rho^2
   subroutine add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x,ie)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixO^L,ie
@@ -5376,9 +5374,9 @@ contains
   end subroutine add_source_hydrodynamic_e
 
   !> Add resistive source to w within ixO Uses 3 point stencil (1 neighbour) in
-  !> each direction, non-conservative. If the fourthorder precompiler flag is
+  !> each direction, non-conservative. If the fourthorder flag is
   !> set, uses fourth order central difference for the laplacian. Then the
-  !> stencil is 5 (2 neighbours).
+  !> stencil is 5 (2 neighbours). NOTE: Unused subroutine!
   subroutine add_source_res1(qdt,ixI^L,ixO^L,wCT,w,x)
     use mod_global_parameters
     use mod_usr_methods
@@ -5429,7 +5427,9 @@ contains
     end if
 
     do idir=1,ndir
-       ! Put B_idir into tmp2 and eta*Laplace B_idir into tmp
+       ! Put B_idir into tmp2 and Laplace B_idir into tmp
+       ! This is ok for pure Cartesian, uniform grid settings only
+       ! uses CD4 or CD2, depending on mhd_4th_order
        if (mhd_4th_order) then
          tmp(ixO^S)=zero
          tmp2(ixI^S)=Bf(ixI^S,idir)
@@ -5453,7 +5453,7 @@ contains
          end do
        end if
 
-       ! Multiply by eta
+       ! Multiply by eta to store eta*Laplace B_idir
        tmp(ixO^S)=tmp(ixO^S)*eta(ixO^S)
 
        ! Subtract grad(eta) x J = eps_ijk d_j eta J_k if eta is non-constant
@@ -5885,7 +5885,11 @@ contains
 
     ^D&dxarr(^D)=dx^D;
     if (mhd_eta>zero)then
+      if(slab_uniform) then
        dtnew=dtdiffpar*minval(dxarr(1:ndim))**2/mhd_eta
+      else
+       dtnew=dtdiffpar*minval(block%ds(ixO^S,1:ndim))**2/mhd_eta
+      end if
     else if (mhd_eta<zero)then
        call get_current(w,ixI^L,ixO^L,idirmin,current)
        call usr_special_resistivity(w,ixI^L,ixO^L,idirmin,x,current,eta)
@@ -6466,30 +6470,6 @@ contains
     end do
 
   end subroutine mhd_getv_Hall
-
-  subroutine mhd_get_Jambi(w,x,ixI^L,ixO^L,res)
-    use mod_global_parameters
-
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(in)    :: w(ixI^S,nw)
-    double precision, intent(in)    :: x(ixI^S,1:ndim)
-    double precision, allocatable, intent(inout) :: res(:^D&,:)
-
-
-    double precision :: current(ixI^S,7-2*ndir:3)
-    integer          :: idir, idirmin
-
-    res = 0d0
-
-    ! Calculate current density and idirmin
-    call get_current(w,ixI^L,ixO^L,idirmin,current)
- 
-    res(ixO^S,idirmin:3)=-current(ixO^S,idirmin:3)
-    do idir = idirmin, 3
-      call multiplyAmbiCoef(ixI^L,ixO^L,res(ixI^S,idir),w,x)
-    enddo
-
-  end subroutine mhd_get_Jambi
 
   subroutine mhd_modify_wLR(ixI^L,ixO^L,qt,wLC,wRC,wLp,wRp,s,idir)
     use mod_global_parameters
@@ -7115,7 +7095,7 @@ contains
   end subroutine mhd_clean_divb_multigrid
   }
 
-  !> get electric field though averaging neighors to update faces in CT
+  !> get electric field through averaging neighors to update faces in CT
   subroutine mhd_update_faces_average(ixI^L,ixO^L,qt,qdt,wp,fC,fE,sCT,s,vcts)
     use mod_global_parameters
     use mod_usr_methods
@@ -7698,7 +7678,7 @@ contains
       ixA^L=ixO^L^LADD1;
       call get_current(wCT,ixI^L,ixA^L,idirmin,jcc)
       call usr_special_resistivity(wp,ixI^L,ixA^L,idirmin,x,jcc,eta)
-      ! calcuate eta on cell edges
+      ! calculate eta on cell edges
       do idir=sdim,3
         ixCmax^D=ixOmax^D;
         ixCmin^D=ixOmin^D+kr(idir,^D)-1;
