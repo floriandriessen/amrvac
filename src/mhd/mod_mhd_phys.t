@@ -2712,6 +2712,7 @@ contains
     double precision :: a2(ixI^S,ndim,nw)
     integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
 
+    if(.not.slab_uniform) call mpistop("get_a2max uses CD4 for uniform cartesian mesh")
     a2=zero
     do i = 1,ndim
       !> 4th order
@@ -4303,53 +4304,68 @@ contains
 
   end subroutine mhd_get_flux_semirelati_noe
 
-  !> Source terms J.E in internal energy.
-  !> For the ambipolar term E = ambiCoef * JxBxB=ambiCoef * B^2(-J_perpB)
-  !=> the source term J.E = ambiCoef * B^2 * J_perpB^2 = ambiCoef * JxBxB^2/B^2
-  !> ambiCoef is calculated as mhd_ambi_coef/rho^2
-  subroutine add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x,ie)
+  !> Source term J.E_ambi in internal energy
+  !> For the ambipolar electric field we have E_ambi = -eta_A * JxBxB= eta_A * B^2 (J_perpB)
+  !> and eta_A is mhd_ambi_coef/rho^2 or is user-defined
+  !> the source term J.E_ambi = eta_A * B^2 * J_perpB^2 = eta_A * [(JxB)xB]^2/B^2
+  !> note that J_perpB= - (JxB)xB/B^2
+  !> multiplyAmbiCoef is actually doing multiplication with -mhd_ambi_coef/rho^2
+  subroutine add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x)
     use mod_global_parameters
-    integer, intent(in)             :: ixI^L, ixO^L,ie
+    integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt
     double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
-    double precision :: tmp(ixI^S)
+
+    double precision :: tmp(ixI^S),btot2(ixI^S)
     double precision :: jxbxb(ixI^S,1:3)
 
     call mhd_get_jxbxb(wCT,x,ixI^L,ixO^L,jxbxb)
-    tmp(ixO^S) = sum(jxbxb(ixO^S,1:3)**2,dim=ndim+1) / mhd_mag_en_all(wCT, ixI^L, ixO^L)
+    ! avoiding nulls here
+    btot2(ixO^S)=mhd_mag_en_all(wCT,ixI^L,ixO^L)
+    where (btot2(ixO^S)>smalldouble )
+       tmp(ixO^S) = sum(jxbxb(ixO^S,1:3)**2,dim=ndim+1) / btot2(ixO^S)
+    elsewhere
+       tmp(ixO^S) = zero
+    endwhere
     call multiplyAmbiCoef(ixI^L,ixO^L,tmp,wCT,x)
-    w(ixO^S,ie)=w(ixO^S,ie)+qdt * tmp
+    ! multiplyAmbiCoef is actually doing multiplication with -mhd_ambi_coef/rho^2
+    ! hence minus sign here
+    w(ixO^S,e_)=w(ixO^S,e_)- qdt*tmp
 
   end subroutine add_source_ambipolar_internal_energy
 
+  !> this subroutine computes -J_perpB= (J x B) x B= B(J.B) - J B^2
   subroutine mhd_get_jxbxb(w,x,ixI^L,ixO^L,res)
     use mod_global_parameters
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
-    double precision, intent(out)   :: res(:^D&,:)
+    double precision, intent(out)   :: res(ixI^S,1:3)
 
-    double precision  :: btot(ixI^S,1:3)
+    double precision :: btot(ixI^S,1:3)
     double precision :: current(ixI^S,7-2*ndir:3)
     double precision :: tmp(ixI^S),b2(ixI^S)
     integer          :: idir, idirmin
 
     res=0.d0
     ! Calculate current density and idirmin
+    ! current has nonzero values only for components in the range idirmin, 3
     call get_current(w,ixI^L,ixO^L,idirmin,current)
-    !!!here we know that current has nonzero values only for components in the range idirmin, 3
  
+    btot=0.d0
     if(B0field) then
-      do idir=1,3
+      do idir=1,ndir
         btot(ixO^S, idir) = w(ixO^S,mag(idir)) + block%B0(ixO^S,idir,b0i)
       enddo
     else
-      btot(ixO^S,1:3) = w(ixO^S,mag(1:3))
+      do idir=1,ndir
+        btot(ixO^S, idir) = w(ixO^S,mag(idir)) 
+      enddo
     endif
 
-    tmp(ixO^S) = sum(current(ixO^S,idirmin:3)*btot(ixO^S,idirmin:3),dim=ndim+1) !J.B
+    tmp(ixO^S)= sum(current(ixO^S,idirmin:3)*btot(ixO^S,idirmin:3),dim=ndim+1) !J.B
     b2(ixO^S) = sum(btot(ixO^S,1:3)**2,dim=ndim+1) !B^2
     do idir=1,idirmin-1
       res(ixO^S,idir) = btot(ixO^S,idir) * tmp(ixO^S)
@@ -4368,7 +4384,7 @@ contains
     use mod_global_parameters
     use mod_fix_conserve
 
-    integer, intent(in) :: ixI^L, ixO^L,igrid,nflux
+    integer, intent(in) :: ixI^L,ixO^L,igrid,nflux
     double precision, intent(in) ::  x(ixI^S,1:ndim)
     double precision, intent(inout) ::  wres(ixI^S,1:nw), w(ixI^S,1:nw)
     double precision, intent(in) :: my_dt
@@ -4377,7 +4393,7 @@ contains
     double precision, dimension(ixI^S,1:3) :: tmp,ff
     double precision :: fluxall(ixI^S,1:nflux,1:ndim)
     double precision :: fE(ixI^S,sdim:3)
-    double precision  :: btot(ixI^S,1:3),tmp2(ixI^S)
+    double precision :: btot(ixI^S,1:3),tmp2(ixI^S)
     integer :: i, ixA^L, ie_
 
     ixA^L=ixO^L^LADD1;
@@ -4484,7 +4500,7 @@ contains
     integer                            :: idim1,idim2,idir,ix^D
 
     fE=zero
-    ! calcuate ambipolar electric field on cell edges from cell centers
+    ! calculate ambipolar electric field on cell edges from cell centers
     do idir=sdim,3
       ixCmax^D=ixOmax^D;
       ixCmin^D=ixOmin^D+kr(idir,^D)-1;
@@ -4593,7 +4609,8 @@ contains
     ^D&dxarr(^D)=dx^D;
     tmp(ixO^S) = mhd_mag_en_all(w, ixI^L, ixO^L)
     call multiplyAmbiCoef(ixI^L,ixO^L,tmp,w,x)
-    coef = maxval(abs(tmp(ixO^S)))
+    ! now we have -mhd_eta_ambi B^2 /rho^2 in tmp
+    coef = maxval(dabs(tmp(ixO^S)))
     if(coef/=0.d0) then
       coef=1.d0/coef
     else
@@ -4616,17 +4633,16 @@ contains
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: res(ixI^S)
-    double precision :: tmp1(ixI^S)
+    double precision :: tmp(ixI^S)
     double precision :: rho(ixI^S)
 
-    call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    tmp1(ixI^S)=0.d0
-    tmp1(ixO^S)=-mhd_eta_ambi/rho(ixO^S)**2
+    call mhd_get_rho(w,x,ixI^L,ixI^L,rho)
+    tmp(ixI^S)=-mhd_eta_ambi/rho(ixI^S)**2
     if (associated(usr_mask_ambipolar)) then
-      call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp1)
+      call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp)
     end if
+    res(ixO^S) = tmp(ixO^S) * res(ixO^S)
 
-    res(ixO^S) = tmp1(ixO^S) * res(ixO^S)
   end subroutine multiplyAmbiCoef
 
   !> w[iws]=w[iws]+qdt*S[iws,wCT] where S is the source based on wCT within ixO
@@ -5258,7 +5274,7 @@ contains
       end if
    {end do\}
     if(mhd_ambipolar)then
-      call add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x,e_)
+      call add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x)
     end if
 
     if(fix_small_values) then
@@ -7711,7 +7727,7 @@ contains
 
     ixA^L=ixO^L^LADD1;
     call mhd_get_jxbxb(w,x,ixI^L,ixA^L,jxbxb)
-    ! calcuate electric field on cell edges from cell centers
+    ! calculate electric field on cell edges from cell centers
     do idir=sdim,3
       !set electric field in jxbxb: E=nuA * jxbxb, where nuA=-etaA/rho^2
       !jxbxb(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * jxbxb(ixA^S,i)
