@@ -4331,7 +4331,7 @@ contains
     call multiplyAmbiCoef(ixI^L,ixO^L,tmp,wCT,x)
     ! multiplyAmbiCoef is actually doing multiplication with -mhd_ambi_coef/rho^2
     ! hence minus sign here
-    w(ixO^S,e_)=w(ixO^S,e_)- qdt*tmp
+    w(ixO^S,e_)=w(ixO^S,e_)- qdt*tmp(ixO^S)
 
   end subroutine add_source_ambipolar_internal_energy
 
@@ -4373,6 +4373,13 @@ contains
     do idir=idirmin,3
       res(ixO^S,idir) = btot(ixO^S,idir) * tmp(ixO^S) - current(ixO^S,idir) * b2(ixO^S)
     enddo
+
+    ! avoid possible issues at nulls
+    do idir=1,3
+      where (b2(ixO^S)<smalldouble )
+       res(ixO^S,idir) = zero
+      endwhere
+    enddo
   end subroutine mhd_get_jxbxb
 
   !> Sets the sources for the ambipolar terms for the STS method
@@ -4399,6 +4406,7 @@ contains
 
     fluxall=zero
 
+    ! here we compute (JxB)xB= - B^2 J_perpB
     call mhd_get_jxbxb(w,x,ixI^L,ixA^L,tmp)
 
     ! set ambipolar electric field in tmp: E_ambi = -eta_A * JxBxB= eta_A * B^2 (J_perpB)
@@ -4408,8 +4416,14 @@ contains
       call multiplyAmbiCoef(ixI^L,ixA^L,tmp(ixI^S,i),w,x)
     enddo
 
-    ! TODO: VERIFY for B split cases and for all energy combinations
-    if(mhd_energy .and. .not.mhd_internal_e) then
+    ! Note: internal     energy case is handled through add_source_internal_e
+    ! Note: hydrodynamic energy case is handled through add_source_hydrodynamic_e
+    !       both of the above use     add_source_ambipolar_internal_energy
+    ! 
+    ! Note: total energy case without B0field split is ok here and adds div(BxE_ambi)
+    ! Note: total energy case in semirelativistic variant (hence no B0field split) is ok here
+    ! Note: total energy with B0field=T here adds div(B_1xE_ambi) which needs correction in add_source_B0split
+    if(mhd_energy .and. .not.(mhd_internal_e.or.mhd_hydrodynamic_e))  then
       btot(ixA^S,1:3)    = 0.d0
       ! HERE: only uses B_1 if split, otherwise this is B
       btot(ixA^S,1:ndir) = w(ixA^S,mag(1:ndir))
@@ -4516,7 +4530,6 @@ contains
     ixCmin^D=ixOmin^D-1;
 
     circ=zero
-
     do idim1=1,ndim ! Coordinate perpendicular to face
       do idim2=1,ndim
         do idir=sdim,3 ! Direction of line integral
@@ -4691,7 +4704,12 @@ contains
       ! Sources for resistivity in eqs. for e, B1, B2 and B3
       if (abs(mhd_eta)>smalldouble)then
         active = .true.
-        call add_source_res2(qdt,ixI^L,ixO^L,wCT,w,x)
+        call add_source_res_exp(qdt,ixI^L,ixO^L,wCT,w,x)
+      end if
+
+      if (mhd_ambipolar_exp)then
+        active = .true.
+        call add_source_ambi_exp(qdt,ixI^L,ixO^L,wCT,w,x)
       end if
 
       if (mhd_eta_hyper>0.d0)then
@@ -5273,7 +5291,7 @@ contains
         w(ix^D,e_)=tmp
       end if
    {end do\}
-    if(mhd_ambipolar)then
+    if(mhd_ambipolar_sts)then
       call add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x)
     end if
 
@@ -5386,6 +5404,12 @@ contains
       ! add work of Lorentz force
       w(ixO^S,e_)=w(ixO^S,e_)+qdt*sum(wCTprim(ixO^S,mom(1:ndir))*JxB(ixO^S,1:ndir),dim=ndim+1)
     end if
+
+    if(mhd_ambipolar_sts)then
+      call add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x)
+    end if
+
+    if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_hydrodynamic_e')
 
   end subroutine add_source_hydrodynamic_e
 
@@ -5501,9 +5525,9 @@ contains
 
   end subroutine add_source_res1
 
-  !> Add resistive source to w within ixO
+  !> Add resistive source to w within ixO in an explicit fashion
   !> Uses 5 point stencil (2 neighbours) in each direction, conservative
-  subroutine add_source_res2(qdt,ixI^L,ixO^L,wCT,w,x)
+  subroutine add_source_res_exp(qdt,ixI^L,ixO^L,wCT,w,x)
     use mod_global_parameters
     use mod_usr_methods
     use mod_geometry
@@ -5521,7 +5545,7 @@ contains
     ixA^L=ixO^L^LADD2;
 
     if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
-         call mpistop("Error in add_source_res2: Non-conforming input limits")
+         call mpistop("Error in add_source_res_exp: Non-conforming input limits")
 
     ixA^L=ixO^L^LADD1;
     ! Calculate current density within ixL: J=curl B, thus J_i=eps_ijk*d_j B_k
@@ -5568,8 +5592,79 @@ contains
       end if
     end if
 
-    if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_res2')
-  end subroutine add_source_res2
+    if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_res_exp')
+  end subroutine add_source_res_exp
+
+
+  !> Add ambipolar source to w within ixO in an explicit fashion
+  !> Uses 5 point stencil (2 neighbours) in each direction, conservative
+  subroutine add_source_ambi_exp(qdt,ixI^L,ixO^L,wCT,w,x)
+    use mod_global_parameters
+    use mod_usr_methods
+    use mod_geometry
+
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(in)    :: qdt
+    double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+
+    double precision :: current(ixI^S,1:3),curlj(ixI^S,1:3)
+    double precision :: tmpvec(ixI^S,1:3),tmp(ixI^S),btot2(ixI^S)
+    integer :: ixA^L,idir,idirmin1
+
+    ixA^L=ixO^L^LADD2;
+
+    if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
+         call mpistop("Error in add_source_ambi_exp: Non-conforming input limits")
+
+    ixA^L=ixO^L^LADD1;
+    ! Calculate -J_perpB = (JxB)xB
+    call mhd_get_jxbxb(wCT,x,ixI^L,ixA^L,current)
+
+    tmpvec=current
+    do idir=1,3
+      !set electric field in tmpvec : E=nuA * jxbxb, where nuA=-etaA/rho^2
+      !tmpvec(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * jxbxb(ixA^S,i)
+      call multiplyAmbiCoef(ixI^L,ixA^L,tmpvec(ixI^S,idir),wCT,x)
+    end do
+
+    ! dB/dt= -curl(J_perpB*etaA), thus B_i=B_i-eps_ijk d_j Jeta_k
+    call curlvector(tmpvec,ixI^L,ixO^L,curlj,idirmin1,1,3)
+    if(stagger_grid) then
+      if(ndim==2.and.ndir==3) then
+        ! if 2.5D
+        w(ixO^S,mag(ndir)) = w(ixO^S,mag(ndir))-qdt*curlj(ixO^S,ndir)
+      end if
+    else
+      w(ixO^S,mag(1:ndir)) = w(ixO^S,mag(1:ndir))-qdt*curlj(ixO^S,1:ndir)
+    end if
+
+    if(mhd_energy) then
+      ! compute ambipolar heating term: nuA* J_perpB^2/ B^2
+      ! avoiding nulls here
+      btot2(ixA^S)=mhd_mag_en_all(wCT,ixI^L,ixA^L)
+      where (btot2(ixA^S)>smalldouble )
+          tmp(ixA^S) = sum(current(ixA^S,1:3)**2,dim=ndim+1) / btot2(ixA^S)
+      elsewhere
+          tmp(ixA^S) = zero
+      endwhere
+      ! multiply with nuA where nuA=-etaA/rho^2
+      call multiplyAmbiCoef(ixI^L,ixA^L,tmp,wCT,x)
+      ! compensate - sign and add timestep
+      tmp(ixO^S)=-qdt*tmp(ixO^S)
+      if(total_energy) then
+        ! de/dt= +div(B x E_ambi) = eta J^2 - B dot curl(eta J)
+        ! de1/dt= eta J^2 - B1 dot curl(eta J)
+        w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)-&
+        qdt*sum(wCT(ixO^S,mag(1:ndir))*curlj(ixO^S,1:ndir),dim=ndim+1)
+      else
+        ! add eta*J**2 source term in the internal energy equation
+        w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)
+      end if
+    end if
+
+    if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_ambi_exp')
+  end subroutine add_source_ambi_exp
 
   !> Add Hyper-resistive source to w within ixO
   !> Uses 9 point stencil (4 neighbours) in each direction.
@@ -7729,8 +7824,8 @@ contains
     call mhd_get_jxbxb(w,x,ixI^L,ixA^L,jxbxb)
     ! calculate electric field on cell edges from cell centers
     do idir=sdim,3
-      !set electric field in jxbxb: E=nuA * jxbxb, where nuA=-etaA/rho^2
-      !jxbxb(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * jxbxb(ixA^S,i)
+      ! set ambipolar electric field in jxbxb: E=nuA * jxbxb, where nuA=-etaA/rho^2
+      ! E_ambi(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * jxbxb(ixA^S,i)
       call multiplyAmbiCoef(ixI^L,ixA^L,jxbxb(ixI^S,idir),w,x)
       ixCmax^D=ixOmax^D;
       ixCmin^D=ixOmin^D+kr(idir,^D)-1;
