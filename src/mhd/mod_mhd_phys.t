@@ -4698,7 +4698,7 @@ contains
       ! Source for B0 splitting
       if (B0field) then
         active = .true.
-        call add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCTprim,w,x)
+        call add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
 
       ! Sources for resistivity in eqs. for e, B1, B2 and B3
@@ -4797,6 +4797,7 @@ contains
 
   end subroutine mhd_add_source
 
+  !> TODO: THIS SEEMS WRONG FOR total energy with has_equi_rho_and_p=T
   subroutine add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x)
     use mod_global_parameters
     use mod_geometry
@@ -4807,6 +4808,7 @@ contains
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision                :: divv(ixI^S)
 
+    call mpistop("not ok here")
     if(slab_uniform) then
       if(nghostcells .gt. 2) then
         call divvector(wCT(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,3)
@@ -5153,11 +5155,12 @@ contains
   end subroutine mhd_update_temperature
 
   !> Source terms after split off time-independent magnetic field
-  subroutine add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x)
+  subroutine add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
 
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: qdt, dtfactor,wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
+    double precision, intent(in) :: wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     double precision :: a(ixI^S,3), b(ixI^S,3), axb(ixI^S,3)
@@ -5166,7 +5169,7 @@ contains
     a=0.d0
     b=0.d0
     ! for force-free field J0xB0 =0
-    if(.not.B0field_forcefree) then
+    if((.not.B0field_forcefree).and.(.not.has_equi_rho_and_p)) then
       ! store B0 magnetic field in b
       b(ixO^S,1:ndir)=block%B0(ixO^S,1:ndir,0)
 
@@ -5189,11 +5192,11 @@ contains
     if(total_energy) then
       a=0.d0
       ! for free-free field -(vxB0) dot J0 =0
-      b(ixO^S,:)=wCT(ixO^S,mag(:))
+      b(ixO^S,:)=wCTprim(ixO^S,mag(:))
       ! store full magnetic field B0+B1 in b
       if(.not.B0field_forcefree) b(ixO^S,:)=b(ixO^S,:)+block%B0(ixO^S,:,0)
       ! store velocity in a
-      a(ixI^S,1:ndir)=wCT(ixI^S,mom(1:ndir))
+      a(ixI^S,1:ndir)=wCTprim(ixI^S,mom(1:ndir))
       ! -E = a x b
       call cross_product(ixI^L,ixO^L,a,b,axb)
       if(local_timestep) then
@@ -5207,6 +5210,23 @@ contains
       do idir=7-2*ndir,3
         w(ixO^S,e_)=w(ixO^S,e_)-axb(ixO^S,idir)*block%J0(ixO^S,idir)
       end do
+      if(mhd_hall) then
+         ! store hall velocity in a, only partial current is neededj
+         call mhd_getv_Hall(wCT,x,ixI^L,ixO^L,a,.true.)
+         ! -E = a x b
+         call cross_product(ixI^L,ixO^L,a,b,axb)
+         if(local_timestep) then
+           do idir=1,3
+             axb(ixO^S,idir)=axb(ixO^S,idir)*block%dt(ixO^S)*dtfactor
+           enddo
+         else
+           axb(ixO^S,:)=axb(ixO^S,:)*qdt
+         endif
+         ! add -(vxB) dot J0 source term in energy equation
+         do idir=7-2*ndir,3
+           w(ixO^S,e_)=w(ixO^S,e_)-axb(ixO^S,idir)*block%J0(ixO^S,idir)
+         end do
+      endif
       if(mhd_ambipolar) then
         !reuse axb
         call mhd_get_jxbxb(wCT,x,ixI^L,ixO^L,axb)
@@ -5218,6 +5238,7 @@ contains
         enddo
       endif
     end if
+    
 
     if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_B0')
 
@@ -5247,7 +5268,7 @@ contains
     call divvector(E,ixI^L,ixO^L,divE)
     ! curl E
     call curlvector(E,ixI^L,ixO^L,curlE,idirmin,1,3)
-    ! add source term in momentum equations (1/c0^2-1/c^2)(E dot divE - E x curlE)
+    ! add source term in momentum equations (1/c0^2-1/c^2)(E divE - E x curlE)
     ! equation (26) and (27)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       w(ix^D,m1_)=w(ix^D,m1_)+qdt*(inv_squared_c0-inv_squared_c)*&
@@ -5323,8 +5344,12 @@ contains
       B(ixO^S, idir) = wCT(ixO^S,mag(idir))
     end do
 
-    !call get_current(wCT,ixI^L,ixO^L,idirmin,current)
-    call curlvector(wCT(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,7-2*ndir,ndir,.true.)
+    if(slab_uniform)then
+      ! get current in fourth order accuracy in Cartesian
+      call curlvector(wCT(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,7-2*ndir,ndir,.true.)
+    else
+      call get_current(wCT,ixI^L,ixO^L,idirmin,current)
+    endif
 
     J=0.0d0
     do idir=7-2*ndir,3
@@ -5335,75 +5360,76 @@ contains
     call cross_product(ixI^L,ixO^L,J,B,JxB)
     }
     {^IFTHREED
-    !call get_current(wCT,ixI^L,ixO^L,idirmin,current)
-    ! get current in fourth order accuracy in Cartesian
-    call curlvector(wCT(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,1,ndir,.true.)
+    if(slab_uniform)then
+      ! get current in fourth order accuracy in Cartesian
+      call curlvector(wCT(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,1,ndir,.true.)
+    else
+      call get_current(wCT,ixI^L,ixO^L,idirmin,current)
+    endif
     ! get Lorentz force JxB
     call cross_product(ixI^L,ixO^L,current,wCT(ixI^S,mag(1:ndir)),JxB)
     }
 
-    if(mhd_semirelativistic) then
-      ! (v . nabla) v
-      do idir=1,ndir
-        do idims=1,ndim
-          call gradient(wCTprim(ixI^S,mom(idir)),ixI^L,ixO^L,idims,J(ixI^S,idims))
-        end do
-        B(ixO^S,idir)=sum(wCTprim(ixO^S,mom(1:ndir))*J(ixO^S,1:ndir),dim=ndim+1)
-      end do
-      ! nabla p
-      do idir=1,ndir
-        call gradient(wCTprim(ixI^S,p_),ixI^L,ixO^L,idir,J(ixI^S,idir))
-      end do
-
-      if(mhd_gravity) then
-        gravity_field=0.d0
-        call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field(ixI^S,1:ndim))
-        do idir=1,ndir
-          B(ixO^S,idir)=wCT(ixO^S,rho_)*(B(ixO^S,idir)-gravity_field(ixO^S,idir))+J(ixO^S,idir)-JxB(ixO^S,idir)
-        end do
-      else
-        do idir=1,ndir
-          B(ixO^S,idir)=wCT(ixO^S,rho_)*B(ixO^S,idir)+J(ixO^S,idir)-JxB(ixO^S,idir)
-        end do
-      end if
-
-      b2(ixO^S)=sum(wCT(ixO^S,mag(:))**2,dim=ndim+1)
-      tmp(ixO^S)=sqrt(b2(ixO^S))
-      where(tmp(ixO^S)>smalldouble)
-        tmp(ixO^S)=1.d0/tmp(ixO^S)
-      else where
-        tmp(ixO^S)=0.d0
-      end where
-      ! unit vector of magnetic field
-      do idir=1,ndir
-        bu(ixO^S,idir)=wCT(ixO^S,mag(idir))*tmp(ixO^S)
-      end do
-
-      !b2(ixO^S)=b2(ixO^S)/w(ixO^S,rho_)*inv_squared_c
-      !b2(ixO^S)=b2(ixO^S)/(1.d0+b2(ixO^S))
-      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-         ! Va^2/c^2
-         Vaoc=b2(ix^D)/w(ix^D,rho_)*inv_squared_c
-         ! Va^2/c^2 / (1+Va^2/c^2)
-         b2(ix^D)=Vaoc/(1.d0+Vaoc)
-      {end do\}
-      ! bu . F
-      tmp(ixO^S)=sum(bu(ixO^S,1:ndir)*B(ixO^S,1:ndir),dim=ndim+1)
-      ! Rempel 2017 ApJ 834, 10 equation (54)
-      do idir=1,ndir
-        J(ixO^S,idir)=b2(ixO^S)*(B(ixO^S,idir)-bu(ixO^S,idir)*tmp(ixO^S))
-      end do
-      !! Rempel 2017 ApJ 834, 10 equation (29) add SR force at momentum equation
-      do idir=1,ndir
-        w(ixO^S,mom(idir))=w(ixO^S,mom(idir))+qdt*J(ixO^S,idir)
-      end do
-      ! Rempel 2017 ApJ 834, 10 equation (30) add work of Lorentz force and SR force
-      w(ixO^S,e_)=w(ixO^S,e_)+qdt*sum(wCTprim(ixO^S,mom(1:ndir))*&
-              (JxB(ixO^S,1:ndir)+J(ixO^S,1:ndir)),dim=ndim+1)
-    else
+    ! mhd_semirelativistic does not combine with mhd_hydrodynamic_e
+    !!if(mhd_semirelativistic) then
+    !!  ! (v . nabla) v
+    !!  do idir=1,ndir
+    !!    do idims=1,ndim
+    !!      call gradient(wCTprim(ixI^S,mom(idir)),ixI^L,ixO^L,idims,J(ixI^S,idims))
+    !!    end do
+    !!    B(ixO^S,idir)=sum(wCTprim(ixO^S,mom(1:ndir))*J(ixO^S,1:ndir),dim=ndim+1)
+    !!  end do
+    !!  ! nabla p
+    !!  do idir=1,ndir
+    !!    call gradient(wCTprim(ixI^S,p_),ixI^L,ixO^L,idir,J(ixI^S,idir))
+    !!  end do
+    !!  if(mhd_gravity) then
+    !!    gravity_field=0.d0
+    !!    call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field(ixI^S,1:ndim))
+    !!    do idir=1,ndir
+    !!      B(ixO^S,idir)=wCT(ixO^S,rho_)*(B(ixO^S,idir)-gravity_field(ixO^S,idir))+J(ixO^S,idir)-JxB(ixO^S,idir)
+    !!    end do
+    !!  else
+    !!    do idir=1,ndir
+    !!      B(ixO^S,idir)=wCT(ixO^S,rho_)*B(ixO^S,idir)+J(ixO^S,idir)-JxB(ixO^S,idir)
+    !!    end do
+    !!  end if
+    !!  b2(ixO^S)=sum(wCT(ixO^S,mag(:))**2,dim=ndim+1)
+    !!  tmp(ixO^S)=sqrt(b2(ixO^S))
+    !!  where(tmp(ixO^S)>smalldouble)
+    !!    tmp(ixO^S)=1.d0/tmp(ixO^S)
+    !!  else where
+    !!    tmp(ixO^S)=0.d0
+    !!  end where
+    !!  ! unit vector of magnetic field
+    !!  do idir=1,ndir
+    !!    bu(ixO^S,idir)=wCT(ixO^S,mag(idir))*tmp(ixO^S)
+    !!  end do
+    !!  !b2(ixO^S)=b2(ixO^S)/w(ixO^S,rho_)*inv_squared_c
+    !!  !b2(ixO^S)=b2(ixO^S)/(1.d0+b2(ixO^S))
+    !!  {do ix^DB=ixOmin^DB,ixOmax^DB\}
+    !!     ! Va^2/c^2
+    !!     Vaoc=b2(ix^D)/w(ix^D,rho_)*inv_squared_c
+    !!     ! Va^2/c^2 / (1+Va^2/c^2)
+    !!     b2(ix^D)=Vaoc/(1.d0+Vaoc)
+    !!  {end do\}
+    !!  ! bu . F
+    !!  tmp(ixO^S)=sum(bu(ixO^S,1:ndir)*B(ixO^S,1:ndir),dim=ndim+1)
+    !!  ! Rempel 2017 ApJ 834, 10 equation (54)
+    !!  do idir=1,ndir
+    !!    J(ixO^S,idir)=b2(ixO^S)*(B(ixO^S,idir)-bu(ixO^S,idir)*tmp(ixO^S))
+    !!  end do
+    !!  !! Rempel 2017 ApJ 834, 10 equation (29) add SR force at momentum equation
+    !!  do idir=1,ndir
+    !!    w(ixO^S,mom(idir))=w(ixO^S,mom(idir))+qdt*J(ixO^S,idir)
+    !!  end do
+    !!  ! Rempel 2017 ApJ 834, 10 equation (30) add work of Lorentz force and SR force
+    !!  w(ixO^S,e_)=w(ixO^S,e_)+qdt*sum(wCTprim(ixO^S,mom(1:ndir))*&
+    !!          (JxB(ixO^S,1:ndir)+J(ixO^S,1:ndir)),dim=ndim+1)
+    !!else
       ! add work of Lorentz force
       w(ixO^S,e_)=w(ixO^S,e_)+qdt*sum(wCTprim(ixO^S,mom(1:ndir))*JxB(ixO^S,1:ndir),dim=ndim+1)
-    end if
+    !!end if
 
     if(mhd_ambipolar_sts)then
       call add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x)
@@ -6559,21 +6585,35 @@ contains
     end if
   end function mhd_mag_en_all
 
-  subroutine mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
+  subroutine mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall,partial)
     use mod_global_parameters
+    use mod_geometry
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: vHall(ixI^S,1:ndir)
+    logical, intent(in), optional :: partial
 
     double precision :: current(ixI^S,7-2*ndir:3)
     double precision :: rho(ixI^S)
     integer          :: idir, idirmin, ix^D
+    logical          :: use_partial
 
+    use_partial=.false.
+    if(present(partial)) use_partial=partial
     call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    ! Calculate current density and idirmin
-    call get_current(w,ixI^L,ixO^L,idirmin,current)
+    if(.not.use_partial)then
+       ! Calculate current density and idirmin, including J0 when split
+       call get_current(w,ixI^L,ixO^L,idirmin,current)
+    else
+       if(slab_uniform) then
+         ! fourth order CD in cartesian
+         call curlvector(w(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,7-2*ndir,ndir,.true.)
+       else
+         call curlvector(w(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,7-2*ndir,ndir)
+       endif
+    endif
     do idir = idirmin, ndir
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
          vHall(ix^D,idir)=-mhd_etah*current(ix^D,idir)/rho(ix^D)
