@@ -4375,11 +4375,10 @@ contains
     enddo
   end subroutine mhd_get_jxbxb
 
-  !> Sets the sources for the ambipolar
-  !> this is used for the STS method
-  ! The sources are added directly (instead of fluxes as in the explicit)
+  !> Sets the sources for the ambipolar terms for the STS method
+  !> The sources are added directly (instead of fluxes as in the explicit)
   !> at the corresponding indices
-  !>  store_flux_var is explicitly called for each of the fluxes one by one
+  !> store_flux_var is explicitly called for each of the fluxes one by one
   subroutine sts_set_source_ambipolar(ixI^L,ixO^L,w,x,wres,fix_conserve_at_step,my_dt,igrid,nflux)
     use mod_global_parameters
     use mod_fix_conserve
@@ -4402,26 +4401,24 @@ contains
 
     call mhd_get_jxbxb(w,x,ixI^L,ixA^L,tmp)
 
-    !set electric field in tmp: E=nuA * jxbxb, where nuA=-etaA/rho^2
+    ! set ambipolar electric field in tmp: E_ambi = -eta_A * JxBxB= eta_A * B^2 (J_perpB)
+    ! and eta_A is mhd_ambi_coef/rho^2 or is user-defined
+    ! multiplyAmbiCoef is actually doing multiplication with -mhd_ambi_coef/rho^2
     do i=1,3
-      !tmp(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * tmp(ixA^S,i)
       call multiplyAmbiCoef(ixI^L,ixA^L,tmp(ixI^S,i),w,x)
     enddo
 
+    ! TODO: VERIFY for B split cases and for all energy combinations
     if(mhd_energy .and. .not.mhd_internal_e) then
-      !btot should be only mag. pert.
-      btot(ixA^S,1:3)=0.d0
-      !if(B0field) then
-      !  do i=1,ndir
-      !    btot(ixA^S, i) = w(ixA^S,mag(i)) + block%B0(ixA^S,i,0)
-      !  enddo
-      !else
-        btot(ixA^S,1:ndir) = w(ixA^S,mag(1:ndir))
-      !endif
+      btot(ixA^S,1:3)    = 0.d0
+      ! HERE: only uses B_1 if split, otherwise this is B
+      btot(ixA^S,1:ndir) = w(ixA^S,mag(1:ndir))
+      ! compute ff= E_ambi x B (where B can be B_1 if B0field=T)
       call cross_product(ixI^L,ixA^L,tmp,btot,ff)
+      ! compute actual cell face fluxes in ff and their divergence in tmp2
       call get_flux_on_cell_face(ixI^L,ixO^L,ff,tmp2)
       if(fix_conserve_at_step) fluxall(ixI^S,1,1:ndim)=ff(ixI^S,1:ndim)
-      !- sign comes from the fact that the flux divergence is a source now
+      ! - sign as the source is actually div(BxE_ambi) and we have div(E_ambi x B) in tmp2
       wres(ixO^S,e_)=-tmp2(ixO^S)
     endif
 
@@ -4537,13 +4534,15 @@ contains
 
   end subroutine update_faces_ambipolar
 
-  !> use cell-center flux to get cell-face flux
-  !> and get the source term as the divergence of the flux
+  !> use cell-center flux vector to get cell-face flux vector
+  !> which will be used to add the source term as the divergence of the flux
+  !> we return fluxes at all faces as well as the divergence of the flux
+  !> Note that for ndir>ndim, we do not modify the input cell center flux
   subroutine get_flux_on_cell_face(ixI^L,ixO^L,ff,src)
     use mod_global_parameters
 
     integer, intent(in) :: ixI^L, ixO^L
-    double precision, dimension(:^D&,:), intent(inout) :: ff
+    double precision, dimension(ixI^S,1:3), intent(inout) :: ff
     double precision, intent(out) :: src(ixI^S)
 
     double precision :: ffc(ixI^S,1:ndim)
@@ -4561,7 +4560,7 @@ contains
       ffc(ixC^S,1:ndim)=ffc(ixC^S,1:ndim)+ff(ixB^S,1:ndim)
     {end do\}
     ffc(ixC^S,1:ndim)=0.5d0**ndim*ffc(ixC^S,1:ndim)
-    ! flux at cell face
+    ! now get flux at cell face from corner fluxes in fcc
     ff(ixI^S,1:ndim)=0.d0
     do idims=1,ndim
       ixB^L=ixO^L-kr(idims,^D);
@@ -5024,7 +5023,8 @@ contains
     }
   end subroutine add_hypertc_source_orig
 
-  !> Compute the Lorentz force (JxB)
+  !> Compute the Lorentz force (JxB) Note: Unused subroutine
+  !> perhaps useful for post-processing when made public
   subroutine get_Lorentz_force(ixI^L,ixO^L,w,JxB)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixO^L

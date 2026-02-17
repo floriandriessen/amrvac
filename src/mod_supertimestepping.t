@@ -1,21 +1,27 @@
 !> Generic supertimestepping method
-!> 1) in amrvac.par in sts_list set the following parameters which have the default values: 
-!> sts_dtpar=0.9,sts_ncycles=1000,sts_method=1,sourcetype_sts=2
-!> These parametes are general for all the methods added TODO: check if there is any need
-!> to have terms implemented with different sets of parameters, and these cannot be general anymore
-!> 2) then add programatically in the code a term with the subroutine
-!> add_sts_method
-!> This method takes as parameters a function which calculated the explicit timestep
-!> associated with the term, a subroutine which sets the source term 
-!> types for the BC and the BC are generated from  the variables startVar:endVar
-!> flux conservation (fixconserve) is done for the variables specified by  ixChangeStart, ixChangeN, ixChangeFixC
-!> The following two steps are done in this way as in fortran it is not allowed to pass null function pointers as parameters:
-!> 3)in order to  to have hooks before_first_cycle, after_last_cycle (e.g. conversion from e_tot to e_int before first sts cycle
-!> and back from  e_int to e_tot after the last STS cycle  for the thermal conductivity module) add them just afterwards with the subroutine
-!> set_conversion_methods_to_head
-!> 4) to add the hook for error handling (e.g check small values in the thermal conductivity module ) 
+!> which can be used for multiple source terms in the governing equations
+!> where each term introduces a sts_term type and all sts terms are stored in a pointer list
+!> 
+!> user control is in
+!> 1) amrvac.par where namelist sts_list sets the following parameters which have default values: 
+!> sts_dtpar=0.5,sts_ncycles=1000,sts_method=1,sourcetype_sts=2
+!> These parametes are shared for all the terms added 
+!>
+!> Any STS-handled term is done via
+!> 2) program in the code a term with the subroutine add_sts_method
+!> This method takes as parameters a function which calculates the explicit timestep
+!> associated with the term and a subroutine which sets the source term 
+!> for the variables startVar:endVar=startVar+nflux-1
+!> flux conservation (fixconserve) is done for the variables as specified by  ixChangeStart, ixChangeN, ixChangeFixC
+!> 
+!> 3) one can have hooks before_first_cycle, after_last_cycle (e.g. conversion from e_tot to e_int before first sts cycle
+!> and back from  e_int to e_tot after the last STS cycle as used for the thermal conductivity module) 
+!> add those hooks just afterwards with the subroutine set_conversion_methods_to_head
+!>
+!> 4) add the hook for error handling (e.g check small values in the thermal conductivity module) 
 !> call set_error_handling_to_head which takes as parameter a subroutine
-!> the error handling subroutine is called before setting BC
+!> this error handling subroutine is called before setting BC
+!>
 module mod_supertimestepping
   use mod_geometry
   use mod_comm_lib, only: mpistop
@@ -33,7 +39,7 @@ module mod_supertimestepping
   !> the coefficient that multiplies the sts dt
   double precision :: sts_dtpar=0.5d0
 
-  !The following is used only for method 2, not input parameter TODO check if we want as input parameter
+  !The following is used only for method 2, not input parameter
   double precision,parameter :: nu_sts = 0.5d0
   !> the maximum number of subcycles
   integer :: sts_ncycles=1000
@@ -193,7 +199,7 @@ contains
   !> Params: 
   !> sts_getdt function calculates the explicit timestep for this term
   !> sts_set_sources subroutine sets the source term
-  !> startVar, endVar, nflux indices of start, end, and number of the variables that need fix conservation
+  !> startVar, nflux (making endVar=startVar+nflux-1) indices of start and number of the variables that need fix conservation
   !> startwbc, nwbc indices of start and number of the variables that need ghost cell exchange
   !> These terms implemented by an element of the derived type sts_term are put in a linked list
   subroutine add_sts_method(sts_getdt, sts_set_sources, startVar, nflux, startwbc, nwbc, evolve_B)
@@ -425,17 +431,6 @@ contains
     enddo
    N=j-1 
   END FUNCTION sum_chev
-
-  !TODO the following not used
-!  PURE FUNCTION total_chev(nu,N)
-!    double precision, INTENT(IN) :: nu
-!    INTEGER, INTENT(IN)       :: N
-!    double precision             :: total_chev
-!
-!    total_chev = N/(2d0*dsqrt(nu)) * ( (1d0 + dsqrt(nu))**(2d0*N) - (1d0 - dsqrt(nu))**(2d0*N) ) / &
-!         ( (1d0 + dsqrt(nu))**(2d0*N) + (1d0 - dsqrt(nu))**(2d0*N) )
-!
-!  END FUNCTION total_chev
 
   !> Iterates all the terms implemented with STS and adds the sources
   !> STS method 2 implementation
