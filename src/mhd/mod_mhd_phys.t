@@ -887,6 +887,21 @@ contains
 {^IFTHREED
     phys_te_images => mhd_te_images
 }
+
+    ! consistency check for hyperresistivity implementation
+    if (mhd_eta_hyper>0.0d0) then
+      if(mype==0) then
+         write(*,*) '*****Using hyperresistivity:  with mhd_eta_hyper :', mhd_eta_hyper
+      endif
+       if(B0field) then
+        ! hyperresistivity not ok yet with splitting
+        call mpistop("Must have B0field=F when using hyperresistivity")
+      end if
+    endif
+    if (mhd_eta_hyper<0.0d0) then
+        call mpistop("Must have mhd_eta_hyper positive when using hyperresistivity")
+    endif
+
     ! Initialize viscosity module
     if (mhd_viscosity) then
        call viscosity_init(phys_wider_stencil)
@@ -940,10 +955,11 @@ contains
     if(mhd_ambipolar) then
       if(mhd_ambipolar_sts) then
         call sts_init()
-        if(mhd_internal_e) then
+        if(mhd_internal_e.or.mhd_hydrodynamic_e) then
           call add_sts_method(get_ambipolar_dt,sts_set_source_ambipolar,mag(1),&
                ndir,mag(1),ndir,.true.)
         else
+          ! any total energy or no energy at all case is handled here
           call add_sts_method(get_ambipolar_dt,sts_set_source_ambipolar,mom(ndir)+1,&
                mag(ndir)-mom(ndir),mag(1),ndir,.true.)
         end if
@@ -3919,6 +3935,7 @@ contains
     end do
 
     if(mhd_hyperbolic_thermal_conduction) then
+     ! CHECK: poloidal versus total unit b vector
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
         f(ix^D,q_)=zero
@@ -4039,6 +4056,7 @@ contains
     end do
 
     if(mhd_hyperbolic_thermal_conduction) then
+     ! CHECK: poloidal versus total unit b vector
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
         f(ix^D,q_)=zero
@@ -4133,6 +4151,7 @@ contains
      {end do\}
     end do
     if(mhd_hyperbolic_thermal_conduction) then
+     ! CHECK: poloidal versus total unit b vector
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*btotal(ix^D,idim)/(dsqrt(^D&btotal({ix^D},^D)**2+)+smalldouble)
         f(ix^D,q_)=zero
@@ -4222,6 +4241,7 @@ contains
      {end do\}
     end do
     if(mhd_hyperbolic_thermal_conduction) then
+     ! CHECK: poloidal versus total unit b vector
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
         f(ix^D,q_)=zero
@@ -4437,6 +4457,7 @@ contains
     endif
 
     if(stagger_grid) then
+      ! always 2D or more (2.5/3D)
       if(ndir>ndim) then
         !!!Bz
         ff(ixA^S,1) = tmp(ixA^S,2)
@@ -4457,6 +4478,26 @@ contains
       !m2={-ele[[3]],0,ele[[1]]}
       !m3={ele[[2]],-ele[[1]],0}
 
+      {^IFONED
+      !!!Bx
+      ff(ixA^S,1) = 0.d0
+      ff(ixA^S,2) = tmp(ixA^S,3)
+      ff(ixA^S,3) = -tmp(ixA^S,2)
+      call get_flux_on_cell_face(ixI^L,ixO^L,ff,tmp2)
+      if(fix_conserve_at_step) fluxall(ixI^S,2,1:ndim)=ff(ixI^S,1:ndim)
+      !flux divergence is a source now
+      wres(ixO^S,mag(1))=-tmp2(ixO^S)
+      if(ndir==2.or.ndir==3)then
+        !!!By
+        ff(ixA^S,1) = -tmp(ixA^S,3)
+        ff(ixA^S,2) = 0.d0
+        ff(ixA^S,3) = tmp(ixA^S,1)
+        call get_flux_on_cell_face(ixI^L,ixO^L,ff,tmp2)
+        if(fix_conserve_at_step) fluxall(ixI^S,3,1:ndim)=ff(ixI^S,1:ndim)
+        wres(ixO^S,mag(2))=-tmp2(ixO^S)
+      endif
+      }
+      {^NOONED
       !!!Bx
       ff(ixA^S,1) = 0.d0
       ff(ixA^S,2) = tmp(ixA^S,3)
@@ -4472,6 +4513,7 @@ contains
       call get_flux_on_cell_face(ixI^L,ixO^L,ff,tmp2)
       if(fix_conserve_at_step) fluxall(ixI^S,3,1:ndim)=ff(ixI^S,1:ndim)
       wres(ixO^S,mag(2))=-tmp2(ixO^S)
+      }
 
       if(ndir==3) then
         !!!Bz
@@ -4685,7 +4727,7 @@ contains
       else
         if(has_equi_rho_and_p) then
           active = .true.
-          call add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCTprim,w,x)
+          call add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
         end if
       end if
 
@@ -4698,6 +4740,9 @@ contains
       ! Source for B0 splitting
       if (B0field) then
         active = .true.
+        ! this adds source to momentum of type J0 x B0 and to energy equation
+        ! latter always + J0 * E (electric field being E_ideal, E_hall, E_ambi)
+        ! used for total energy variants
         call add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
 
@@ -4797,32 +4842,72 @@ contains
 
   end subroutine mhd_add_source
 
-  !> TODO: THIS SEEMS WRONG FOR total energy with has_equi_rho_and_p=T
-  subroutine add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x)
+  !> add some source terms to total energy related to has_equi_rho_and_p=T
+  subroutine add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
     use mod_geometry
+    use mod_usr_methods
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt,dtfactor
     double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
+    double precision, intent(in)    :: wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
-    double precision                :: divv(ixI^S)
 
-    call mpistop("not ok here")
+    double precision                :: divv(ixI^S)
+    double precision :: a(ixI^S,3), b(ixI^S,3), axb(ixI^S,3)
+    double precision :: gravity_field(ixI^S,1:ndim)
+    integer :: idir
+
     if(slab_uniform) then
       if(nghostcells .gt. 2) then
-        call divvector(wCT(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,3)
+        call divvector(wCTprim(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,3)
       else
-        call divvector(wCT(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,2)
+        call divvector(wCTprim(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,2)
       end if
     else
-     call divvector(wCT(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv)
+     call divvector(wCTprim(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv)
     end if
+    divv(ixO^S)=divv(ixO^S)*mhd_gamma*inv_gamma_1
     if(local_timestep) then
       w(ixO^S,e_)=w(ixO^S,e_)-dtfactor*block%dt(ixO^S)*block%equi_vars(ixO^S,equi_pe0_,0)*divv(ixO^S)
     else
       w(ixO^S,e_)=w(ixO^S,e_)-qdt*block%equi_vars(ixO^S,equi_pe0_,0)*divv(ixO^S)
     end if
+    if(B0field)then
+      if(B0field_forcefree)then
+        ! add -v dot(rho_0 g)/(gamma-1)
+        call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
+        do idir=1,ndim
+           w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*inv_gamma_1
+        enddo
+      else
+        a=0.d0
+        b=0.d0
+        ! store B0 magnetic field in b
+        b(ixO^S,1:ndir)=block%B0(ixO^S,1:ndir,0)
+        ! store J0 current in a
+        do idir=7-2*ndir,3
+          a(ixO^S,idir)=block%J0(ixO^S,idir)
+        end do
+        call cross_product(ixI^L,ixO^L,a,b,axb)
+        ! add -v dot(rho_0 g + J0 x B_0)/(gamma-1)
+        do idir=1,ndir
+           w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*axb(ixO^S,idir)*inv_gamma_1
+        enddo
+        ! add -v dot(rho_0 g)/(gamma-1)
+        call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
+        do idir=1,ndim
+         w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*inv_gamma_1
+        enddo
+      endif
+    else
+      ! add -v dot(rho_0 g)/(gamma-1)
+      call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
+      do idir=1,ndim
+         w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*inv_gamma_1
+      enddo
+    endif
   end subroutine add_pe0_divv
 
   subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
@@ -4883,6 +4968,7 @@ contains
          sigmaT5_bgradT=sigma_T5*BgradT(ix^D)/(dsqrt(b2)+smalldouble)
       endif
       if(mhd_htc_sat) then
+        ! CHECK: saturation treatment and poloidal versus total unit b vector
         f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(mhd_gamma*pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
         tau=max(4.d0*dt, f_sat*sigma_T7/(pth_loc(ix^D)*inv_gamma_1*cs2_global))
         w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
@@ -4936,6 +5022,7 @@ contains
       end if
       sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
       if(mhd_htc_sat) then
+        ! CHECK: saturation treatment 
         f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
         tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
         w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
@@ -4979,6 +5066,7 @@ contains
            bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
         if(mhd_htc_sat) then
+          ! CHECK: saturation treatment
           f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
           tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
           w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
@@ -5030,6 +5118,7 @@ contains
             +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
           if(mhd_htc_sat) then
+            ! CHECK: saturation treatment
             f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
             tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
             w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
@@ -5194,7 +5283,7 @@ contains
       ! for free-free field -(vxB0) dot J0 =0
       b(ixO^S,:)=wCTprim(ixO^S,mag(:))
       ! store full magnetic field B0+B1 in b
-      if(.not.B0field_forcefree) b(ixO^S,:)=b(ixO^S,:)+block%B0(ixO^S,:,0)
+      if((.not.B0field_forcefree).and.(.not.has_equi_rho_and_p)) b(ixO^S,:)=b(ixO^S,:)+block%B0(ixO^S,:,0)
       ! store velocity in a
       a(ixI^S,1:ndir)=wCTprim(ixI^S,mom(1:ndir))
       ! -E = a x b
@@ -5207,11 +5296,12 @@ contains
         axb(ixO^S,:)=axb(ixO^S,:)*qdt
       endif
       ! add -(vxB) dot J0 source term in energy equation
+      ! where it is adding -J0 dot (vxB_1) when appropriate
       do idir=7-2*ndir,3
         w(ixO^S,e_)=w(ixO^S,e_)-axb(ixO^S,idir)*block%J0(ixO^S,idir)
       end do
       if(mhd_hall) then
-         ! store hall velocity in a, only partial current is neededj
+         ! store hall velocity in a, only partial current is needed
          call mhd_getv_Hall(wCT,x,ixI^L,ixO^L,a,.true.)
          ! -E = a x b
          call cross_product(ixI^L,ixO^L,a,b,axb)
@@ -5227,14 +5317,17 @@ contains
            w(ixO^S,e_)=w(ixO^S,e_)-axb(ixO^S,idir)*block%J0(ixO^S,idir)
          end do
       endif
-      if(mhd_ambipolar) then
+      if(mhd_ambipolar_sts) then
+        ! in STS variant of ambipolar, we added for split B the term div(B_1xE_ambi)
+        ! hence needs to add J_0 dot E_ambi 
+        ! to get finally the term etaA (J_perpB)^/B^2-B_1 dot (curl Eambi)
         !reuse axb
         call mhd_get_jxbxb(wCT,x,ixI^L,ixO^L,axb)
         ! source J0 * E
         do idir=sdim,3
           !set electric field in jxbxb: E=nuA * jxbxb, where nuA=-etaA/rho^2
           call multiplyAmbiCoef(ixI^L,ixO^L,axb(ixI^S,idir),wCT,x)
-          w(ixO^S,e_)=w(ixO^S,e_)+axb(ixO^S,idir)*block%J0(ixO^S,idir)
+          w(ixO^S,e_)=w(ixO^S,e_)+qdt*axb(ixO^S,idir)*block%J0(ixO^S,idir)
         enddo
       endif
     end if
@@ -5684,7 +5777,7 @@ contains
         w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)-&
         qdt*sum(wCT(ixO^S,mag(1:ndir))*curlj(ixO^S,1:ndir),dim=ndim+1)
       else
-        ! add eta*J**2 source term in the internal energy equation
+        ! add eta*J**2 source term in the internal or hydrodynamic energy equation
         w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)
       end if
     end if
