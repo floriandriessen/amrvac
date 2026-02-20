@@ -10,7 +10,7 @@ mod_geometry.t mod_ghostcells_update.t mod_small_values.t  \
 mod_fix_conserve.t mod_source.t mod_initialize.t  \
 mod_amrvac.t mod_bc_data.t mod_lookup_table.t    \
 mod_constrained_transport.t mod_multigrid_coupling.t \
-mod_supertimestepping.t mod_init_datafromfile.t
+mod_supertimestepping.t mod_init_datafromfile.t mod_trac.t
 FOBJECTS += m_octree_mg_$(NDIM)d.t
 # Add multigrid files and dependencies. Due to the m_ prefix, the
 # list_module_deps.sh script ignores these dependencies.
@@ -40,6 +40,7 @@ amrvac.o: mod_particles.mod
 amrvac.o: mod_physics.mod
 amrvac.o: mod_selectgrids.mod
 amrvac.o: mod_timing.mod
+amrvac.o: mod_trac.mod
 amrvac.o: mod_usr.mod
 amrvac.o: mod_usr_methods.mod
 mod_advance.o: mod_comm_lib.mod
@@ -242,6 +243,7 @@ mod_hd_eos.o: mod_eos_container.mod
 mod_hd_eos.o: mod_global_parameters.mod
 mod_hd_eos.o: mod_hd_phys.mod
 mod_hd_eos.o: mod_physics.mod
+mod_hd_eos.o: mod_timing.mod
 mod_hd_eos.o: mod_usr_methods.mod
 mod_hd_hllc.o: mod_dust.mod
 mod_hd_hllc.o: mod_global_parameters.mod
@@ -473,6 +475,10 @@ mod_thermal_emission.o: mod_constants.mod
 mod_thermal_emission.o: mod_geometry.mod
 mod_thermal_emission.o: mod_global_parameters.mod
 mod_thermal_emission.o: mod_physics.mod
+mod_trac.o: mod_comm_lib.mod
+mod_trac.o: mod_global_parameters.mod
+mod_trac.o: mod_physics.mod
+mod_trac.o: mod_trace_field.mod
 mod_trace_field.o: mod_forest.mod
 mod_trace_field.o: mod_global_parameters.mod
 mod_trace_field.o: mod_particle_base.mod

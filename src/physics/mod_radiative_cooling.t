@@ -91,6 +91,13 @@ module mod_radiative_cooling
     ! these are to be set directly
     logical :: has_equi = .false.
 
+    !> Density cap for optically thick regions (code units).
+    !> When rho > rho_cap, radiative losses are set to zero.
+    !> Intended for _DM variants where the low-temperature DM extension
+    !> assumes optically thin conditions that break down at high density.
+    !> Defaults to bigdouble (cap disabled). Set in the cooling namelist.
+    double precision :: rho_cap
+
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve
 
@@ -805,6 +812,7 @@ module mod_radiative_cooling
       fl%rad_cut=.false.
       fl%rad_cut_hgt=0.5d0
       fl%rad_cut_dey=0.15d0
+      fl%rho_cap=bigdouble
       call read_params(fl)
 
       if(fl%rc_split) any_source_split=.true.
@@ -1245,9 +1253,8 @@ module mod_radiative_cooling
       ! Limit timestep to avoid cooling problems when using explicit cooling
       !
       if(fl%coolmethod == 'explicit1') then
-        ! call fl%get_pthermal(w,x,ixI^L,ixO^L,pth) 
-        call fl%get_rho(w,x,ixI^L,ixO^L,rho) 
-        ! call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Rfactor)
+        call fl%get_pthermal(w,x,ixI^L,ixO^L,pth)
+        call fl%get_rho(w,x,ixI^L,ixO^L,rho)
         call fl%get_Te(w,x,ixI^L,ixO^L,Te)
         
         ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
@@ -1257,12 +1264,12 @@ module mod_radiative_cooling
           !  Stop wasting time and go to next gridpoint.
           !  If the temperature is higher than the maximum,
           !  assume Bremsstrahlung
-          if( Te(ix^D)<=fl%tcoolmin ) then
+          if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
              L1 = zero
           else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1, fl)
              L1 = L1*rho(ix^D)**2
-          else  
+          else
              call findL(Te(ix^D),L1,fl)
              L1 = L1*rho(ix^D)**2
           end if
@@ -1298,7 +1305,7 @@ module mod_radiative_cooling
 
       {do ix^DB = ixO^LIM^DB\}
          ! Determine explicit cooling
-         if(Te(ix^D) <= fl%tcoolmin) then
+         if(Te(ix^D) <= fl%tcoolmin .or. rho(ix^D)>fl%rho_cap) then
            L1 = zero
          else if(Te(ix^D) >= fl%tcoolmax)then
            call calc_l_extended(Te(ix^D),L1,fl)
@@ -1353,7 +1360,7 @@ module mod_radiative_cooling
 
          ! No cooling if temperature is below floor level.
          ! Assuming Bremsstrahlung if temperature is higher than maximum.
-         if( Te(ix^D)<= fl%tcoolmin) then
+         if( Te(ix^D)<= fl%tcoolmin .or. rho(ix^D)>fl%rho_cap) then
            l1 = zero
          else if( Te(ix^D)>= fl%tcoolmax ) then
            call calc_l_extended(Te(ix^D), l1, fl)
@@ -1407,6 +1414,7 @@ module mod_radiative_cooling
         case ('implicit')   
           call cool_implicit(qdt,ixI^L,ixO^L,wCT,w,x,fl)   
         case ('exact')   
+          !> Why does cool_exact maintain WCTprim whereas the others don't? Leads to potential FP imprecision in other methods.
           call cool_exact(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,fl)
         case default
           call mpistop("This cooling method is unknown")
@@ -1480,8 +1488,8 @@ module mod_radiative_cooling
            !  Stop wasting time and go to next gridpoint.
            !  If the temperature is higher than the maximum,
            !  assume Bremsstrahlung
-           if( Te(ix^D)<=fl%tcoolmin ) then
-             L1 = zero
+           if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+             ! res already initialised to 0d0 above; no cooling
            else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1,fl)
              L1 = L1*rho(ix^D)**2
@@ -1491,8 +1499,8 @@ module mod_radiative_cooling
                end if
              end if
              L1 = min(L1,Lmax)
-             res(ix^D) =  L1*qdt
-           else  
+             res(ix^D) = L1*qdt
+           else
              call findY(Te(ix^D),Y1,fl)
              Y2 = Y1 + fact * rho(ix^D)*rc_gamma_1
              call findT(Tlocal2,Y2,fl)
@@ -1506,7 +1514,7 @@ module mod_radiative_cooling
                  de=de*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
                end if
              end if
-             de = min(de,emax)   
+             de = min(de,emax)
              res(ix^D) = de
            end if
         {end do\}
@@ -1515,11 +1523,11 @@ module mod_radiative_cooling
            emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
            Lmax = max(zero,pth(ix^D)*invgam-emin)/qdt
            !  Determine explicit cooling
-           !  If temperature is below floor level, no cooling. 
+           !  If temperature is below floor level, no cooling.
            !  Stop wasting time and go to next gridpoint.
            !  If the temperature is higher than the maximum,
            !  assume Bremsstrahlung
-           if( Te(ix^D)<=fl%tcoolmin ) then
+           if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
              L1 = zero
            else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1,fl)
@@ -1533,7 +1541,7 @@ module mod_radiative_cooling
              end if
            end if
            L1 = min(L1,Lmax)
-           res(ix^D) =L1*qdt
+           res(ix^D) = L1*qdt
         {end do\}
      end if
     end subroutine get_cool_equi
@@ -1568,7 +1576,7 @@ module mod_radiative_cooling
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremsstrahlung
-         if( Te(ix^D)<=fl%tcoolmin ) then
+         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
            L1 = zero
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), L1,fl)
@@ -1633,7 +1641,7 @@ module mod_radiative_cooling
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremmstrahlung
-         if( Te(ix^D)<=fl%tcoolmin ) then
+         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
            Ltest = zero
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), Ltest,fl)
@@ -1668,7 +1676,7 @@ module mod_radiative_cooling
            Lmax   = max(zero,etherm-emin)/dtstep
            !  Tlocal = P/(rho*R)
            Tlocal1 = plocal/(rho(ix^D)*Rfactor(ix^D))
-           if( Tlocal1<=fl%tcoolmin ) then
+           if( Tlocal1<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
              L1 = zero
              exit
            else if( Tlocal1>=fl%tcoolmax )then
@@ -1680,7 +1688,7 @@ module mod_radiative_cooling
                end if
              end if
              L1 = min(L1,Lmax)
-           else  
+           else
              call findL(Tlocal1,L1,fl)
              L1 = L1*rho(ix^D)**2
              if(phys_trac) then
@@ -1696,7 +1704,7 @@ module mod_radiative_cooling
          if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
            de = de*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
          end if
-         w(ix^D,fl%e_) = w(ix^D,fl%e_) -de 
+         w(ix^D,fl%e_) = w(ix^D,fl%e_) -de
       {end do\}
     end subroutine cool_explicit2
 
@@ -1730,9 +1738,8 @@ module mod_radiative_cooling
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremsstrahlung
-         if( Te(ix^D)<=fl%tcoolmin ) then
-           L1 = zero
-           L2 = zero
+         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+           ! no cooling
          else
            if( Te(ix^D)>=fl%tcoolmax ) then
              call calc_l_extended(Te(ix^D), L1,fl)
@@ -1766,7 +1773,7 @@ module mod_radiative_cooling
              L2 = L2*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
            end if
            w(ix^D,fl%e_) = w(ix^D,fl%e_) - min(half*(L1+L2),Lmax)*qdt
-         end if 
+         end if
       {end do\}
     end subroutine cool_semiimplicit
 
@@ -1801,7 +1808,7 @@ module mod_radiative_cooling
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremsstrahlung
-         if( Te(ix^D)<=fl%tcoolmin ) then
+         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
            Ltemp = zero
          else
            eold  = elocal
@@ -1880,8 +1887,8 @@ module mod_radiative_cooling
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremsstrahlung
-         if( Te(ix^D)<=fl%tcoolmin ) then
-           L1 = zero
+         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+           ! no cooling
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), L1,fl)
            L1 = L1*rho(ix^D)**2

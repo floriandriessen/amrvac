@@ -4,6 +4,7 @@ module mod_hd_eos
     use mod_eos
     use mod_eos_container
     use mod_hd_phys
+    use mod_timing
 
     use mod_comm_lib, only: mpistop
 
@@ -75,6 +76,8 @@ module mod_hd_eos
 
             integer :: ix^D
 
+            timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                 if (hd_energy) then
                     ! Calculate total energy from pressure and kinetic energy
@@ -89,6 +92,8 @@ module mod_hd_eos
                 call dust_to_conserved(ixI^L, ixO^L, w, x)
             end if
 
+            timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+
         end subroutine hd_to_conserved
 
         !> Transform conservative variables into primitive ones
@@ -101,6 +106,8 @@ module mod_hd_eos
 
             double precision                :: inv_rho
             integer :: ix^D
+
+            timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
 
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                 inv_rho = 1.d0/w(ix^D,rho_)
@@ -123,6 +130,8 @@ module mod_hd_eos
                 call dust_to_primitive(ixI^L, ixO^L, w, x)
             end if
 
+            timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+
         end subroutine hd_to_primitive
 
         subroutine hd_to_conserved_LTE(ixI^L, ixO^L, w, x)
@@ -131,6 +140,8 @@ module mod_hd_eos
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
+
+            timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
 
             ! Calculate total energy from pressure and kinetic energy
             call p_to_e(ixI^L, ixO^L, w, x)
@@ -141,6 +152,8 @@ module mod_hd_eos
             if (hd_dust) then
                 call dust_to_conserved(ixI^L, ixO^L, w, x)
             end if
+
+            timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
             
         end subroutine hd_to_conserved_LTE
 
@@ -183,19 +196,33 @@ module mod_hd_eos
 
             double precision                :: inv_rho
             double precision                :: nH(ixI^S)
+            double precision                :: log_nH(ixI^S)
+            double precision                :: eint_val, p_guess
             integer :: ix^D
 
+            timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+
             call eos%get_nH(w, x, ixI^L, ixO^L, nH)
+
+            ! Cache log10(nH) for all cells (used by root-finder for IonE)
+            if (eos%ionE) then
+                log_nH(ixO^S) = dlog10(nH(ixO^S))
+            end if
 
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                 inv_rho = 1.d0/w(ix^D,rho_)
                 ! Convert momentum to velocity
                 ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
-                ! Calculate pressure = (gamma-1) * (e-ek) or rely on primitive combination
+                ! Calculate pressure
                 if(hd_energy) then
                     if (eos%ionE) then
+                        ! OLD: use stored Ne/Te from previous update_eos (closure gap with p2eint table)
                         w(ix^D,p_)=nH(ix^D) * (1.0d0 + eos%He_abundance + (w(ix^D,Ne_) / nH(ix^D))) * w(ix^D,Te_)
-                        ! w(ix^D,rho_) * ((1.0 + eos%He_abundance + (w(ix^D,Ne_) * inv_rho))/(1.0d0 + 4.0d0 * eos%He_abundance)) * w(ix^D,Te_)
+                        ! ! NEW: Root-find p by inverting the same p2eint table used in p_to_e (exact closure)
+                        ! eint_val = w(ix^D,e_) - half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)
+                        ! ! Initial guess from stored Ne and Te (close to true p)
+                        ! p_guess = nH(ix^D) * (1.0d0 + eos%He_abundance + w(ix^D,Ne_)/nH(ix^D)) * w(ix^D,Te_)
+                        ! w(ix^D,p_) = p_from_eint_IonE(eint_val, nH(ix^D), log_nH(ix^D), p_guess)
                     else
                         w(ix^D,p_)=(eos%gamma_minus_1)*(w(ix^D,e_)&
                             -half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
@@ -211,6 +238,8 @@ module mod_hd_eos
             if (hd_dust) then
                 call dust_to_primitive(ixI^L, ixO^L, w, x)
             end if
+
+            timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
 
         end subroutine hd_to_primitive_LTE
 

@@ -270,6 +270,7 @@ contains
     phys_handle_small_values => hd_handle_small_values
     phys_e_to_ei            => hd_e_to_ei
     phys_ei_to_e            => hd_ei_to_e
+    phys_get_ei             => hd_get_ei
 
     ! derive units from basic units
     call hd_physical_units()
@@ -525,9 +526,11 @@ contains
       !> Add cooling source in a split way (.true.) or un-split way (.false.)
       logical    :: rc_split=.false.
 
+      !> Density cap: losses zeroed where rho > rho_cap (code units). Default: disabled.
+      double precision :: rho_cap=bigdouble
 
-      namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split
-  
+      namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, rho_cap
+
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
         read(unitpar, rc_list, end=111)
@@ -541,6 +544,7 @@ contains
       fl%Tfix=Tfix
       fl%rc_split=rc_split
       fl%cfrac=cfrac
+      fl%rho_cap=rho_cap
     end subroutine rc_params_read
 !! end rad cool
 
@@ -781,6 +785,17 @@ contains
 
   end subroutine hd_e_to_ei
 
+  !> Calculate internal energy from total energy (non-modifying version)
+  function hd_get_ei(w, ixI^L, ixO^L) result(ei)
+    use mod_global_parameters
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(in)    :: w(ixI^S, nw)
+    double precision                :: ei(ixO^S)
+
+    ! ei = e_total - e_kinetic
+    ei(ixO^S) = w(ixO^S,e_) - half*(^C&w(ixO^S,m^C_)**2+)/w(ixO^S,rho_)
+  end function hd_get_ei
+
   !> Calculate v_i = m_i / rho within ixO^L
   subroutine hd_get_v_idim(w, x, ixI^L, ixO^L, idim, v)
     use mod_global_parameters
@@ -867,7 +882,7 @@ contains
 
     double precision, parameter :: trac_delta=0.25d0
     double precision :: tmp1(ixI^S),Te(ixI^S),lts(ixI^S), R(ixI^S)
-    double precision :: ltr(ixI^S),ltrc,ltrp,tcoff(ixI^S)
+    double precision :: ltrc,ltrp
     integer :: jxO^L,hxO^L
     integer :: jxP^L,hxP^L,ixP^L
     logical :: lrlt(ixI^S)
@@ -884,7 +899,7 @@ contains
     Tmax_local=maxval(Te(ixO^S))
     select case(hd_trac_type)
     case(0)
-      w(ixI^S,Tcoff_)=3.d5/unit_temperature
+      block%wextra(ixI^S,Tcoff_)=3.d5/unit_temperature
     case(1)
       hxO^L=ixO^L-1;
       jxO^L=ixO^L+1;
@@ -899,16 +914,16 @@ contains
     case(2)
       !> iijima et al. 2021, LTRAC method
       ltrc=1.5d0
-      ltrp=2.5d0
+      ltrp=4.d0
       ixP^L=ixO^L^LADD1;
       hxO^L=ixO^L-1;
       jxO^L=ixO^L+1;
       hxP^L=ixP^L-1;
       jxP^L=ixP^L+1;
       lts(ixP^S)=0.5d0*abs(Te(jxP^S)-Te(hxP^S))/Te(ixP^S)
-      ltr(ixP^S)=max(one, (exp(lts(ixP^S))/ltrc)**ltrp)
-      w(ixO^S,Tcoff_)=Te(ixO^S)*&
-        (0.25*(ltr(jxO^S)+two*ltr(ixO^S)+ltr(hxO^S)))**0.4d0
+      lts(ixP^S)=max(one, (exp(lts(ixP^S))/ltrc)**ltrp)
+      lts(ixO^S)=0.25d0*(lts(jxO^S)+two*lts(ixO^S)+lts(hxO^S))
+      block%wextra(ixO^S,Tcoff_)=Te(ixO^S)*lts(ixO^S)**0.4d0
     case default
       call mpistop("mhd_trac_type not allowed for 1D simulation")
     end select

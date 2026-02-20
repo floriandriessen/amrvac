@@ -66,6 +66,7 @@ module mod_physics
   procedure(sub_get_flux), pointer        :: phys_get_flux               => null()
   procedure(sub_e_to_ei), pointer         :: phys_e_to_ei                => null()
   procedure(sub_e_to_ei), pointer         :: phys_ei_to_e                => null()
+  procedure(sub_get_ei), pointer          :: phys_get_ei                 => null()
   procedure(sub_get_v), pointer           :: phys_get_v                  => null()
   procedure(sub_get_rho), pointer         :: phys_get_rho                => null()
   procedure(sub_get_dt), pointer          :: phys_get_dt                 => null()
@@ -202,6 +203,13 @@ module mod_physics
       double precision, intent(inout) :: w(ixI^S, nw)
       double precision, intent(in)    :: x(ixI^S, 1:ndim)
      end subroutine sub_e_to_ei
+
+     function sub_get_ei(w, ixI^L, ixO^L) result(ei)
+      use mod_global_parameters
+      integer, intent(in)             :: ixI^L, ixO^L
+      double precision, intent(in)    :: w(ixI^S, nw)
+      double precision                :: ei(ixO^S)
+     end function sub_get_ei
 
      subroutine sub_add_source_geom(qdt, dtfactor, ixI^L, ixO^L, wCT, wprim, w, x)
        use mod_global_parameters

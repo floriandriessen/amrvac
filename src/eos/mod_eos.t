@@ -50,7 +50,7 @@ module mod_eos
     type(eos_container), public, allocatable     :: eos
 
     public :: eos_init, eos_finalise, prepare_eos_w_fields
-    public :: y_from_nH_eint, T_from_nH_eint, p2eint_from_nH_p
+    public :: y_from_nH_eint, T_from_nH_eint, p2eint_from_nH_p, p_from_eint_IonE
     public :: Rfactor_from_PI_temperature, update_PI_temperature
 
 contains
@@ -374,10 +374,13 @@ contains
         double precision, intent(out) :: T(ixI^S)
         double precision :: Rfactor(ixI^S), pth(ixI^S)
 
+        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+
         call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pth)
         call eos%get_Rfactor(w,x,ixI^L,ixO^L,Rfactor)
         T(ixO^S) = pth(ixO^S) / (w(ixO^S,iw_rho) * Rfactor(ixO^S))
 
+        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
     end subroutine get_Te_FI
 
     subroutine get_thermal_pressure_FI(w, x, ixI^L, ixO^L, res)
@@ -387,13 +390,15 @@ contains
         double precision, intent(in)    :: w(ixI^S,1:nw)
         double precision, intent(out)   :: res(ixI^S)
 
-        double precision :: wlocal(ixI^S,1:nw)
-        double precision :: pth(ixI^S)
+        double precision :: ei(ixO^S)
 
-        wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
-        call phys_e_to_ei(ixI^L,ixO^L,wlocal,x) !> wlocal now contains internal energy, NOT total energy
-        res(ixO^S) = eos%gamma_minus_1 * wlocal(ixO^S,iw_e) !> pressure from internal energy only
+        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
 
+        ! Use non-modifying function to get internal energy
+        ei = phys_get_ei(w, ixI^L, ixO^L)
+        res(ixO^S) = eos%gamma_minus_1 * ei(ixO^S)
+
+        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
     end subroutine get_thermal_pressure_FI
 
     subroutine get_thermal_pressure_LTE(w, x, ixI^L, ixO^L, res) !> Assumes the inputs are in sync
@@ -405,9 +410,12 @@ contains
         double precision :: nH(ixI^S)
         integer :: ix^D
 
+        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
         res(ixO^S) = nH(ixO^S) * (1.0d0 + eos%He_abundance + (w(ixO^S,iw_ne) / nH(ixO^S))) * w(ixO^S,iw_te)
 
+        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
     end subroutine get_thermal_pressure_LTE
 
     !> The next four subroutines get the temperature from the energy variable depending on the eos type
@@ -423,9 +431,12 @@ contains
 
         double precision :: Rfactor(ixI^S)
 
+        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+
         call eos%get_Rfactor(w,x,ixI^L,ixI^L,Rfactor)
         res(ixO^S) = (eos%gamma_minus_1 * w(ixO^S,iw_e) / (Rfactor(ixO^S) * w(ixO^S,iw_rho))) !> pth/rho
 
+        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
     end subroutine get_temperature_from_eint_FI
 
     subroutine get_temperature_from_eint_LTE(w, x, ixI^L, ixO^L, res)
@@ -439,6 +450,8 @@ contains
         double precision :: nH(ixI^S),nH_in(ixI^S), eint_in(ixI^S)
         double precision :: Rfactor(ixI^S)
         integer :: ix^D
+
+        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
 
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
         nH_in(ixO^S) = dlog10(nH(ixO^S))
@@ -454,6 +467,7 @@ contains
             endif
         {end do\}
 
+        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
     end subroutine get_temperature_from_eint_LTE
 
     subroutine get_temperature_from_etot(w, x, ixI^L, ixO^L,  res)
@@ -465,10 +479,13 @@ contains
         double precision, intent(out)   :: res(ixI^S)
         double precision :: wlocal(ixI^S,1:nw)
 
+        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+
         wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
         call phys_e_to_ei(ixI^L, ixO^L, wlocal, x)
         call eos%get_temperature_from_eint(wlocal, x, ixI^L, ixO^L, res)
 
+        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
     end subroutine get_temperature_from_etot
 
     double precision function y_from_nH_eint(nH, eint_nh) result(result_val)
@@ -665,6 +682,109 @@ contains
 
     end function interp_clamped_monotone_bicubic_table
 
+    !> Root-finding inversion of the p2eint table for IonE mode.
+    !> Given eint (internal energy, code units), nH (code units), and log10(nH),
+    !> finds p such that: eint = p * p2eint(log10(nH), log10(p/nH))
+    !> Uses Brent's method for superlinear convergence.
+    !> p_guess provides an initial estimate (from stored Ne*T) to tighten the bracket.
+    double precision function p_from_eint_IonE(eint_val, nH_val, log_nH, p_guess) result(p_sol)
+        double precision, intent(in) :: eint_val, nH_val, log_nH, p_guess
+
+        double precision :: a, b, c, d, s, fa, fb, fc, fs
+        double precision :: tol_val
+        logical :: mflag
+        integer :: iter
+        integer, parameter :: max_iter = 50
+        double precision, parameter :: rtol = 1.0d-12
+        double precision, parameter :: delta = 1.0d-30
+
+        ! --- Helper: f(p) = p * p2eint(log_nH, log10(p/nH)) - eint ---
+        ! Bracket using the initial guess from stored Ne*T
+        ! p_guess ~ nH * (1 + He + Ne/nH) * T is close to the answer
+        a = p_guess * 0.1d0
+        b = p_guess * 10.0d0
+
+        fa = a * p2eint_from_nH_p(log_nH, dlog10(a) - log_nH) - eint_val
+        fb = b * p2eint_from_nH_p(log_nH, dlog10(b) - log_nH) - eint_val
+
+        ! Widen bracket if it doesn't contain the root
+        if (fa * fb > 0.0d0) then
+            a = eint_val * eos%gamma_minus_1 * 1.0d-4
+            b = eint_val * eos%gamma_minus_1 * 4.0d0
+            fa = a * p2eint_from_nH_p(log_nH, dlog10(a) - log_nH) - eint_val
+            fb = b * p2eint_from_nH_p(log_nH, dlog10(b) - log_nH) - eint_val
+        end if
+
+        ! Last resort fallback
+        if (fa * fb > 0.0d0) then
+            p_sol = eint_val * eos%gamma_minus_1
+            return
+        end if
+
+        ! Ensure |f(a)| >= |f(b)|
+        if (abs(fa) < abs(fb)) then
+            call swap(a, b); call swap(fa, fb)
+        end if
+
+        c = a; fc = fa
+        d = b - a
+        mflag = .true.
+
+        ! Brent's method loop
+        do iter = 1, max_iter
+            tol_val = rtol * abs(b) + delta
+
+            ! Convergence check
+            if (abs(b - a) < 2.0d0 * tol_val) exit
+            if (abs(fb) < delta) exit
+
+            ! Inverse quadratic interpolation or secant
+            if (abs(fa - fc) > delta .and. abs(fb - fc) > delta) then
+                ! Inverse quadratic interpolation
+                s = a*fb*fc / ((fa-fb)*(fa-fc)) &
+                    + b*fa*fc / ((fb-fa)*(fb-fc)) &
+                    + c*fa*fb / ((fc-fa)*(fc-fb))
+            else
+                ! Secant method
+                s = b - fb * (b - a) / (fb - fa)
+            end if
+
+            ! Conditions for bisection fallback
+            if ( (.not. ((s > min(a,b) + tol_val .and. s < max(a,b) - tol_val) &
+                    .or. (s > min(a,b) - tol_val .and. s < max(a,b) + tol_val))) &
+                    .or. (mflag .and. abs(s-b) >= abs(b-c)*0.5d0) &
+                    .or. (.not. mflag .and. abs(s-b) >= abs(c-d)*0.5d0) ) then
+                s = 0.5d0 * (a + b)
+                mflag = .true.
+            else
+                mflag = .false.
+            end if
+
+            fs = s * p2eint_from_nH_p(log_nH, dlog10(s) - log_nH) - eint_val
+
+            d = c; c = b; fc = fb
+
+            if (fa * fs < 0.0d0) then
+                b = s; fb = fs
+            else
+                a = s; fa = fs
+            end if
+
+            ! Ensure |f(a)| >= |f(b)|
+            if (abs(fa) < abs(fb)) then
+                call swap(a, b); call swap(fa, fb)
+            end if
+        end do
+
+        p_sol = b
+
+    contains
+        subroutine swap(x, y)
+            double precision, intent(inout) :: x, y
+            double precision :: tmp
+            tmp = x; x = y; y = tmp
+        end subroutine swap
+    end function p_from_eint_IonE
     
     !> routines needed for Chun's partially ionised module (From Leenaarts et al. 2012?)
     subroutine Rfactor_from_PI_temperature(w,x,ixI^L,ixO^L,Rfactor)
