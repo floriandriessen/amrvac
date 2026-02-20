@@ -4607,14 +4607,19 @@ contains
     ixA^L=ixO^L^LADD1;
     dxinv=1.d0/dxlevel
     ! cell corner flux in ffc
-    ffc=0.d0
-    ixCmax^D=ixOmax^D; ixCmin^D=ixOmin^D-1;
-    {do ix^DB=0,1\}
-      ixBmin^D=ixCmin^D+ix^D;
-      ixBmax^D=ixCmax^D+ix^D;
-      ffc(ixC^S,1:ndim)=ffc(ixC^S,1:ndim)+ff(ixB^S,1:ndim)
-    {end do\}
-    ffc(ixC^S,1:ndim)=0.5d0**ndim*ffc(ixC^S,1:ndim)
+    ! TO BE GENERALIZED FOR NON-UNIFORM NON-CARTESIAN MESH
+    if (slab_uniform)then
+      ffc=0.d0
+      ixCmax^D=ixOmax^D; ixCmin^D=ixOmin^D-1;
+      {do ix^DB=0,1\}
+        ixBmin^D=ixCmin^D+ix^D;
+        ixBmax^D=ixCmax^D+ix^D;
+        ffc(ixC^S,1:ndim)=ffc(ixC^S,1:ndim)+ff(ixB^S,1:ndim)
+      {end do\}
+      ffc(ixC^S,1:ndim)=0.5d0**ndim*ffc(ixC^S,1:ndim)
+    else
+      call mpistop("to generalize using volume averaging")
+    endif
     ! now get flux at cell face from corner fluxes in fcc
     ff(ixI^S,1:ndim)=0.d0
     do idims=1,ndim
@@ -4727,7 +4732,7 @@ contains
       else
         if(has_equi_rho_and_p) then
           active = .true.
-          call add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
+          call add_equi_terms(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
         end if
       end if
 
@@ -4843,7 +4848,7 @@ contains
   end subroutine mhd_add_source
 
   !> add some source terms to total energy related to has_equi_rho_and_p=T
-  subroutine add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
+  subroutine add_equi_terms(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
     use mod_geometry
     use mod_usr_methods
@@ -4908,7 +4913,7 @@ contains
          w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*inv_gamma_1
       enddo
     endif
-  end subroutine add_pe0_divv
+  end subroutine add_equi_terms
 
   subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
