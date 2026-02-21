@@ -566,7 +566,6 @@ contains
       number_equi_vars = number_equi_vars + 1
       equi_pe0_ = number_equi_vars
       iw_equi_p = equi_pe0_
-      phys_equi_pe=.true.
     endif
     ! determine number of stagger variables
     nws=ndim
@@ -838,11 +837,11 @@ contains
       if(has_equi_rho_and_p) then
         tc_fl%get_temperature_from_eint => mhd_get_temperature_from_eint_with_equi
         if(mhd_equi_thermal) then
-          tc_fl%has_equi = .true.
+          tc_fl%subtract_equi = .true.
           tc_fl%get_temperature_equi => mhd_get_temperature_equi
           tc_fl%get_rho_equi => mhd_get_rho_equi
         else
-          tc_fl%has_equi = .false.
+          tc_fl%subtract_equi = .false.
         end if
       else
         tc_fl%get_temperature_from_eint => mhd_get_temperature_from_eint
@@ -872,19 +871,23 @@ contains
       rc_fl%get_var_Rfactor => mhd_get_Rfactor
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
-      if(has_equi_rho_and_p .and. mhd_equi_thermal) then
-        rc_fl%has_equi = .true.
+      rc_fl%has_equi = has_equi_rho_and_p
+      if(mhd_equi_thermal) then
+        rc_fl%subtract_equi = .true.
         rc_fl%get_rho_equi => mhd_get_rho_equi
         rc_fl%get_pthermal_equi => mhd_get_pe_equi
+        rc_fl%get_temperature_equi => mhd_get_temperature_equi
       else
-        rc_fl%has_equi = .false.
+        rc_fl%subtract_equi = .false.
       end if
     end if
+
+{^IFTHREED
+    ! for thermal emission images
     allocate(te_fl_mhd)
     te_fl_mhd%get_rho=> mhd_get_rho
     te_fl_mhd%get_pthermal=> mhd_get_pthermal
     te_fl_mhd%get_var_Rfactor => mhd_get_Rfactor
-{^IFTHREED
     phys_te_images => mhd_te_images
 }
 
@@ -1137,7 +1140,6 @@ contains
     use mod_constants, only: bigdouble
     type(rc_fluid), intent(inout) :: fl
 
-    double precision :: cfrac=0.1d0
     !> Lower limit of temperature
     double precision   :: tlow=bigdouble
     double precision :: rad_cut_hgt=0.5d0
@@ -1152,10 +1154,8 @@ contains
     logical    :: rad_cut=.false.
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
-    !> Name of cooling method
-    character(len=std_len)  :: coolmethod='exact'
 
-    namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split,rad_cut,rad_cut_hgt,rad_cut_dey
+    namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split,rad_cut,rad_cut_hgt,rad_cut_dey
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -1165,11 +1165,9 @@ contains
 
     fl%ncool=ncool
     fl%coolcurve=coolcurve
-    fl%coolmethod=coolmethod
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
-    fl%cfrac=cfrac
     fl%rad_cut=rad_cut
     fl%rad_cut_hgt=rad_cut_hgt
     fl%rad_cut_dey=rad_cut_dey
@@ -6101,7 +6099,6 @@ contains
   subroutine mhd_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
-    use mod_radiative_cooling, only: cooling_get_dt
     use mod_viscosity, only: viscosity_get_dt
     use mod_gravity, only: gravity_get_dt
     use mod_cak_force, only: cak_get_dt
@@ -6146,10 +6143,6 @@ contains
       else
         dtnew=min(dtdiffpar*minval(block%ds(ixO^S,1:ndim))**4/mhd_eta_hyper,dtnew)
       end if
-    end if
-
-    if(mhd_radiative_cooling) then
-      call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl)
     end if
 
     if(mhd_viscosity) then

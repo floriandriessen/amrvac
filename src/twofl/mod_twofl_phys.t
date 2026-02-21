@@ -574,7 +574,6 @@ contains
     if(has_equi_pe_n0) then
       number_equi_vars = number_equi_vars + 1
       equi_pe_n0_ = number_equi_vars
-      phys_equi_pe=.true.
     endif  
     if(has_equi_rho_c0) then
       number_equi_vars = number_equi_vars + 1
@@ -585,7 +584,6 @@ contains
       number_equi_vars = number_equi_vars + 1
       equi_pe_c0_ = number_equi_vars
       iw_equi_p = equi_pe_c0_
-      phys_equi_pe=.true.
     endif  
 
     ! set number of variables which need update ghostcells
@@ -703,11 +701,11 @@ contains
             endif
         endif
         if(twofl_equi_thermal_c) then
-          tc_fl_c%has_equi = .true.
+          tc_fl_c%subtract_equi = .true.
           tc_fl_c%get_temperature_equi => twofl_get_temperature_c_equi
           tc_fl_c%get_rho_equi => twofl_get_rho_c_equi
         else  
-          tc_fl_c%has_equi = .false.
+          tc_fl_c%subtract_equi = .false.
         endif
       else
         if(phys_internal_e) then
@@ -742,11 +740,11 @@ contains
       if(has_equi_pe_n0 .and. has_equi_rho_n0) then
         tc_fl_n%get_temperature_from_eint => twofl_get_temperature_from_eint_n_with_equi
         if(twofl_equi_thermal_n) then
-          tc_fl_n%has_equi = .true.
+          tc_fl_n%subtract_equi = .true.
           tc_fl_n%get_temperature_equi => twofl_get_temperature_n_equi
           tc_fl_n%get_rho_equi => twofl_get_rho_n_equi
         else  
-          tc_fl_n%has_equi = .false.
+          tc_fl_n%subtract_equi = .false.
         endif
       else
         tc_fl_n%get_temperature_from_eint => twofl_get_temperature_from_eint_n
@@ -796,20 +794,26 @@ contains
         rc_fl_c%get_var_Rfactor => Rfactor_c
         rc_fl_c%e_ = e_c_
         rc_fl_c%Tcoff_ = Tcoff_c_
-        if(has_equi_pe_c0 .and. has_equi_rho_c0 .and. twofl_equi_thermal_c) then
-          rc_fl_c%has_equi = .true.
+        rc_fl_c%has_equi = has_equi_pe_c0 .and. has_equi_rho_c0
+        if(twofl_equi_thermal_c) then
+          rc_fl_c%subtract_equi = .true.
           rc_fl_c%get_rho_equi => twofl_get_rho_c_equi
           rc_fl_c%get_pthermal_equi => twofl_get_pe_c_equi
+          rc_fl_c%get_temperature_equi => twofl_get_temperature_c_equi
         else
-          rc_fl_c%has_equi = .false.
+          rc_fl_c%subtract_equi = .false.
         end if
       end if
+      if(twofl_radiative_cooling_n) then
+         call mpistop("twofl_radiative_cooling_n not implemented yet")
+      endif
     end if
+
+{^IFTHREED
     allocate(te_fl_c)
     te_fl_c%get_rho=> get_rhoc_tot
     te_fl_c%get_pthermal=> twofl_get_pthermal_c
     te_fl_c%get_var_Rfactor => Rfactor_c
-{^IFTHREED
     phys_te_images => twofl_te_images
 }
 
@@ -1001,13 +1005,9 @@ contains
     integer                      :: n
     ! list parameters
     integer :: ncool = 4000
-    double precision :: cfrac=0.1d0
   
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCorona'
-  
-    !> Name of cooling method
-    character(len=std_len)  :: coolmethod='exact'
   
     !> Fixed temperature not lower than tlow
     logical    :: Tfix=.false.
@@ -1018,7 +1018,7 @@ contains
     !> Add cooling source in a split way (.true.) or un-split way (.false.)
     logical    :: rc_split=.false.
 
-    namelist /rc_list_n/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split
+    namelist /rc_list_n/ coolcurve, ncool, tlow, Tfix, rc_split
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -1028,11 +1028,9 @@ contains
 
     fl%ncool=ncool
     fl%coolcurve=coolcurve
-    fl%coolmethod=coolmethod
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
-    fl%cfrac=cfrac
   end subroutine rc_params_read_n
 
   !end wrappers
@@ -1112,13 +1110,9 @@ contains
     integer                      :: n
     ! list parameters
     integer :: ncool = 4000
-    double precision :: cfrac=0.1d0
   
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
-  
-    !> Name of cooling method
-    character(len=std_len)  :: coolmethod='exact'
   
     !> Fixed temperature not lower than tlow
     logical    :: Tfix=.false.
@@ -1130,7 +1124,7 @@ contains
     logical    :: rc_split=.false.
 
 
-    namelist /rc_list_c/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split
+    namelist /rc_list_c/ coolcurve, ncool, tlow, Tfix, rc_split
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -1140,11 +1134,9 @@ contains
 
     fl%ncool=ncool
     fl%coolcurve=coolcurve
-    fl%coolmethod=coolmethod
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
-    fl%cfrac=cfrac
   end subroutine rc_params_read_c
 
 !! end rad cool
@@ -4538,7 +4530,6 @@ contains
   subroutine twofl_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
-    use mod_radiative_cooling, only: cooling_get_dt
     !use mod_viscosity, only: viscosity_get_dt
     !use mod_gravity, only: gravity_get_dt
 
@@ -4585,13 +4576,6 @@ contains
         call coll_get_dt(w,x,ixI^L,ixO^L,dtnew)
     endif
 
-    if(twofl_radiative_cooling_c) then
-      call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl_c)
-    end if
-    if(twofl_radiative_cooling_n) then
-      call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl_n)
-    end if
-!
 !    if(twofl_viscosity) then
 !      call viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
 !    end if

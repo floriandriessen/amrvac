@@ -77,8 +77,8 @@ module mod_thermal_conduction
     !> Name of slope limiter for transverse component of thermal flux
     integer :: tc_slope_limiter
 
-    ! if has_equi = .true. get_temperature_equi and get_rho_equi have to be set
-    logical :: has_equi=.false.
+    ! if subtract_equi = .true. get_temperature_equi and get_rho_equi have to be set
+    logical :: subtract_equi=.false.
 
     !> Logical switch for test constant conductivity
     logical :: tc_constant=.false.
@@ -364,7 +364,7 @@ contains
     else
       call set_source_tc_mhd_geo(ixI^L,ixO^L,w,x,fl,qvec,rho,Te,alpha)
     end if
-    if(fl%has_equi) then
+    if(fl%subtract_equi) then
       allocate(qvec_equi(ixI^S,1:ndim))
       call fl%get_temperature_equi(w, x, ixI^L, ixI^L, Te)  !calculate Te in whole domain (+ghosts)
       call fl%get_rho_equi(w, x, ixI^L, ixI^L, rho)  !calculate rho in whole domain (+ghosts)
@@ -1609,7 +1609,7 @@ contains
     else
       call set_source_tc_hd_geo(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
     end if
-    if(fl%has_equi) then
+    if(fl%subtract_equi) then
       allocate(qvec_equi(ixI^S,1:ndim))
       call fl%get_temperature_equi(w, x, ixI^L, ixI^L, Te)  !calculate Te in whole domain (+ghosts)
       call fl%get_rho_equi(w, x, ixI^L, ixI^L, rho)  !calculate rho in whole domain (+ghosts)

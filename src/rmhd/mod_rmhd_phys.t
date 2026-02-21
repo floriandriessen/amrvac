@@ -646,11 +646,11 @@ contains
       if(has_equi_pe0 .and. has_equi_rho0) then
         tc_fl%get_temperature_from_eint => rmhd_get_temperature_from_eint_with_equi
         if(rmhd_equi_thermal) then
-          tc_fl%has_equi = .true.
+          tc_fl%subtract_equi = .true.
           tc_fl%get_temperature_equi => rmhd_get_temperature_equi
           tc_fl%get_rho_equi => rmhd_get_rho_equi
         else
-          tc_fl%has_equi = .false.
+          tc_fl%subtract_equi = .false.
         end if
       else
         tc_fl%get_temperature_from_eint => rmhd_get_temperature_from_eint

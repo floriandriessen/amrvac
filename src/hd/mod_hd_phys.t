@@ -492,13 +492,9 @@ contains
       integer                      :: n
       ! list parameters
       integer :: ncool = 4000
-      double precision :: cfrac=0.1d0
     
       !> Name of cooling curve
       character(len=std_len)  :: coolcurve='JCcorona'
-    
-      !> Name of cooling method
-      character(len=std_len)  :: coolmethod='exact'
     
       !> Fixed temperature not lower than tlow
       logical    :: Tfix=.false.
@@ -510,7 +506,7 @@ contains
       logical    :: rc_split=.false.
 
 
-      namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split
+      namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split
   
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
@@ -520,11 +516,9 @@ contains
 
       fl%ncool=ncool
       fl%coolcurve=coolcurve
-      fl%coolmethod=coolmethod
       fl%tlow=tlow
       fl%Tfix=Tfix
       fl%rc_split=rc_split
-      fl%cfrac=cfrac
     end subroutine rc_params_read
 !! end rad cool
 
@@ -1351,7 +1345,6 @@ contains
   subroutine hd_get_dt(w, ixI^L, ixO^L, dtnew, dx^D, x)
     use mod_global_parameters
     use mod_dust, only: dust_get_dt
-    use mod_radiative_cooling, only: cooling_get_dt
     use mod_viscosity, only: viscosity_get_dt
     use mod_gravity, only: gravity_get_dt
     use mod_cak_force, only: cak_get_dt
@@ -1365,10 +1358,6 @@ contains
 
     if(hd_dust) then
       call dust_get_dt(w, ixI^L, ixO^L, dtnew, dx^D, x)
-    end if
-
-    if(hd_radiative_cooling) then
-      call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl)
     end if
 
     if(hd_viscosity) then

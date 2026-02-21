@@ -45,9 +45,6 @@ module mod_physics
   !> Solve partially ionized one-fluid plasma
   logical :: phys_partial_ionization=.false.
 
-  !> if equilibrium pressure is splitted
-  logical :: phys_equi_pe=.false.
-
   !> String describing the physics type of the simulation
   character(len=name_len) :: physics_type = ""
 

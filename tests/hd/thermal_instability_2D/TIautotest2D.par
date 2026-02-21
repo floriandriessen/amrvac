@@ -55,7 +55,6 @@
  &rc_list
         ncool      = 4000
         coolcurve  = 'Hildner'
-        coolmethod = 'exact'
         Tfix=.true.
         tlow=1.0d-3 ! lowest T in Hildner table
  /

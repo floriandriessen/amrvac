@@ -404,12 +404,14 @@ contains
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
       rc_fl%has_equi = .false.
+      rc_fl%subtract_equi = .false.
     end if
+
+{^IFTHREED
     allocate(te_fl_ffhd)
     te_fl_ffhd%get_rho=> ffhd_get_rho
     te_fl_ffhd%get_pthermal=> ffhd_get_pthermal
     te_fl_ffhd%get_var_Rfactor => ffhd_get_Rfactor
-{^IFTHREED
     phys_te_images => ffhd_te_images
 }
 
@@ -527,13 +529,9 @@ contains
     type(rc_fluid), intent(inout) :: fl
     integer                      :: n
     integer :: ncool = 4000
-    double precision :: cfrac=0.1d0
   
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
-  
-    !> Name of cooling method
-    character(len=std_len)  :: coolmethod='exact'
   
     !> Fixed temperature not lower than tlow
     logical    :: Tfix=.false.
@@ -547,7 +545,7 @@ contains
     double precision :: rad_cut_hgt=0.5d0
     double precision :: rad_cut_dey=0.15d0
 
-    namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, rad_cut, rad_cut_hgt, rad_cut_dey
+    namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split, rad_cut, rad_cut_hgt, rad_cut_dey
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -557,11 +555,9 @@ contains
 
     fl%ncool=ncool
     fl%coolcurve=coolcurve
-    fl%coolmethod=coolmethod
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
-    fl%cfrac=cfrac
     fl%rad_cut=rad_cut
     fl%rad_cut_hgt=rad_cut_hgt
     fl%rad_cut_dey=rad_cut_dey
@@ -1332,7 +1328,6 @@ contains
   subroutine ffhd_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
-    use mod_radiative_cooling, only: cooling_get_dt
     use mod_gravity, only: gravity_get_dt
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
@@ -1341,10 +1336,6 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
     dtnew = bigdouble
-
-    if(ffhd_radiative_cooling) then
-      call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl)
-    end if
 
     if(ffhd_gravity) then
       call gravity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
