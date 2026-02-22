@@ -655,7 +655,6 @@ module mod_global_parameters
   logical :: fix_small_values=.false.
 
   !> split magnetic field as background B0 field
-  ! TODO these should be moved in a different file  
   logical :: B0field=.false.
   logical :: B0fieldAllocCoarse=.false.
   !> Use SI units (.true.) or use cgs units (.false.)

@@ -813,6 +813,20 @@ contains
       phys_get_cs2            => mhd_get_csound2
     end if
 
+    if(mhd_equi_thermal)then
+       if((.not.has_equi_rho_and_p).or.(.not.total_energy))then
+          mhd_equi_thermal=.false.
+          if(mype==0) write(*,*) 'WARNING: turning mhd_equi_thermal=F as no splitting or total e in use'
+       else
+          if(mhd_thermal_conduction.or.mhd_radiative_cooling)then
+            if(mype==0) write(*,*) 'Will subtract thermal balance in TC or RC with mhd_equi_thermal=T'
+          else
+            mhd_equi_thermal=.false.
+            if(mype==0) write(*,*) 'WARNING: turning mhd_equi_thermal=F as no TC or RC in use'
+          endif
+       endif
+    endif
+
     ! initialize thermal conduction module
     if (mhd_thermal_conduction) then
       call sts_init()

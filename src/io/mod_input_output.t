@@ -730,12 +730,19 @@ contains
       type_courant=type_maxsum
     case ('summax')
       type_courant=type_summax
+      if (local_timestep) then
+       call mpistop("Type courant summax incompatible with local_timestep")
+      endif
     case ('minimum')
       type_courant=type_minimum
+      if (local_timestep) then
+       call mpistop("Type courant minimum incompatible with local_timestep")
+      endif
     case default
        write(unitterm,*)'Unknown typecourant=',typecourant
        call mpistop("Error from read_par_files: no such typecourant!")
     end select
+
 
     do level=1,nlevelshi
        select case (flux_scheme(level))

@@ -218,7 +218,7 @@ module mod_radiative_cooling
          ! Go from logarithmic to actual values.
          fl%t_PPL(1:fl%n_PPL+1) = 10.d0**fl%t_PPL(1:fl%n_PPL+1)
          ! Change unit of table if SI is used instead of cgs
-         if (si_unit) fl%l_PPL(1:fl%n_PPL) = fl%l_PPL(1:fl%n_PPL) * 10.0d0**(-13)
+         if (SI_unit) fl%l_PPL(1:fl%n_PPL) = fl%l_PPL(1:fl%n_PPL) * 10.0d0**(-13)
 
          ! Make dimensionless
          fl%t_PPL(1:fl%n_PPL+1) = fl%t_PPL(1:fl%n_PPL+1) / unit_temperature
@@ -490,7 +490,7 @@ module mod_radiative_cooling
          fl%Lcool(1:fl%ncool) = 10.0D0**fl%Lcool(1:fl%ncool)
 
          ! Change unit of table if SI is used instead of cgs
-         if (si_unit) fl%Lcool(1:fl%ncool) = fl%Lcool(1:fl%ncool) * 10.0d0**(-13)
+         if (SI_unit) fl%Lcool(1:fl%ncool) = fl%Lcool(1:fl%ncool) * 10.0d0**(-13)
 
          ! Scale both T and Lambda
          fl%tcool(1:fl%ncool) = fl%tcool(1:fl%ncool) / unit_temperature

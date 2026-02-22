@@ -139,7 +139,6 @@ contains
       T_bott=2.d4/unit_temperature
       call MPI_ALLREDUCE(Tmax_mype,T_peak,1,MPI_DOUBLE_PRECISION,&
            MPI_MAX,icomm,ierrmpi)
-      ! TODO trac stuff should not be here at all
       if(phys_trac_type==1) then
         !> 1D TRAC method
         trac_dmax=0.1d0
@@ -246,10 +245,6 @@ contains
           end if
   
         case (type_summax)
-          !TODO this should be mod_input_output?
-          if(local_timestep) then
-            call mpistop("Type courant summax incompatible with local_timestep")
-          end if
           courantmax=zero
           courantmaxtot=zero
           if(slab_uniform) then
@@ -271,9 +266,6 @@ contains
           ! courantmaxtot='summed max(c/dx)'
           if (courantmaxtot>smalldouble)  dtnew=min(dtnew,courantpar/courantmaxtot)
         case (type_minimum)
-          if(local_timestep) then
-            call mpistop("Type courant not implemented for local_timestep, use maxsum")
-          endif  
           courantmax=zero
           if(slab_uniform) then
             ^D&dxinv(^D)=one/dx^D;
