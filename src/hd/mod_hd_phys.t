@@ -331,6 +331,7 @@ contains
       ! ! tc_fl%get_rho => hd_get_rho
       ! tc_fl%get_rho => eos%get_rho
       tc_fl%e_ = e_
+      tc_fl%Tcoff_ = Tcoff_
     end if
 
     ! Initialize radiative cooling module
