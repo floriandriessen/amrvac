@@ -476,6 +476,7 @@ mod_thermal_emission.o: mod_geometry.mod
 mod_thermal_emission.o: mod_global_parameters.mod
 mod_thermal_emission.o: mod_physics.mod
 mod_trac.o: mod_comm_lib.mod
+mod_trac.o: mod_eos.mod
 mod_trac.o: mod_global_parameters.mod
 mod_trac.o: mod_physics.mod
 mod_trac.o: mod_trace_field.mod

@@ -17,6 +17,7 @@ contains
   subroutine advance(iit)
     use mod_global_parameters
     use mod_particles, only: handle_particles
+    use mod_eos
     use mod_source, only: add_split_source
 
     integer, intent(in) :: iit
@@ -24,7 +25,7 @@ contains
     integer :: iigrid, igrid, idimsplit
 
     ! split source addition
-    call add_split_source(prior=.true.)
+    call add_split_source(prior=.true.) !> calculates temperature based on conservative state
 
     if(dimsplit) then
        if((iit/2)*2==iit .or. typedimsplit=='xy') then
@@ -45,9 +46,15 @@ contains
     end if
 
     ! split source addition
-    call add_split_source(prior=.false.)
+    call add_split_source(prior=.false.) !> calculates temperature based on conservative state
 
     if(use_particles) call handle_particles
+
+    !$OMP PARALLEL DO PRIVATE(igrid)
+    do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
+      call eos%update_eos(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)
+    end do
+    !$OMP END PARALLEL DO
 
   end subroutine advance
 

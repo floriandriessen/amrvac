@@ -1,6 +1,7 @@
 module mod_trac
   use mod_global_parameters
   use mod_physics
+  use mod_eos
   use mod_comm_lib, only: mpistop
   implicit none
   private
@@ -585,9 +586,10 @@ contains
     ixO^L=ixM^LL;
     do j=1,ngrid_trac
       igrid=trac_grid(j)
-      call phys_get_pthermal(ps(igrid)%w,ps(igrid)%x,ixI^L,ixI^L,ps(igrid)%wextra(ixI^S,iw_Tcoff))
-      call phys_get_rho(ps(igrid)%w,ps(igrid)%x,ixI^L,ixI^L,rho)
-      ps(igrid)%wextra(ixI^S,iw_Tcoff)=ps(igrid)%wextra(ixI^S,iw_Tcoff)/rho(ixI^S)
+      ! call phys_get_pthermal(ps(igrid)%w,ps(igrid)%x,ixI^L,ixI^L,ps(igrid)%wextra(ixI^S,iw_Tcoff))
+      ! call phys_get_rho(ps(igrid)%w,ps(igrid)%x,ixI^L,ixI^L,rho)
+      ! ps(igrid)%wextra(ixI^S,iw_Tcoff)=ps(igrid)%wextra(ixI^S,iw_Tcoff)/rho(ixI^S)
+      call eos%get_Te(ps(igrid)%w,ps(igrid)%x,ixI^L,ixI^L,ps(igrid)%wextra(ixI^S,iw_Tcoff))
     enddo
   end subroutine get_Te_grid
 

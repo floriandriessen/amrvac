@@ -34,6 +34,7 @@ module mod_hd_eos
             phys_to_primitive => eos%to_primitive
             phys_to_conserved => eos%to_conserved
             phys_get_rho      => eos%get_rho
+            phys_get_pthermal => eos%get_thermal_pressure
             phys_bind_eos_to_source  => bind_eos_to_source
             
             eos%p_to_e => p_to_e !> suitable for both FI and LTE
@@ -54,7 +55,6 @@ module mod_hd_eos
             if (allocated(tc_fl)) then
                 tc_fl%get_temperature_from_conserved => eos%get_temperature_from_etot
                 tc_fl%get_temperature_from_eint => eos%get_temperature_from_eint
-                ! tc_fl%get_rho => hd_get_rho
                 tc_fl%get_rho => eos%get_rho
             end if
 
