@@ -159,6 +159,7 @@ mod_dt.o: mod_comm_lib.mod
 mod_dt.o: mod_global_parameters.mod
 mod_dt.o: mod_physics.mod
 mod_dt.o: mod_supertimestepping.mod
+mod_dt.o: mod_trac.mod
 mod_dt.o: mod_usr_methods.mod
 mod_dust.o: mod_comm_lib.mod
 mod_dust.o: mod_geometry.mod

@@ -87,6 +87,8 @@ module mod_hd_phys
   !> Whether TRAC method is used
   logical, public, protected              :: hd_trac = .false.
   integer, public, protected              :: hd_trac_type = 1
+  integer, public, protected              :: hd_trac_nzones = 1
+  double precision, public, protected     :: hd_trac_zone_splits(10) = -1.d0
 
   !> Helium abundance over Hydrogen
   double precision, public, protected  :: He_abundance=0.1d0
@@ -132,7 +134,7 @@ contains
     hd_dust, hd_thermal_conduction, hd_radiative_cooling, hd_viscosity, &
     hd_gravity, He_abundance,H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
-    hd_trac_type, hd_cak_force, hd_partial_ionization
+    hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_cak_force, hd_partial_ionization
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -195,6 +197,8 @@ contains
           if(mype==0) write(*,*) 'WARNING: set hd_trac_type=1'
         end if
         phys_trac_type=hd_trac_type
+        phys_trac_nzones=hd_trac_nzones
+        phys_trac_zone_splits=hd_trac_zone_splits
       else
         phys_trac=.false.
         if(mype==0) write(*,*) 'WARNING: set hd_trac=F when ndim>=2'

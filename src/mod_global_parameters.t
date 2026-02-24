@@ -387,6 +387,8 @@ module mod_global_parameters
 
   integer :: phys_trac_type=1
   integer :: phys_trac_finegrid=4
+  integer :: phys_trac_nzones=1
+  double precision :: phys_trac_zone_splits(10)=-1.d0
 
   !> integer switchers for type courant
   integer, parameter :: type_maxsum=1

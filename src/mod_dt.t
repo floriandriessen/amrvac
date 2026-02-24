@@ -13,8 +13,9 @@ contains
     use mod_usr_methods, only: usr_get_dt
     use mod_supertimestepping, only: set_dt_sts_ncycles, is_sts_initialized, sourcetype_sts,sourcetype_sts_split
     use mod_comm_lib, only: mpistop
-  
-    integer :: iigrid, igrid, ncycle, ncycle2, ifile, idim
+    use mod_trac, only: trac_nzones, tco_mype_zone, tco_global_zone, tco_prev_zone, get_trac_zone
+
+    integer :: iigrid, igrid, ncycle, ncycle2, ifile, idim, izone
     double precision   :: dtnew, qdtnew, dtmin_mype, factor, dx^D, dxmin^D
     double precision   :: dtmax, dxmin, cmax_mype
     double precision   :: a2max_mype(ndim), tco_mype, tco_global, Tmax_mype, T_peak
@@ -27,6 +28,9 @@ contains
       a2max_mype  = zero
       tco_mype    = zero
       Tmax_mype   = zero
+      {^IFONED
+      if(allocated(tco_mype_zone)) tco_mype_zone = zero
+      }
       !$OMP PARALLEL DO PRIVATE(igrid,qdtnew,dtnew,dx^D) REDUCTION(min:dtmin_mype) REDUCTION(max:cmax_mype,a2max_mype)
       do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
         dtnew=bigdouble
@@ -142,11 +146,27 @@ contains
         trac_dmax=0.1d0
         trac_tau=1.d0/unit_time
         trac_alfa=trac_dmax**(dt/trac_tau)
-        tco_global=zero
         {^IFONED
-        call MPI_ALLREDUCE(tco_mype,tco_global,1,MPI_DOUBLE_PRECISION,&
+        call MPI_ALLREDUCE(tco_mype_zone,tco_global_zone,trac_nzones,MPI_DOUBLE_PRECISION,&
              MPI_MAX,icomm,ierrmpi)
+        !> Zone-level Tcoff persistence (replaces per-block special_values(2) relaxation).
+        !> When hd_get_tcutoff returns 0 for all blocks in a zone (TR disrupted by
+        !> oscillations), freeze Tcoff at its previous value instead of decaying to T_bott.
+        !> When a positive but lower Tcoff is detected, apply asymmetric relaxation.
+        do izone = 1, trac_nzones
+          if (tco_global_zone(izone) == zero .and. tco_prev_zone(izone) > zero) then
+            ! No under-resolved TR detected but one existed before — freeze
+            tco_global_zone(izone) = tco_prev_zone(izone)
+          else if (tco_global_zone(izone) > zero .and. &
+                   tco_global_zone(izone) < trac_alfa * tco_prev_zone(izone)) then
+            ! Detected a lower Tcoff — apply asymmetric relaxation (slow decay)
+            tco_global_zone(izone) = trac_alfa * tco_prev_zone(izone)
+          end if
+          ! If tco_global_zone >= tco_prev_zone: instant jump up (Johnston Eq. 9)
+          tco_prev_zone(izone) = tco_global_zone(izone)
+        end do
         }
+        tco_global=tco_global_zone(1)
       endif
       if(.not. associated(phys_trac_after_setdt)) call mpistop("phys_trac_after_setdt not set")
       ! trac_alfa,tco_global are set only for phys_trac_type=1, should not be a problem when not initialized
@@ -172,7 +192,8 @@ contains
         double precision :: a2max(ndim), tco_local, Tmax_local
         integer :: idims
         integer :: hxO^L
-  
+        integer :: izone_trac
+
         dtnew=bigdouble
   
         ! local timestep dt has to be calculated in the 
@@ -199,7 +220,12 @@ contains
 
         if(phys_trac) then
           call phys_get_tcutoff(ixI^L,ixO^L,wprim,x,tco_local,Tmax_local)
-          {^IFONED tco_mype=max(tco_mype,tco_local) }
+          {^IFONED
+          if(phys_trac_type==1) then
+            izone_trac = get_trac_zone(0.5d0*(rnode(rpxmin1_,igrid)+rnode(rpxmax1_,igrid)))
+            tco_mype_zone(izone_trac) = max(tco_mype_zone(izone_trac), tco_local)
+          end if
+          }
           Tmax_mype=max(Tmax_mype,Tmax_local)
         end if
   
