@@ -4892,7 +4892,7 @@ contains
       w(ixO^S,e_)=w(ixO^S,e_)-qdt*block%equi_vars(ixO^S,equi_pe0_,0)*divv(ixO^S)
     end if
     if(B0field)then
-      if(B0field_forcefree)then
+      if(B0field_forcefree.and.mhd_gravity)then
         ! add -v dot(rho_0 g)/(gamma-1)
         call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
         do idir=1,ndim
@@ -4912,18 +4912,22 @@ contains
         do idir=1,ndir
            w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*axb(ixO^S,idir)*inv_gamma_1
         enddo
+        if(mhd_gravity)then
+          ! add -v dot(rho_0 g)/(gamma-1)
+          call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
+          do idir=1,ndim
+           w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*inv_gamma_1
+          enddo
+        endif
+      endif
+    else
+      if(mhd_gravity)then
         ! add -v dot(rho_0 g)/(gamma-1)
         call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
         do idir=1,ndim
          w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*inv_gamma_1
         enddo
       endif
-    else
-      ! add -v dot(rho_0 g)/(gamma-1)
-      call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
-      do idir=1,ndim
-         w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*inv_gamma_1
-      enddo
     endif
   end subroutine add_equi_terms
 
