@@ -299,6 +299,7 @@ contains
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_cak_force, only: cak_init
     use mod_ionization_degree
+    use mod_geometry
     use mod_usr_methods, only: usr_Rfactor
     {^NOONED
     use mod_multigrid_coupling
@@ -962,6 +963,10 @@ contains
         ! semirelativistic does not incorporate hall terms
         call mpistop("Must have mhd_hall=F when mhd_semirelativistic=T")
       end if
+      if(coordinate>1)then
+        ! normal unsplit case or split cases do not have geometric sources for Hall included
+        call mpistop("Must have Cartesian coordinates for Hall")
+      endif
       if(mhd_4th_order) then
         phys_wider_stencil = 2
       else
@@ -6182,6 +6187,10 @@ contains
   end subroutine mhd_get_dt
 
   ! Add geometrical source terms to w
+  ! Geometric sources to momentum and induction
+  ! for the regular case, not semi-relativistic, nor any splitting active
+  ! but possibly no energy equation at all
+  ! NOTE: Hall terms in induction not handled yet
   subroutine mhd_add_source_geom(qdt,dtfactor,ixI^L,ixO^L,wCT,wprim,w,x)
     use mod_global_parameters
     use mod_geometry
@@ -6326,6 +6335,10 @@ contains
   end subroutine mhd_add_source_geom
 
   ! Add geometrical source terms to w
+  ! Geometric sources to momentum and induction
+  ! for the semi-relativistic, hence no splitting active
+  ! but possibly no energy equation at all
+  ! NOTE: Hall terms in induction not handled yet
   subroutine mhd_add_source_geom_semirelati(qdt,dtfactor,ixI^L,ixO^L,wCT,wprim,w,x)
     use mod_global_parameters
     use mod_geometry
@@ -6337,7 +6350,7 @@ contains
     double precision, intent(inout) :: wCT(ixI^S,1:nw),wprim(ixI^S,1:nw),w(ixI^S,1:nw)
 
     double precision :: adiabs(ixO^S), gammas(ixO^S)
-    double precision :: tmp,tmp1,tmp2,invr,cot,E(ixO^S,1:ndir)
+    double precision :: tmp,tmp1,tmp2,invr,cot,ef(ixO^S,1:ndir)
     integer          :: ix^D
     integer :: mr_,mphi_ ! Polar var. names
     integer :: br_,bphi_
@@ -6374,25 +6387,25 @@ contains
         end if
         ! E=Bxv
         {^IFTHREEC
-        E(ix^D,1)=wprim(ix^D,b2_)*wprim(ix^D,m3_)-wprim(ix^D,b3_)*wprim(ix^D,m2_)
-        E(ix^D,2)=wprim(ix^D,b3_)*wprim(ix^D,m1_)-wprim(ix^D,b1_)*wprim(ix^D,m3_)
-        E(ix^D,3)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
+        ef(ix^D,1)=wprim(ix^D,b2_)*wprim(ix^D,m3_)-wprim(ix^D,b3_)*wprim(ix^D,m2_)
+        ef(ix^D,2)=wprim(ix^D,b3_)*wprim(ix^D,m1_)-wprim(ix^D,b1_)*wprim(ix^D,m3_)
+        ef(ix^D,3)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
         }
         {^IFTWOC
-        E(ix^D,1)=zero
+        ef(ix^D,1)=zero
         ! store e3 in e2 to count e3 when ^C is from 1 to 2
-        E(ix^D,2)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
+        ef(ix^D,2)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
         }
         {^IFONEC
-        E(ix^D,1)=zero
+        ef(ix^D,1)=zero
         }
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp+&
-           half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c) -&
+           half*((^C&wprim(ix^D,b^C_)**2+)+(^C&ef(ix^D,^C)**2+)*inv_squared_c) -&
                     wprim(ix^D,bphi_)**2+wprim(ix^D,rho_)*wprim(ix^D,mphi_)**2)
           w(ix^D,mphi_)=w(ix^D,mphi_)+invr*(&
                    -wprim(ix^D,rho_)*wprim(ix^D,mphi_)*wprim(ix^D,mr_) &
-                   +wprim(ix^D,bphi_)*wprim(ix^D,br_)+E(ix^D,phi_)*E(ix^D,1)*inv_squared_c)
+                   +wprim(ix^D,bphi_)*wprim(ix^D,br_)+ef(ix^D,phi_)*ef(ix^D,1)*inv_squared_c)
           if(.not.stagger_grid) then
             w(ix^D,bphi_)=w(ix^D,bphi_)+invr*&
                      (wprim(ix^D,bphi_)*wprim(ix^D,mr_) &
@@ -6400,7 +6413,7 @@ contains
           end if
         else
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp+half*((^C&wprim(ix^D,b^C_)**2+)+&
-             (^C&e(ix^D,^C)**2+)*inv_squared_c))
+             (^C&ef(ix^D,^C)**2+)*inv_squared_c))
         end if
         if(mhd_glm) w(ix^D,br_)=w(ix^D,br_)+wprim(ix^D,psi_)*invr
      {end do\}
@@ -6414,22 +6427,22 @@ contains
         end if
         ! E=Bxv
         {^IFTHREEC
-        E(ix^D,1)=wprim(ix^D,b2_)*wprim(ix^D,m3_)-wprim(ix^D,b3_)*wprim(ix^D,m2_)
-        E(ix^D,2)=wprim(ix^D,b3_)*wprim(ix^D,m1_)-wprim(ix^D,b1_)*wprim(ix^D,m3_)
-        E(ix^D,3)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
+        ef(ix^D,1)=wprim(ix^D,b2_)*wprim(ix^D,m3_)-wprim(ix^D,b3_)*wprim(ix^D,m2_)
+        ef(ix^D,2)=wprim(ix^D,b3_)*wprim(ix^D,m1_)-wprim(ix^D,b1_)*wprim(ix^D,m3_)
+        ef(ix^D,3)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
         }
         {^IFTWOC
         ! store e3 in e1 to count e3 when ^C is from 1 to 2
-        E(ix^D,1)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
-        E(ix^D,2)=zero
+        ef(ix^D,1)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
+        ef(ix^D,2)=zero
         }
         {^IFONEC
-        E(ix^D,1)=zero
+        ef(ix^D,1)=zero
         }
         if(mhd_energy) then
-          tmp1=wprim(ix^D,p_)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
+          tmp1=wprim(ix^D,p_)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&ef(ix^D,^C)**2+)*inv_squared_c)
         else
-          tmp1=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
+          tmp1=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&ef(ix^D,^C)**2+)*inv_squared_c)
         end if
         ! m1
         {^IFONEC
@@ -6438,7 +6451,7 @@ contains
         {^NOONEC
         w(ix^D,m1_)=w(ix^D,m1_)+invr*&
            (two*tmp1+(^CE&wprim(ix^D,rho_)*wprim(ix^D,m^CE_)**2-&
-            wprim(ix^D,b^CE_)**2-E(ix^D,^CE)**2*inv_squared_c+))
+            wprim(ix^D,b^CE_)**2-ef(ix^D,^CE)**2*inv_squared_c+))
         }
         ! b1
         if(mhd_glm) then
@@ -6453,7 +6466,7 @@ contains
         {^IFTWOC
         ! m2
         w(ix^D,m2_)=w(ix^D,m2_)+invr*(tmp1*cot-wprim(ix^D,rho_)*wprim(ix^D,m1_)*wprim(ix^D,m2_)&
-            +wprim(ix^D,b1_)*wprim(ix^D,b2_)+E(ix^D,1)*E(ix^D,2)*inv_squared_c)
+            +wprim(ix^D,b1_)*wprim(ix^D,b2_)+ef(ix^D,1)*ef(ix^D,2)*inv_squared_c)
         ! b2
         if(.not.stagger_grid) then
           tmp=wprim(ix^D,m1_)*wprim(ix^D,b2_)-wprim(ix^D,m2_)*wprim(ix^D,b1_)
@@ -6467,9 +6480,9 @@ contains
         {^IFTHREEC
         ! m2
         w(ix^D,m2_)=w(ix^D,m2_)+invr*(tmp1*cot-wprim(ix^D,rho_)*wprim(ix^D,m1_)*wprim(ix^D,m2_) &
-            +wprim(ix^D,b1_)*wprim(ix^D,b2_)+E(ix^D,1)*E(ix^D,2)*inv_squared_c&
+            +wprim(ix^D,b1_)*wprim(ix^D,b2_)+ef(ix^D,1)*ef(ix^D,2)*inv_squared_c&
             +(wprim(ix^D,rho_)*wprim(ix^D,m3_)**2&
-            -wprim(ix^D,b3_)**2-E(ix^D,3)**2*inv_squared_c)*cot)
+            -wprim(ix^D,b3_)**2-ef(ix^D,3)**2*inv_squared_c)*cot)
         ! b2
         if(.not.stagger_grid) then
           tmp=wprim(ix^D,m1_)*wprim(ix^D,b2_)-wprim(ix^D,m2_)*wprim(ix^D,b1_)
@@ -6482,10 +6495,10 @@ contains
         w(ix^D,m3_)=w(ix^D,m3_)+invr*&
             (-wprim(ix^D,m3_)*wprim(ix^D,m1_)*wprim(ix^D,rho_) &
              +wprim(ix^D,b3_)*wprim(ix^D,b1_) &
-             +E(ix^D,3)*E(ix^D,1)*inv_squared_c&
+             +ef(ix^D,3)*ef(ix^D,1)*inv_squared_c&
            +(-wprim(ix^D,m2_)*wprim(ix^D,m3_)*wprim(ix^D,rho_) &
              +wprim(ix^D,b2_)*wprim(ix^D,b3_)&
-             +E(ix^D,2)*E(ix^D,3)*inv_squared_c)*cot)
+             +ef(ix^D,2)*ef(ix^D,3)*inv_squared_c)*cot)
         ! b3
         if(.not.stagger_grid) then
           w(ix^D,b3_)=w(ix^D,b3_)+invr*&
@@ -6505,6 +6518,12 @@ contains
   end subroutine mhd_add_source_geom_semirelati
 
   ! Add geometrical source terms to w
+  ! Geometric sources to momentum and induction
+  ! for those cases where any kind of splitting (B0field or has_equi_rho_and_p) is active
+  ! This implies that there is an energy equation included for sure
+  ! B0field impacts terms in induction equation and geometric sources for them
+  ! both flags affect the terms in momentum equation, in three variants (TF, TT, FT)
+  ! NOTE: Hall terms in induction not handled yet
   subroutine mhd_add_source_geom_split(qdt,dtfactor,ixI^L,ixO^L,wCT,wprim,w,x)
     use mod_global_parameters
     use mod_geometry
@@ -6533,16 +6552,28 @@ contains
           invr=qdt/x(ix^D,1)
         end if
         tmp=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
+        if(B0field) tmp=tmp+(^C&block%B0(ix^D,^C,0)*wprim(ix^D,b^C_)+)
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp-&
                     wprim(ix^D,bphi_)**2+wprim(ix^D,mphi_)*wCT(ix^D,mphi_))
+          if(B0field) then
+            w(ix^D,mr_)=w(ix^D,mr_)+invr*(-block%B0(ix^D,phi_,0)*wprim(ix^D,bphi_)-wprim(ix^D,bphi_)*block%B0(ix^D,phi_,0))
+          endif
           w(ix^D,mphi_)=w(ix^D,mphi_)+invr*(&
                    -wCT(ix^D,mphi_)*wprim(ix^D,mr_) &
                    +wprim(ix^D,bphi_)*wprim(ix^D,br_))
+          if(B0field) then
+            w(ix^D,mphi_)=w(ix^D,mphi_)+invr*(block%B0(ix^D,phi_,0)*wprim(ix^D,br_)+wprim(ix^D,bphi_)*block%B0(ix^D,r_,0))
+          endif
           if(.not.stagger_grid) then
             w(ix^D,bphi_)=w(ix^D,bphi_)+invr*&
                      (wprim(ix^D,bphi_)*wprim(ix^D,mr_) &
                      -wprim(ix^D,br_)*wprim(ix^D,mphi_))
+            if(B0field) then
+              w(ix^D,bphi_)=w(ix^D,bphi_)+invr*&
+                     (block%B0(ix^D,phi_,0)*wprim(ix^D,mr_) &
+                     -block%B0(ix^D,r_,0)*wprim(ix^D,mphi_))
+            endif
           end if
         else
           w(ix^D,mr_)=w(ix^D,mr_)+invr*tmp
@@ -6562,6 +6593,7 @@ contains
         ! m1
         {^IFONEC
         w(ix^D,mom(1))=w(ix^D,mom(1))+two*tmp1*invr
+        if(B0field) w(ix^D,mom(1))=w(ix^D,mom(1))+two*tmp2*invr
         }
         {^NOONEC
         if(B0field) then
