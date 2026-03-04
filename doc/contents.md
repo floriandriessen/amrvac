@@ -26,6 +26,7 @@ financial support.
 * [Command line](commandline.md) Help on command-line parameters.
 * [Examples](examples.md) Description of various example simulations for which
   parameter files and user modules have been provided.
+* [Units](amrvac_units.md) The way units are set for various physics modules.
 
 # Discretization methods and AMR strategy {#discretization}
 
