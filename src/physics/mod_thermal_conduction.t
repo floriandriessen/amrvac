@@ -295,9 +295,13 @@ contains
       if(fl%tc_saturate) then
         ! Kannan 2016 MN 458, 410
         ! 3^1.5*kB^2/(4*sqrt(pi)*e^4)
-        ! l_mfpe=3.d0**1.5d0*kB_cgs**2/(4.d0*sqrt(dpi)*e_cgs**4*37.d0)=7093.9239487765044d0
-        if(SI_unit) call mpistop("needs adjusting in get_tc_dt_mhd")
-        tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
+        if(SI_unit) then
+          ! l_mfpe=3.d0**1.5d0*kB_SI**2/(4.d0*sqrt(dpi)*e_SI**4*37.d0)=5.730205638843984d27
+          tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*5.730205638843984d27*unit_temperature**2/(unit_numberdensity*unit_length)
+        else
+          ! l_mfpe=3.d0**1.5d0*kB_cgs**2/(4.d0*sqrt(dpi)*e_cgs**4*37.d0)=7093.9239487765044d0
+          tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
+        end if
         do idims=1,ndim
           call gradient(Te,ixI^L,ixO^L,idims,gradT)
           if(idims==1) then
