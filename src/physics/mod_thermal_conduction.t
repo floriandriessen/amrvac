@@ -646,8 +646,8 @@ contains
         {end do\}
         qvec(ixA^S,idims)=qvec(ixA^S,idims)*0.5d0**(ndim-1)
         if(fl%tc_saturate) then
-          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
-          ! unsigned saturated TC flux = 5 phi rho c**3, c is isothermal sound speed
+          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135: phi=1.1, Balbus and Mckee 1982 ApJ, 252, 529: phi=0.3)
+          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=0.3
           Bcf=0.d0
           {do ix^DB=0,1 \}
              if({ ix^D==0 .and. ^D==idims | .or.}) then
@@ -659,7 +659,7 @@ contains
           ! averaged b at face centers
           Bcf(ixA^S,idims)=Bcf(ixA^S,idims)*0.5d0**(ndim-1)
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bcf(ixA^S,idims))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bcf(ixA^S,idims))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -929,10 +929,10 @@ contains
           qvec(ixA^S,idims)=qvec(ixA^S,idims)+kaf(ixA^S)*Bnorm(ixA^S)*Bcf(ixA^S,idir)*qdd(ixA^S)
         end do
         if(fl%tc_saturate) then
-          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
-          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
+          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135: phi=1.1, Balbus and Mckee 1982 ApJ, 252, 529: phi=0.3)
+          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=0.3
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bnorm(ixA^S))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bnorm(ixA^S))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -1178,8 +1178,8 @@ contains
         {end do\}
         qvec(ixA^S,idims)=qvec(ixA^S,idims)*0.5d0**(ndim-1)
         if(fl%tc_saturate) then
-          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
-          ! unsigned saturated TC flux = 5 phi rho c**3, c is isothermal sound speed
+          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135: phi=1.1, Balbus and Mckee 1982 ApJ, 252, 529: phi=0.3)
+          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=0.3
           Bcf=0.d0
           {do ix^DB=0,1 \}
              if({ ix^D==0 .and. ^D==idims | .or.}) then
@@ -1191,7 +1191,7 @@ contains
           ! averaged b at face centers
           Bcf(ixA^S,idims)=Bcf(ixA^S,idims)*0.5d0**(ndim-1)
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bcf(ixA^S,idims))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bcf(ixA^S,idims))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -1477,10 +1477,10 @@ contains
           qvec(ixA^S,idims)=qvec(ixA^S,idims)+kaf(ixA^S)*Bnorm(ixA^S)*Bcf(ixA^S,idir)*qdd(ixA^S)
         end do
         if(fl%tc_saturate) then
-          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
-          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
+          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135: phi=1.1, Balbus and Mckee 1982 ApJ, 252, 529: phi=0.3)
+          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=0.3
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bnorm(ixA^S))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bnorm(ixA^S))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -1543,7 +1543,7 @@ contains
     type(tc_fluid), intent(in) :: fl
     double precision :: dtnew
 
-    double precision :: tmp(ixO^S),tmp2(ixO^S),Te(ixI^S),rho(ixI^S),hfs(ixO^S),gradT(ixI^S)
+    double precision :: tmp(ixO^S),Te(ixI^S),rho(ixI^S),hfs(ixO^S),gradT(ixI^S)
     double precision :: dtdiff_tcond,maxtmp2
     integer          :: idim
 
@@ -1556,16 +1556,20 @@ contains
       if(fl%tc_saturate) then
         ! Kannan 2016 MN 458, 410
         ! 3^1.5*kB^2/(4*sqrt(pi)*e^4)
-        ! l_mfpe=3.d0**1.5d0*kB_cgs**2/(4.d0*sqrt(dpi)*e_cgs**4*37.d0)=7093.9239487765044d0
-        if(SI_unit) call mpistop("needs adjusting in get_tc_dt_hd")
-        tmp2(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
+        if(SI_unit) then
+          ! l_mfpe=3.d0**1.5d0*kB_SI**2/(4.d0*sqrt(dpi)*e_SI**4*37.d0)=5.730205638843984d27
+          tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*5.730205638843984d27*unit_temperature**2/(unit_numberdensity*unit_length)
+        else
+          ! l_mfpe=3.d0**1.5d0*kB_cgs**2/(4.d0*sqrt(dpi)*e_cgs**4*37.d0)=7093.9239487765044d0
+          tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
+        end if
         hfs=0.d0
         do idim=1,ndim
           call gradient(Te,ixI^L,ixO^L,idim,gradT)
           hfs(ixO^S)=hfs(ixO^S)+gradT(ixO^S)**2
         end do
         ! kappa=kappa_Spitzer/(1+4.2*l_mfpe/(T/|gradT|))
-        tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/(rho(ixO^S)*(1.d0+4.2d0*tmp2(ixO^S)*dsqrt(hfs(ixO^S))/Te(ixO^S)))
+        tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/(rho(ixO^S)*(1.d0+4.2d0*tmp(ixO^S)*dsqrt(hfs(ixO^S))/Te(ixO^S)))
       else
         tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/rho(ixO^S)
       end if
@@ -1802,15 +1806,15 @@ contains
       end do
      }
       if(fl%tc_saturate) then
-          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
-          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
-          ixB^L=ixA^L+kr(idims,^D);
-          qd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3
-         {do ix^DB=ixAmin^DB,ixAmax^DB\}
-            if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
-              qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)
-            end if
-         {end do\}
+        ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135: phi=1.1, Balbus and Mckee 1982 ApJ, 252, 529: phi=0.3)
+        ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=0.3
+        ixB^L=ixA^L+kr(idims,^D);
+        qd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3
+       {do ix^DB=ixAmin^DB,ixAmax^DB\}
+          if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
+            qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)
+          end if
+       {end do\}
       end if
     end do
   end subroutine set_source_tc_hd
@@ -1971,15 +1975,15 @@ contains
       end do
      }
       if(fl%tc_saturate) then
-          ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
-          ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
-          ixB^L=ixA^L+kr(idims,^D);
-          qd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3
-         {do ix^DB=ixAmin^DB,ixAmax^DB\}
-            if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
-              qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)
-            end if
-         {end do\}
+        ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135: phi=1.1, Balbus and Mckee 1982 ApJ, 252, 529: phi=0.3)
+        ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=0.3
+        ixB^L=ixA^L+kr(idims,^D);
+        qd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3
+       {do ix^DB=ixAmin^DB,ixAmax^DB\}
+          if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
+            qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)
+          end if
+       {end do\}
       end if
     end do
   end subroutine set_source_tc_hd_geo
