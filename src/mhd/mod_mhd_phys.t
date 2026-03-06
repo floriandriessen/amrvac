@@ -4755,8 +4755,7 @@ contains
 
       if(mhd_hyperbolic_thermal_conduction) then
         active = .true.
-        !!call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
-        call add_hypertc_source_orig(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+        call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
 
       ! Source for B0 splitting
@@ -4938,76 +4937,6 @@ contains
 
   subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
-    use mod_geometry
-    integer, intent(in) :: ixI^L,ixO^L
-    double precision, intent(in) :: qdt
-    double precision, dimension(ixI^S,1:ndim), intent(in) :: x
-    double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
-    double precision, dimension(ixI^S,1:nw), intent(inout) :: w
-
-    double precision :: R(ixI^S),Te(ixI^S),rho_loc(ixI^S),pth_loc(ixI^S),BgradT(ixI^S),gradT(ixI^S)
-    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,b2
-    integer :: ix^D,idims
-
-    call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
-    {do ix^DB=ixImin^DB,ixImax^DB\}
-      if(has_equi_rho_and_p) then
-        rho_loc(ix^D)=wCTprim(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0)
-        pth_loc(ix^D)=wCTprim(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,0)
-      else
-        rho_loc(ix^D)=wCTprim(ix^D,rho_)
-        pth_loc(ix^D)=wCTprim(ix^D,p_)
-      end if
-      Te(ix^D)=pth_loc(ix^D)/(R(ix^D)*rho_loc(ix^D))
-    {end do\}
-    {^IFONED
-    call gradient(Te,ixI^L,ixO^L,1,BgradT,2)
-    }
-    {^NOONED
-    BgradT(ixO^S)=zero
-    do idims=1,ndim
-       ! compute gradient conform the geometry, 4th order CD for uniform cartesian by setting 2
-       call gradient(Te,ixI^L,ixO^L,idims,gradT,2)
-       if(B0field) then
-          BgradT(ixO^S)=BgradT(ixO^S)+(wCT(ixO^S,mag(idims))+block%B0(ixO^S,idims,0))*gradT(ixO^S)
-       else
-          BgradT(ixO^S)=BgradT(ixO^S)+wCT(ixO^S,mag(idims))*gradT(ixO^S)
-       endif
-    enddo
-    }
-    {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      if(mhd_trac) then
-         R(ix^D)=max(Te(ix^D),block%wextra(ix^D,Tcoff_))
-      else
-         R(ix^D)=Te(ix^D)
-      endif
-      sigma_T5=hypertc_kappa*dsqrt(R(ix^D)**5)
-      sigma_T7=sigma_T5*R(ix^D)
-      if(ndim==1)then
-         sigmaT5_bgradT=sigma_T5*BgradT(ix^D)
-      else
-         if(B0field) then
-            b2=(^D&(wCT({ix^D},b^D_)+block%B0({ix^D},^D,0))**2+)
-         else
-            b2=(^D&(wCT({ix^D},b^D_))**2+)
-         endif
-         sigmaT5_bgradT=sigma_T5*BgradT(ix^D)/(dsqrt(b2)+smalldouble)
-      endif
-      if(mhd_htc_sat) then
-        ! CHECK: saturation treatment and poloidal versus total unit b vector
-        f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(mhd_gamma*pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-        tau=max(4.d0*dt, f_sat*sigma_T7/(pth_loc(ix^D)*inv_gamma_1*cs2_global))
-        w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
-      else
-        w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-         max(4.d0*dt, sigma_T7/(pth_loc(ix^D)*inv_gamma_1*cs2_global))
-      end if
-    {end do\}
-    
-  end subroutine add_hypertc_source
-
-  subroutine add_hypertc_source_orig(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
-    use mod_global_parameters
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: qdt
     double precision, dimension(ixI^S,1:ndim), intent(in) :: x
@@ -5048,8 +4977,8 @@ contains
       end if
       sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
       if(mhd_htc_sat) then
-        ! CHECK: saturation treatment 
-        f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+        ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
+        f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
         tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
         w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
       else
@@ -5092,8 +5021,8 @@ contains
            bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
         if(mhd_htc_sat) then
-          ! CHECK: saturation treatment
-          f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+          ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
+          f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
           tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
           w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
         else
@@ -5144,8 +5073,8 @@ contains
             +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
           if(mhd_htc_sat) then
-            ! CHECK: saturation treatment
-            f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*Te(ix^D))**1.5d0)
+            ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
+            f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
             tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
             w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
           else
@@ -5156,7 +5085,7 @@ contains
       end do
     end do
     }
-  end subroutine add_hypertc_source_orig
+  end subroutine add_hypertc_source
 
   !> Compute the Lorentz force (JxB) Note: Unused subroutine
   !> perhaps useful for post-processing when made public
