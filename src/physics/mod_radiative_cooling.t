@@ -88,6 +88,12 @@ module mod_radiative_cooling
 
     !> cutoff radiative cooling below rad_cut_hgt
     logical :: rad_cut
+    !> Enable density-based taper for optically thick cooling suppression
+    logical :: rad_modify
+    !> Density threshold above which cooling is tapered (code units)
+    double precision :: rad_taper_rho
+    !> Exponential decay scale for density taper (code units)
+    double precision :: rad_taper_dey
     ! these are to be set directly
     logical :: has_equi = .false.
 
@@ -812,6 +818,9 @@ module mod_radiative_cooling
       fl%rad_cut=.false.
       fl%rad_cut_hgt=0.5d0
       fl%rad_cut_dey=0.15d0
+      fl%rad_modify=.false.
+      fl%rad_taper_rho=bigdouble
+      fl%rad_taper_dey=1.0d0
       fl%rho_cap=bigdouble
       call read_params(fl)
 
@@ -1317,6 +1326,9 @@ module mod_radiative_cooling
          if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
            L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
          end if
+         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
+           L1 = L1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
+         end if
          coolrate(ix^D) = L1
       {end do\}
     end subroutine getvar_cooling
@@ -1379,6 +1391,9 @@ module mod_radiative_cooling
          end if
          if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
            l1 = l1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
+         end if
+         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
+           l1 = l1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
          end if
         coolrate(ix^D) = l1
       {end do\}
@@ -1600,6 +1615,9 @@ module mod_radiative_cooling
          if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
            L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
          end if
+         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
+           L1 = L1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
+         end if
          w(ix^D,fl%e_) = w(ix^D,fl%e_)-L1*qdt
       {end do\}
     end subroutine cool_explicit1
@@ -1704,6 +1722,9 @@ module mod_radiative_cooling
          if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
            de = de*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
          end if
+         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
+           de = de*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
+         end if
          w(ix^D,fl%e_) = w(ix^D,fl%e_) -de
       {end do\}
     end subroutine cool_explicit2
@@ -1771,6 +1792,10 @@ module mod_radiative_cooling
            if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
              L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
              L2 = L2*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
+           end if
+           if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
+             L1 = L1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
+             L2 = L2*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
            end if
            w(ix^D,fl%e_) = w(ix^D,fl%e_) - min(half*(L1+L2),Lmax)*qdt
          end if
@@ -1844,6 +1869,9 @@ module mod_radiative_cooling
          if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
            Ltemp = Ltemp*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
          end if
+         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
+           Ltemp = Ltemp*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
+         end if
          w(ix^D,fl%e_) = w(ix^D,fl%e_) - min(Ltemp,Lmax)*qdt
       {end do\}
     end subroutine cool_implicit
@@ -1901,6 +1929,9 @@ module mod_radiative_cooling
            if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
              L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
            end if
+           if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
+             L1 = L1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
+           end if
            w(ix^D,fl%e_) = w(ix^D,fl%e_)-L1*qdt
          else
            call findY(Te(ix^D),Y1,fl)
@@ -1919,6 +1950,9 @@ module mod_radiative_cooling
            de = min(de,emax)
            if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
              de = de*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
+           end if
+           if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
+             de = de*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
            end if
            w(ix^D,fl%e_) = w(ix^D,fl%e_)-de
          end if

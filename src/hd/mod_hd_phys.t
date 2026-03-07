@@ -534,7 +534,15 @@ contains
       !> Density cap: losses zeroed where rho > rho_cap (code units). Default: disabled.
       double precision :: rho_cap=bigdouble
 
-      namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, rho_cap
+      !> Enable density-based taper for optically thick cooling suppression
+      logical :: rad_modify=.false.
+      !> Density threshold above which cooling is tapered (code units)
+      double precision :: rad_taper_rho=bigdouble
+      !> Exponential decay scale for density taper (code units)
+      double precision :: rad_taper_dey=1.0d0
+
+      namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, rho_cap, &
+        rad_modify, rad_taper_rho, rad_taper_dey
 
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
@@ -550,6 +558,9 @@ contains
       fl%rc_split=rc_split
       fl%cfrac=cfrac
       fl%rho_cap=rho_cap
+      fl%rad_modify=rad_modify
+      fl%rad_taper_rho=rad_taper_rho
+      fl%rad_taper_dey=rad_taper_dey
     end subroutine rc_params_read
 !! end rad cool
 
