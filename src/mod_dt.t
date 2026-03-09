@@ -172,8 +172,8 @@ contains
       ! trac_alfa,tco_global are set only for phys_trac_type=1, should not be a problem when not initialized
       ! side effect of modifying T_bott from mod_trac -> T_bott sent as param
       call phys_trac_after_setdt(tco_global,trac_alfa,T_peak, T_bott)
-    end if 
-  
+    end if
+
     contains
   
       !> compute CFL limited dt (for variable time stepping)

@@ -177,7 +177,7 @@ contains
         write(*,'(a,i2,a,es12.4)') '  zone boundary ', k, ' at x = ', trac_zone_bounds(k)
       end do
     end if
-    ! Warn if any boundary is within 10% of either end (likely a footpoint — wrong placement)
+    ! Warn if any boundary is within 10% of either end
     do k = 1, trac_nzones-1
       if (trac_zone_bounds(k) < xprobmin1 + 0.1d0*(xprobmax1-xprobmin1) .or. &
           trac_zone_bounds(k) > xprobmax1 - 0.1d0*(xprobmax1-xprobmin1)) then

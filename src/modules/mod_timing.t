@@ -8,6 +8,11 @@ module mod_timing
   double precision       :: time_in, timeio0, timeio_tot=0.0d0
   double precision       :: timegr0, timegr_tot=0.0d0, timeloop, timeloop0
   double precision       :: timeeos0, timeeos_tot=0.0d0
+  double precision       :: timeeos_update=0.0d0
+  double precision       :: timeeos_csound=0.0d0
+  double precision       :: timeeos_conv=0.0d0
+  double precision       :: timeeos_pthermal=0.0d0
+  double precision       :: timeeos_Tfromei=0.0d0
   double precision       :: tpartc=0.0d0, tpartc_io=0.0d0, tpartc_int=0.0d0, tpartc_com=0.0d0, tpartc_grid=0.0d0
   double precision       :: tpartc0, tpartc_int_0, tpartc_com0, tpartc_io_0, tpartc_grid_0
   double precision       :: timeLast

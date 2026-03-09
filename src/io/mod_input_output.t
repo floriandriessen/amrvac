@@ -1636,8 +1636,10 @@ contains
       boundspeed=2
     case('cmaxleftright')
       boundspeed=3
+    case('pvrs')
+      boundspeed=4
     case default
-      call mpistop("set typeboundspeed='Einfeldt' or 'cmaxmean' or 'cmaxleftright'")
+      call mpistop("set typeboundspeed='Einfeldt' or 'cmaxmean' or 'cmaxleftright' or 'pvrs'")
     end select
 
     if (mype==0) write(unitterm, '(A30)', advance='no') 'Refine estimation: '

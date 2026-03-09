@@ -40,7 +40,7 @@ contains
 
         !> Otherwise, append
         if (.not. allocated(d%keys)) then
-            allocate(character(len=len_trim(key)) :: d%keys(1))
+            allocate(d%keys(1))
             allocate(d%values(1))
             d%n        = 1
             d%keys(1)  = trim(key)
@@ -48,7 +48,7 @@ contains
         else
             !> Extend by 1
 
-            allocate(character(len=max(len(d%keys(1)), len_trim(key))) :: new_keys(d%n+1))
+            allocate(new_keys(d%n+1))
             allocate(new_values(d%n+1))
 
             new_keys(1:d%n)   = d%keys
