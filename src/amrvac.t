@@ -378,8 +378,14 @@ contains
        write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*timeio_tot/timeloop,' %'
        write(*,'(a,f12.3,a)')' Time spent on ghost cells  : ',time_bc,' sec'
        write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*time_bc/timeloop,' %'
+       timeeos_tot = timeeos_update + timeeos_Tfromei + timeeos_csound + timeeos_conv + timeeos_pthermal
        write(*,'(a,f12.3,a)')' Time spent on eos          : ',timeeos_tot,' sec'
        write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*timeeos_tot/timeloop,' %'
+       write(*,'(a,f12.3,a)')'   - update_eos             : ',timeeos_update,' sec'
+       write(*,'(a,f12.3,a)')'   - T_from_eint (TC)       : ',timeeos_Tfromei,' sec'
+       write(*,'(a,f12.3,a)')'   - csound2                : ',timeeos_csound,' sec'
+       write(*,'(a,f12.3,a)')'   - cons/prim conversion   : ',timeeos_conv,' sec'
+       write(*,'(a,f12.3,a)')'   - get_pthermal           : ',timeeos_pthermal,' sec'
        write(*,'(a,f12.3,a)')' Time spent on computing    : ',timeloop-timeio_tot-timeeos_tot-timegr_tot-time_bc,' sec'
        write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*(timeloop-timeio_tot-timeeos_tot-timegr_tot-time_bc)/timeloop,' %'
        write(*,'(a,es12.3 )')' Cells updated / proc / sec : ',dble(ncells_update)*dble(nstep)/dble(npe)/timeloop

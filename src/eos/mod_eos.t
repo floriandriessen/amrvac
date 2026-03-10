@@ -49,9 +49,15 @@ module mod_eos
     !> eos object
     type(eos_container), public, allocatable     :: eos
 
+    !> wextra index for cached log10(nH) during STS substeps (-1 = not allocated)
+    integer, public :: iw_log_nH = -1
+
     public :: eos_init, eos_finalise, prepare_eos_w_fields
     public :: y_from_nH_eint, T_from_nH_eint, p2eint_from_nH_p, p_from_eint_IonE
+    public :: gamma1_from_nH_eint, gamma1_from_nH_p
+    public :: eint_nH_from_T
     public :: Rfactor_from_PI_temperature, update_PI_temperature
+    public :: get_temperature_from_eint_LTE_fast
 
 contains
     !> Read this module"s parameters from a file
@@ -71,15 +77,22 @@ contains
         double precision :: inv_gamma_minus_1
         double precision :: nH2rhoFactor
 
+        logical :: gamma1_approx
+        logical :: disable_FI_bypass
+
+        namelist /eos_list/ eos_type, table_location, ionE
+        namelist /eos_list/ table_check, He_abundance, gamma
+        namelist /eos_list/ gamma1_approx, disable_FI_bypass
+
         eos_type = 'FI'
+        disable_FI_bypass = .false.
         call get_environment_variable("AMRVAC_DIR", AMRVAC_DIR)
         table_location = trim(AMRVAC_DIR)//"/src/tables/eos_tables/"
         ionE = .false.
         table_check = .false.
         He_abundance = 0.1d0
         gamma = 5.0d0/3.0d0
-
-        namelist /eos_list/ eos_type, table_location, ionE, table_check, He_abundance, gamma
+        gamma1_approx = .false.
 
         do n = 1, size(files)
             open(unitpar, file=trim(files(n)), status="old")
@@ -90,6 +103,7 @@ contains
         eos%eos_type = eos_type
         if(mype==0) write(*,*) "EoS type: "//trim(eos%eos_type)
         eos%ionE = ionE
+        eos%gamma1_approx = gamma1_approx
         if ((eos%eos_type == 'FI') .and. eos%ionE) then
             eos%ionE = .false.
             if(mype==0) write(*,*) "WARNING: eos_type = 'FI' requires ionE = .false."
@@ -103,7 +117,8 @@ contains
         eos%inv_gamma = 1.0d0 / eos%gamma
         eos%inv_gamma_minus_1 = 1.0d0 / eos%gamma_minus_1
         eos%nH2rhoFactor = 1.0d0 !> Assume the default is 1.0 i.e., FI
-    
+        eos%disable_FI_bypass = disable_FI_bypass
+
     end subroutine eos_read_params
 
     subroutine eos_init()
@@ -113,7 +128,11 @@ contains
         if (eos%eos_type == 'LTE') then
             call load_lte_tables("T")
             call load_lte_tables("neOnH")
-            if (eos%ionE) call load_lte_tables("p2eint")
+            if (eos%ionE) then
+                call load_lte_tables("p2eint")
+                call try_load_lte_tables("gamma1")
+                call try_load_lte_tables("eint_from_T")
+            endif
         endif
 
         eos%get_rho => get_rho
@@ -149,7 +168,49 @@ contains
                     eos%p2eint%var1_max = eos%p2eint%var1_max - dlog10(unit_numberdensity)
                     eos%p2eint%var2_min = eos%p2eint%var2_min - dlog10(unit_pressure/unit_numberdensity)
                     eos%p2eint%var2_max = eos%p2eint%var2_max - dlog10(unit_pressure/unit_numberdensity)
+
+                    !> Gamma1: load from pre-computed file or build from T/neOnH tables
+                    if (allocated(eos%gamma1%table)) then
+                        eos%gamma1%var1_min = eos%gamma1%var1_min - dlog10(unit_numberdensity)
+                        eos%gamma1%var1_max = eos%gamma1%var1_max - dlog10(unit_numberdensity)
+                        eos%gamma1%var2_min = eos%gamma1%var2_min - dlog10(unit_pressure/unit_numberdensity)
+                        eos%gamma1%var2_max = eos%gamma1%var2_max - dlog10(unit_pressure/unit_numberdensity)
+                        !> Values are dimensionless Gamma_1 — no conversion needed
+                        if (mype == 0) write(*,*) 'Gamma1 table loaded from file'
+                    else
+                        call build_gamma1_table()
+                    endif
+
+                    !> Build pressure-indexed Gamma_1 table for fast csound2 computation
+                    call build_gamma1_p_table()
+
+                    !> eint_from_T: load from pre-computed file or build by inverting T table
+                    if (allocated(eos%eint_from_T%table)) then
+                        eos%eint_from_T%var1_min = eos%eint_from_T%var1_min - dlog10(unit_numberdensity)
+                        eos%eint_from_T%var1_max = eos%eint_from_T%var1_max - dlog10(unit_numberdensity)
+                        eos%eint_from_T%var2_min = eos%eint_from_T%var2_min - dlog10(unit_temperature)
+                        eos%eint_from_T%var2_max = eos%eint_from_T%var2_max - dlog10(unit_temperature)
+                        !> Values: log10(eint/nH) from CGS to code units
+                        eos%eint_from_T%table = eos%eint_from_T%table &
+                            - dlog10(unit_pressure/unit_numberdensity)
+                        if (mype == 0) write(*,*) 'Inverse T table loaded from file'
+                    else
+                        call build_eint_from_T_table()
+                    endif
                 endif
+
+                !> Precompute inverse step sizes for all LTE tables (avoids division in lookups)
+                call precompute_step_inv(eos%T)
+                call precompute_step_inv(eos%neOnH)
+                if (eos%ionE) then
+                    call precompute_step_inv(eos%p2eint)
+                    call precompute_step_inv(eos%gamma1)
+                    call precompute_step_inv(eos%gamma1_p)
+                    call precompute_step_inv(eos%eint_from_T)
+                end if
+
+                !> Precompute fully-ionised regime bypass constants
+                call precompute_FI_bypass_constants()
 
             else if (eos%eos_type == 'FI') then
                 eos%update_eos => update_eos_FI !> do nothing
@@ -175,6 +236,71 @@ contains
         endif
     end subroutine eos_finalise
 
+    subroutine precompute_step_inv(tc)
+        type(eos_table_container), intent(inout) :: tc
+        if (allocated(tc%table)) then
+            tc%step_inv_1 = dble(tc%dim1-1) / (tc%var1_max - tc%var1_min)
+            tc%step_inv_2 = dble(tc%dim2-1) / (tc%var2_max - tc%var2_min)
+        end if
+    end subroutine precompute_step_inv
+
+    subroutine precompute_FI_bypass_constants()
+        !> Precompute constants for bypassing table lookups when gas is fully ionised.
+        !> Physics: above T ~ 50 kK, H is >99.99% ionised and He is >90% ionised.
+        !> The EoS reduces to ideal gas with constant mu, Gamma_1 = 5/3, ne/nH = 1+2*A_He.
+        !> We check eint/rho > threshold (1 division + 1 comparison) to skip all table lookups.
+        double precision :: chi_H, chi_HeI, chi_HeII
+        double precision :: T_thresh, eint_nH_thresh, p_nH_thresh
+
+        !> Ionisation energies in CGS (erg)
+        chi_H   = 13.6d0  * 1.602d-12
+        chi_HeI = 24.6d0  * 1.602d-12
+        chi_HeII = 54.4d0 * 1.602d-12
+
+        !> Fully-ionised particle counts and electron fraction
+        eos%n_per_nH_FI = 2.0d0 + 3.0d0 * eos%He_abundance
+        eos%neOnH_FI    = 1.0d0 + 2.0d0 * eos%He_abundance
+
+        !> Total ionisation energy per hydrogen atom (CGS), converted to code units
+        !> eion_per_nH [code] = eion_per_nH [erg] / (unit_pressure / unit_numberdensity)
+        eos%eion_per_nH = (chi_H + eos%He_abundance * (chi_HeI + chi_HeII)) &
+                        * unit_numberdensity / unit_pressure
+
+        !> Bypass threshold: eint/rho value corresponding to T = 200,000 K fully ionised.
+        !> Raised from 50 kK to 200 kK so that blended LTE tables (which converge to
+        !> FI by 200 kK) match the bypass formula exactly at the threshold — no
+        !> discontinuity in ne/nH, T, Gamma_1, or p when cells cross the boundary.
+        !> eint/nH = 1.5 * n_per_nH * kB * T + eion_per_nH  (all in code units)
+        !> eint/rho = eint/nH / nH2rhoFactor
+        T_thresh = 200000.0d0 / unit_temperature
+        eint_nH_thresh = 1.5d0 * eos%n_per_nH_FI * T_thresh + eos%eion_per_nH
+        eos%eint_rho_FI_threshold = eint_nH_thresh / eos%nH2rhoFactor
+
+        !> Pressure-based threshold for primitive-variable checks:
+        !> For FI gas, T = p / (rho * Rfactor_FI), so p/rho > Rfactor_FI * T_thresh
+        !> where Rfactor_FI = n_per_nH_FI / (1 + 4*A_He) in code units
+        eos%p_rho_FI_threshold = eos%n_per_nH_FI &
+            / (1.0d0 + 4.0d0*eos%He_abundance) * T_thresh
+
+        !> Allow disabling the bypass for verification (forces all cells through table path)
+        if (eos%disable_FI_bypass) then
+            eos%eint_rho_FI_threshold = HUGE(1.0d0)
+            eos%p_rho_FI_threshold    = HUGE(1.0d0)
+        end if
+
+        if (mype == 0) then
+            if (eos%disable_FI_bypass) then
+                write(*,'(a)') ' FI bypass: DISABLED (all cells use table path)'
+            else
+                write(*,'(a,es12.4)') ' FI bypass: eion_per_nH (code) = ', eos%eion_per_nH
+                write(*,'(a,es12.4)') ' FI bypass: eint/rho threshold = ', eos%eint_rho_FI_threshold
+                write(*,'(a,f8.4)')   ' FI bypass: n_per_nH_FI        = ', eos%n_per_nH_FI
+                write(*,'(a,f8.4)')   ' FI bypass: neOnH_FI           = ', eos%neOnH_FI
+            end if
+        end if
+
+    end subroutine precompute_FI_bypass_constants
+
     subroutine prepare_eos_w_fields()
         integer :: iigrid, igrid
 
@@ -193,23 +319,23 @@ contains
         subname = "H" !> Always consider at least hydrogen
 
         if (eos%He_abundance > 0.0d0) then
-            write(subname,"(A,A)"), trim(subname), "He"
+            write(subname,"(A,A)") trim(subname), "He"
         endif
 
         if (eos%ionE) then !> Consider the ionisation energy?
-            write(subname,"(A,A)"), trim(subname), "_IonE"
+            write(subname,"(A,A)") trim(subname), "_IonE"
         else
-            write(subname,"(A,A)"), trim(subname), "_NoIonE"
+            write(subname,"(A,A)") trim(subname), "_NoIonE"
         endif
 
-        write(tablename, "(A,A,A)"), trim(eos_table_prefix), fieldname, "_"
-        write(filename,"(A,A,A)"), trim(tablename), trim(subname), '.bin'
+        write(tablename, "(A,A,A)") trim(eos_table_prefix), fieldname, "_"
+        write(filename,"(A,A,A)") trim(tablename), trim(subname), '.bin'
         
         if (mype==0) then
             print*, "Reading EoS tables from: ", trim(filename)
         endif
 
-        write(filepath,"(A,A)"), trim(eos%table_location), trim(filename)
+        write(filepath,"(A,A)") trim(eos%table_location), trim(filename)
 
         select case (fieldname)
         case("T")
@@ -221,11 +347,52 @@ contains
         case("p2eint")
             eos%p2eint%filename = filename
             call read_eos_from_file(trim(filepath), eos%p2eint%table, eos%p2eint%dim1, eos%p2eint%dim2, eos%p2eint%var1_min, eos%p2eint%var1_max, eos%p2eint%var2_min, eos%p2eint%var2_max, .false.)
+        case("gamma1")
+            eos%gamma1%filename = filename
+            call read_eos_from_file(trim(filepath), eos%gamma1%table, &
+                eos%gamma1%dim1, eos%gamma1%dim2, &
+                eos%gamma1%var1_min, eos%gamma1%var1_max, &
+                eos%gamma1%var2_min, eos%gamma1%var2_max, .false.)
+        case("eint_from_T")
+            eos%eint_from_T%filename = filename
+            call read_eos_from_file(trim(filepath), eos%eint_from_T%table, &
+                eos%eint_from_T%dim1, eos%eint_from_T%dim2, &
+                eos%eint_from_T%var1_min, eos%eint_from_T%var1_max, &
+                eos%eint_from_T%var2_min, eos%eint_from_T%var2_max, .false.)
         case default
             call mpistop("eos table name "//trim(fieldname)//" not recognised in load_lte_tables")
         end select
 
     end subroutine load_lte_tables
+
+    !> Attempt to load pre-computed table from binary file.
+    !> If the file does not exist, silently skip — the table will be built at runtime.
+    subroutine try_load_lte_tables(fieldname)
+        character(len=*), intent(in) :: fieldname
+        character(len=std_len) :: subname, tablename, filename, filepath
+        logical :: file_exists
+
+        subname = "H"
+        if (eos%He_abundance > 0.0d0) then
+            write(subname,"(A,A)") trim(subname), "He"
+        endif
+        if (eos%ionE) then
+            write(subname,"(A,A)") trim(subname), "_IonE"
+        else
+            write(subname,"(A,A)") trim(subname), "_NoIonE"
+        endif
+        write(tablename, "(A,A,A)") trim(eos_table_prefix), fieldname, "_"
+        write(filename,"(A,A,A)") trim(tablename), trim(subname), '.bin'
+        write(filepath,"(A,A)") trim(eos%table_location), trim(filename)
+
+        inquire(file=trim(filepath), exist=file_exists)
+        if (file_exists) then
+            call load_lte_tables(fieldname)
+        else
+            if (mype == 0) write(*,*) &
+                trim(fieldname)//' table not found, will build at runtime: '//trim(filename)
+        endif
+    end subroutine try_load_lte_tables
 
     subroutine read_eos_from_file(filename, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max, logtable)
         character(len=*), intent(in) :: filename
@@ -256,10 +423,14 @@ contains
                 print*, filename, " table check"
                 print*, var1_min, var1_max, var2_min, var2_max
                 print*, 'corners', ' interpolated'
-                print*, quantity_in(1,1), interp_clamped_bilinear_table(var1_min, var2_min, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
-                print*, quantity_in(1,dimx), interp_clamped_bilinear_table(var1_min, var2_max, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
-                print*, quantity_in(dimy,1), interp_clamped_bilinear_table(var1_max, var2_min, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
-                print*, quantity_in(dimy,dimx), interp_clamped_bilinear_table(var1_max, var2_max, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
+                print*, quantity_in(1,1), interp_clamped_bilinear_table(var1_min, &
+                    var2_min, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
+                print*, quantity_in(1,dimx), interp_clamped_bilinear_table(var1_min, &
+                    var2_max, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
+                print*, quantity_in(dimy,1), interp_clamped_bilinear_table(var1_max, &
+                    var2_min, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
+                print*, quantity_in(dimy,dimx), interp_clamped_bilinear_table(var1_max, &
+                    var2_max, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
                 print*, "These should be identical, if not then the table structure is inconsistent"
                 print*, "###########"
             endif
@@ -282,7 +453,7 @@ contains
         double precision :: pth(ixI^S)
         double precision :: nH_in(ixI^S), nH(ixI^S), eint_in(ixI^S)
         double precision :: Rfactor(ixI^S)
-        double precision :: yy
+        double precision :: yy, eint_nH_floor
         double precision :: time0
         integer :: ix^D
         
@@ -295,29 +466,54 @@ contains
 
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
         nH_in(ixO^S) = dlog10(nH(ixO^S))
+        ! Enforce internal energy floor for EoS lookup only.
+        ! Prevents NaN from dlog10(eint<0) after strong rarefactions where
+        ! kinetic energy can numerically exceed total energy.
+        ! The conserved energy w(iw_e) is NOT modified: the physical fluxes
+        ! based on the small positive pressure will naturally restore the cell.
+        {do ix^DB=ixOmin^DB,ixOmax^DB\}
+            eint_nH_floor = nH(ix^D) * 10.0d0**eos%T%var2_min
+            if (wlocal(ix^D,iw_e) < eint_nH_floor) then
+                wlocal(ix^D,iw_e) = eint_nH_floor
+            end if
+        {end do\}
         eint_in(ixO^S) = dlog10(wlocal(ixO^S,iw_e)) - nH_in(ixO^S)
 
         call eos%get_Rfactor(w, x, ixI^L, ixO^L,  Rfactor)
 
         {do ix^DB=ixOmin^DB,ixOmax^DB\}
-            new_y(ix^D) = y_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
-            if (.not. eos%ionE) then
-                ! w(ix^D,iw_te) = (pth(ix^D) / (w(ix^D,iw_rho) * (1.0d0 + eos%He_abundance + new_y(ix^D)) / (2.0d0 + 3.0d0 * eos%He_abundance))) !> pth is reliable
-                ! w(ix^D,iw_te) = (pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)) / (1.0d0 + 4.0d0 * eos%He_abundance))) !> pth is reliable
-                w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D))) !> pth is reliable
+            if (wlocal(ix^D,iw_e) / w(ix^D,iw_rho) > eos%eint_rho_FI_threshold) then
+                !> Fully ionised: analytical formulae, no table lookups
+                new_y(ix^D) = eos%neOnH_FI
+                if (eos%ionE) then
+                    !> T = (eint - eion*nH) * (gamma-1) / (Rfactor_FI * rho)
+                    w(ix^D,iw_te) = eos%gamma_minus_1 &
+                        * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
+                        / (Rfactor(ix^D) * w(ix^D,iw_rho))
+                else
+                    w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)))
+                end if
             else
-                if (eint_in(ix^D) < eos%T%var2_max) then !> temperature table scales with eint
-                    w(ix^D,iw_te) = T_from_nH_eint(nH_in(ix^D),eint_in(ix^D)) !> Without an explicit table for ionE, we cannot trivially separate p and eint
-                else !> We're out the top of the eint range, meaning we're in fully ionised territory and ionE effects are minimal (although not zero!)
-                        !> In fact, there is a slight difference between the top of the LTE table and the ideal gas law. !THIS HAS NOT BEEN ADDRESSED YET!
-                    w(ix^D,iw_te) = pth(ix^D) / (w(ix^D,iw_rho) * Rfactor(ix^D))
+                !> Ionisation zone: full table lookups
+                new_y(ix^D) = y_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
+                if (.not. eos%ionE) then
+                    w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)))
+                else
+                    if (eint_in(ix^D) < eos%T%var2_max) then
+                        w(ix^D,iw_te) = T_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
+                    else
+                        !> Above-table fallback with ionisation energy correction
+                        w(ix^D,iw_te) = eos%gamma_minus_1 &
+                            * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
+                            / (Rfactor(ix^D) * w(ix^D,iw_rho))
+                    end if
                 end if
             end if
         {end do\}
 
         w(ixO^S,iw_ne) = new_y(ixO^S) * nH(ixO^S)
 
-        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+        timeeos_update=timeeos_update+(MPI_WTIME()-timeeos0)
 
     end subroutine update_eos_LTE
 
@@ -327,9 +523,7 @@ contains
         double precision, intent(in)    :: x(ixI^S,1:ndim)
         double precision, intent(inout) :: w(ixI^S,1:nw)
 
-        timeeos0 = MPI_WTIME()
         !> Nothing needed for the FI variant
-        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0)
 
     end subroutine update_eos_FI
 
@@ -374,13 +568,12 @@ contains
         double precision, intent(out) :: T(ixI^S)
         double precision :: Rfactor(ixI^S), pth(ixI^S)
 
-        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
-
+        !> No timing here: get_thermal_pressure is already timed.
+        !> The division and Rfactor call are trivial.
         call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pth)
         call eos%get_Rfactor(w,x,ixI^L,ixO^L,Rfactor)
         T(ixO^S) = pth(ixO^S) / (w(ixO^S,iw_rho) * Rfactor(ixO^S))
 
-        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
     end subroutine get_Te_FI
 
     subroutine get_thermal_pressure_FI(w, x, ixI^L, ixO^L, res)
@@ -392,13 +585,13 @@ contains
 
         double precision :: ei(ixO^S)
 
-        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+        timeeos0 = MPI_WTIME()
 
         ! Use non-modifying function to get internal energy
         ei = phys_get_ei(w, ixI^L, ixO^L)
         res(ixO^S) = eos%gamma_minus_1 * ei(ixO^S)
 
-        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+        timeeos_pthermal=timeeos_pthermal+(MPI_WTIME()-timeeos0)
     end subroutine get_thermal_pressure_FI
 
     subroutine get_thermal_pressure_LTE(w, x, ixI^L, ixO^L, res) !> Assumes the inputs are in sync
@@ -415,7 +608,7 @@ contains
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
         res(ixO^S) = nH(ixO^S) * (1.0d0 + eos%He_abundance + (w(ixO^S,iw_ne) / nH(ixO^S))) * w(ixO^S,iw_te)
 
-        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+        timeeos_pthermal=timeeos_pthermal+(MPI_WTIME()-timeeos0)
     end subroutine get_thermal_pressure_LTE
 
     !> The next four subroutines get the temperature from the energy variable depending on the eos type
@@ -431,16 +624,17 @@ contains
 
         double precision :: Rfactor(ixI^S)
 
-        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+        timeeos0 = MPI_WTIME()
 
         call eos%get_Rfactor(w,x,ixI^L,ixI^L,Rfactor)
         res(ixO^S) = (eos%gamma_minus_1 * w(ixO^S,iw_e) / (Rfactor(ixO^S) * w(ixO^S,iw_rho))) !> pth/rho
 
-        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+        timeeos_Tfromei=timeeos_Tfromei+(MPI_WTIME()-timeeos0)
     end subroutine get_temperature_from_eint_FI
 
     subroutine get_temperature_from_eint_LTE(w, x, ixI^L, ixO^L, res)
-        !> Assumes input energy is internal energy
+        !> Assumes input energy is internal energy.
+        !> Includes FI bypass: cells with eint/rho above threshold skip table lookups.
         use mod_physics
         integer, intent(in)             :: ixI^L,ixO^L
         double precision, intent(in)    :: x(ixI^S,1:ndim)
@@ -448,27 +642,94 @@ contains
         double precision, intent(out)   :: res(ixI^S)
 
         double precision :: nH(ixI^S),nH_in(ixI^S), eint_in(ixI^S)
-        double precision :: Rfactor(ixI^S)
+        double precision :: Rfactor(ixI^S), Rfactor_FI
         integer :: ix^D
 
-        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+        timeeos0 = MPI_WTIME()
+
+        Rfactor_FI = eos%n_per_nH_FI / (1.0d0 + 4.0d0*eos%He_abundance)
 
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
         nH_in(ixO^S) = dlog10(nH(ixO^S))
         eint_in(ixO^S) = dlog10(w(ixO^S,iw_e)) - nH_in(ixO^S)
 
-        call eos%get_Rfactor(w,x,ixI^L,ixI^L,Rfactor)
-
         {do ix^DB=ixOmin^DB,ixOmax^DB\}
-            if (eint_in(ix^D) > eos%T%var2_max) then !> temperature table scale with eint, so if eint is above the table max, we are in ideal gas territory
-                res(ix^D) = (eos%gamma_minus_1 * w(ix^D,iw_e) / (Rfactor(ix^D) * w(ix^D,iw_rho))) !> pth/rho
+            if (w(ix^D,iw_e) / w(ix^D,iw_rho) > eos%eint_rho_FI_threshold) then
+                !> Fully ionised: T = (eint - eion*nH) * (gamma-1) / (Rfactor_FI * rho)
+                res(ix^D) = eos%gamma_minus_1 &
+                    * (w(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
+                    / (Rfactor_FI * w(ix^D,iw_rho))
             else
-                res(ix^D) = T_from_nH_eint(nH_in(ix^D),eint_in(ix^D)) !> This may scale terribly with the thermal conduction STS
+                res(ix^D) = T_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
             endif
         {end do\}
 
-        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+        timeeos_Tfromei=timeeos_Tfromei+(MPI_WTIME()-timeeos0)
     end subroutine get_temperature_from_eint_LTE
+
+    subroutine get_temperature_from_eint_LTE_fast(w, x, ixI^L, ixO^L, res)
+        !> Fast TC variant: two-pass regime-aware bypass.
+        !>
+        !> Pass 1 (vectorised): compute FI formula for ALL cells as array ops.
+        !>   For the ~97% fully-ionised cells (T > 50 kK), this is exact.
+        !>   For the ~3% ionisation-zone cells, the result is immediately overwritten.
+        !>   The compiler vectorises this with SVML (no branches, pure arithmetic).
+        !>
+        !> Pass 2 (scalar, ~3% of cells): overwrite ionisation-zone cells with
+        !>   bilinear table lookup + dexp.  Threshold check uses multiply
+        !>   (eint <= threshold * rho) to avoid a 14-cycle scalar division.
+        use mod_physics
+        integer, intent(in)             :: ixI^L,ixO^L
+        double precision, intent(in)    :: x(ixI^S,1:ndim)
+        double precision, intent(in)    :: w(ixI^S,1:nw)
+        double precision, intent(out)   :: res(ixI^S)
+
+        double precision :: inv_Rfactor_FI, eion_rho_inv
+        double precision :: log_nH_val, log_eint_nH_val
+        double precision :: fx, fy, rx, ry
+        integer :: jx, jy, jx1, jy1, ix^D
+        double precision, parameter :: ln10 = 2.302585092994046d0
+
+        timeeos0 = MPI_WTIME()
+
+        !> Precompute scalar constants (avoid per-cell divisions)
+        inv_Rfactor_FI = (1.0d0 + 4.0d0*eos%He_abundance) / eos%n_per_nH_FI
+        eion_rho_inv = eos%eion_per_nH / eos%nH2rhoFactor
+
+        !> Pass 1: FI formula for ALL cells (vectorisable array operations).
+        !> T = (gamma-1) * (eint - eion_per_rho * rho) / (Rfactor_FI * rho)
+        res(ixO^S) = eos%gamma_minus_1 * inv_Rfactor_FI &
+            * (w(ixO^S,iw_e) - eion_rho_inv * w(ixO^S,iw_rho)) &
+            / w(ixO^S,iw_rho)
+
+        !> Pass 2: overwrite ionisation-zone cells with bilinear table result.
+        {do ix^DB=ixOmin^DB,ixOmax^DB\}
+            if (w(ix^D,iw_e) <= eos%eint_rho_FI_threshold * w(ix^D,iw_rho)) then
+                if (iw_log_nH > 0) then
+                    log_nH_val = block%wextra(ix^D, iw_log_nH)
+                else
+                    log_nH_val = dlog10(w(ix^D, iw_rho) / eos%nH2rhoFactor)
+                end if
+                log_eint_nH_val = dlog10(w(ix^D, iw_e)) - log_nH_val
+
+                ry = max(0.0d0, min((log_nH_val - eos%T%var1_min) * eos%T%step_inv_1, &
+                                     dble(eos%T%dim1-1)))
+                rx = max(0.0d0, min((log_eint_nH_val - eos%T%var2_min) * eos%T%step_inv_2, &
+                                     dble(eos%T%dim2-1)))
+                jy = int(ry); jx = int(rx)
+                jy1 = min(jy+1, eos%T%dim1-1)
+                jx1 = min(jx+1, eos%T%dim2-1)
+                fy = ry - dble(jy); fx = rx - dble(jx)
+                res(ix^D) = dexp(ln10 * ( &
+                    (1.0d0-fy)*((1.0d0-fx)*eos%T%table(jy+1,jx+1)  &
+                                      + fx *eos%T%table(jy+1,jx1+1)) &
+                   +      fy *((1.0d0-fx)*eos%T%table(jy1+1,jx+1)   &
+                                      + fx *eos%T%table(jy1+1,jx1+1))))
+            end if
+        {end do\}
+
+        timeeos_Tfromei = timeeos_Tfromei + (MPI_WTIME()-timeeos0)
+    end subroutine get_temperature_from_eint_LTE_fast
 
     subroutine get_temperature_from_etot(w, x, ixI^L, ixO^L,  res)
         !> Assumes input energy is total energy
@@ -479,29 +740,320 @@ contains
         double precision, intent(out)   :: res(ixI^S)
         double precision :: wlocal(ixI^S,1:nw)
 
-        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
-
+        !> No timing here: get_temperature_from_eint is already timed.
+        !> The array copy and e_to_ei subtraction are trivial.
         wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
         call phys_e_to_ei(ixI^L, ixO^L, wlocal, x)
         call eos%get_temperature_from_eint(wlocal, x, ixI^L, ixO^L, res)
 
-        timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
     end subroutine get_temperature_from_etot
 
     double precision function y_from_nH_eint(nH, eint_nh) result(result_val)
         double precision, intent(in) :: nH, eint_nh
-        result_val = 10.0d0**interp_clamped_monotone_bicubic_table(nH, eint_nh, eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, eos%neOnH%var1_min, eos%neOnH%var1_max, eos%neOnH%var2_min, eos%neOnH%var2_max)
+        double precision, parameter :: ln10 = 2.302585092994046d0
+        result_val = dexp(ln10 * interp_clamped_monotone_bicubic_table(nH, eint_nh, &
+            eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
+            eos%neOnH%var1_min, eos%neOnH%var1_max, &
+            eos%neOnH%var2_min, eos%neOnH%var2_max))
     end function y_from_nH_eint
 
     double precision function T_from_nH_eint(nH, eint_nh) result(result_val)
         double precision, intent(in) :: nH, eint_nh
-        result_val = 10.0d0**interp_clamped_monotone_bicubic_table(nH, eint_nh, eos%T%table, eos%T%dim1, eos%T%dim2, eos%T%var1_min, eos%T%var1_max, eos%T%var2_min, eos%T%var2_max)
+        double precision, parameter :: ln10 = 2.302585092994046d0
+        result_val = dexp(ln10 * interp_clamped_monotone_bicubic_table(nH, eint_nh,&
+            eos%T%table, eos%T%dim1, eos%T%dim2, &
+            eos%T%var1_min, eos%T%var1_max, &
+            eos%T%var2_min, eos%T%var2_max))
     end function T_from_nH_eint
 
     double precision function p2eint_from_nH_p(nH, ponH) result(result_val)
         double precision, intent(in) :: nH, ponH
-        result_val = interp_clamped_monotone_bicubic_table(nH, ponH, eos%p2eint%table, eos%p2eint%dim1, eos%p2eint%dim2, eos%p2eint%var1_min, eos%p2eint%var1_max, eos%p2eint%var2_min, eos%p2eint%var2_max)
+        result_val = interp_clamped_monotone_bicubic_table(nH, ponH, &
+            eos%p2eint%table, eos%p2eint%dim1, eos%p2eint%dim2, &
+            eos%p2eint%var1_min, eos%p2eint%var1_max, &
+            eos%p2eint%var2_min, eos%p2eint%var2_max)
     end function p2eint_from_nH_p
+
+    double precision function gamma1_from_nH_eint(log_nH, log_eint_nH) result(g1)
+        double precision, intent(in) :: log_nH, log_eint_nH
+        g1 = interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
+            eos%gamma1%table, eos%gamma1%dim1, eos%gamma1%dim2, &
+            eos%gamma1%var1_min, eos%gamma1%var1_max, &
+            eos%gamma1%var2_min, eos%gamma1%var2_max)
+    end function gamma1_from_nH_eint
+
+    !> Gamma_1 from pressure-indexed table: (log10 nH, log10 p/nH) -> Gamma_1
+    !> Same physical values as gamma1_from_nH_eint, re-indexed for primitive variables.
+    double precision function gamma1_from_nH_p(log_nH, log_p_nH) result(g1)
+        double precision, intent(in) :: log_nH, log_p_nH
+        g1 = interp_clamped_monotone_bicubic_table(log_nH, log_p_nH, &
+            eos%gamma1_p%table, eos%gamma1_p%dim1, eos%gamma1_p%dim2, &
+            eos%gamma1_p%var1_min, eos%gamma1_p%var1_max, &
+            eos%gamma1_p%var2_min, eos%gamma1_p%var2_max)
+    end function gamma1_from_nH_p
+
+    double precision function eint_nH_from_T(log_nH, log_T) result(eint_nH)
+        double precision, intent(in) :: log_nH, log_T
+        double precision, parameter :: ln10 = 2.302585092994046d0
+        eint_nH = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_T, &
+            eos%eint_from_T%table, eos%eint_from_T%dim1, eos%eint_from_T%dim2, &
+            eos%eint_from_T%var1_min, eos%eint_from_T%var1_max, &
+            eos%eint_from_T%var2_min, eos%eint_from_T%var2_max))
+    end function eint_nH_from_T
+
+    !> Build the first adiabatic index Gamma_1 table from T and neOnH tables.
+    !> Called during eos_finalise after unit conversion, when tables are in code units.
+    !>
+    !> Physics: Gamma_1 = (rho/p) * (dp/drho)_s = a + b * (p / eint_vol)
+    !>   where a = d(log10 p)/d(log10 nH) at constant eint/nH
+    !>         b = d(log10 p)/d(log10 eint/nH) at constant nH
+    !>   and p = nH * T * (1 + He + y), eint_vol = nH * (eint/nH)
+    !>
+    !> Derivation: from the thermodynamic identity
+    !>   a^2 = (dp/drho)_{eint} + ((eint+p)/rho) * (dp/deint)_rho
+    !> expressed in table coordinates (log10 nH, log10 eint/nH).
+    !> For ideal gas: a=1, b=1, p/eint=gamma-1, so Gamma_1 = 1+(gamma-1) = gamma.
+    subroutine build_gamma1_table()
+        integer :: n1, n2, i, j, im, ip, jm, jp
+        double precision :: dx1, dx2, x1, x2
+        double precision, allocatable :: log_p(:,:)
+        double precision :: T_val, y_val, p_val, eint_vol
+        double precision :: a_val, b_val, g1_val
+        double precision :: g1_min, g1_max
+
+        n1 = eos%T%dim1
+        n2 = eos%T%dim2
+
+        !> Gamma1 table shares the same grid as T and neOnH
+        eos%gamma1%dim1 = n1
+        eos%gamma1%dim2 = n2
+        eos%gamma1%var1_min = eos%T%var1_min
+        eos%gamma1%var1_max = eos%T%var1_max
+        eos%gamma1%var2_min = eos%T%var2_min
+        eos%gamma1%var2_max = eos%T%var2_max
+        eos%gamma1%filename = 'computed_gamma1'
+
+        allocate(eos%gamma1%table(n1, n2))
+        allocate(log_p(n1, n2))
+
+        dx1 = (eos%T%var1_max - eos%T%var1_min) / dble(n1 - 1)
+        dx2 = (eos%T%var2_max - eos%T%var2_min) / dble(n2 - 1)
+
+        !> Step 1: Compute log10(p) at each grid point
+        !> In code units: p = nH * T * (1 + He + y), kB absorbed
+        do j = 1, n2
+            x2 = eos%T%var2_min + (j - 1) * dx2
+            do i = 1, n1
+                x1 = eos%T%var1_min + (i - 1) * dx1
+                T_val = 10.0d0**eos%T%table(i, j)         !> T in code units
+                y_val = 10.0d0**eos%neOnH%table(i, j)     !> Ne/nH (dimensionless)
+                !> log10(p) = log10(nH) + log10(T) + log10(1 + He + y)
+                log_p(i, j) = x1 + eos%T%table(i, j) + dlog10(1.0d0 + eos%He_abundance + y_val)
+            end do
+        end do
+
+        !> Step 2: Compute Gamma_1 from finite differences of log_p
+        g1_min = 1.0d30
+        g1_max = -1.0d30
+
+        do j = 1, n2
+            x2 = eos%T%var2_min + (j - 1) * dx2
+            do i = 1, n1
+                x1 = eos%T%var1_min + (i - 1) * dx1
+
+                !> Centered finite differences with one-sided at boundaries
+                im = max(i - 1, 1)
+                ip = min(i + 1, n1)
+                jm = max(j - 1, 1)
+                jp = min(j + 1, n2)
+
+                !> p/eint_vol = T * (1+He+y) / (eint/nH)
+                T_val = 10.0d0**eos%T%table(i, j)
+                y_val = 10.0d0**eos%neOnH%table(i, j)
+                eint_vol = 10.0d0**x2  !> eint/nH in code units
+                p_val = T_val * (1.0d0 + eos%He_abundance + y_val)
+
+                if (eos%gamma1_approx) then
+                    !> Approximate: gamma_eff = 1 + p/eint_vol
+                    g1_val = 1.0d0 + p_val / eint_vol
+                else
+                    !> Full formula: Gamma_1 = a + b * (p / eint_vol)
+                    !> a = d(log10 p) / d(log10 nH) at constant eint/nH
+                    a_val = (log_p(ip, j) - log_p(im, j)) / ((ip - im) * dx1)
+                    !> b = d(log10 p) / d(log10 eint/nH) at constant nH
+                    b_val = (log_p(i, jp) - log_p(i, jm)) / ((jp - jm) * dx2)
+                    g1_val = a_val + b_val * (p_val / eint_vol)
+                endif
+
+                !> Clamp to physical range [1, 5/3] (monatomic H+He gas)
+                g1_val = max(1.001d0, min(g1_val, 5.0d0/3.0d0))
+
+                eos%gamma1%table(i, j) = g1_val
+
+                g1_min = min(g1_min, g1_val)
+                g1_max = max(g1_max, g1_val)
+            end do
+        end do
+
+        deallocate(log_p)
+
+        if (mype == 0) then
+            if (eos%gamma1_approx) then
+                write(*, '(A,F8.4,A,F8.4)') &
+                    ' Gamma1 table built (gamma_eff approx): min = ', g1_min, ', max = ', g1_max
+            else
+                write(*, '(A,F8.4,A,F8.4)') &
+                    ' Gamma1 table built (full formula): min = ', g1_min, ', max = ', g1_max
+            endif
+        end if
+
+    end subroutine build_gamma1_table
+
+    !> Build pressure-indexed Gamma_1 table: Gamma_1(nH, p/nH).
+    !> Re-indexes the eint-based gamma1 table into pressure space,
+    !> sharing the same grid axes as the p2eint table.
+    !> This eliminates the intermediate p2eint lookup from hd_get_csound2_LTE.
+    subroutine build_gamma1_p_table()
+        integer :: n1, n2, i, j
+        double precision :: dx1, dx2, log_nH, log_p_nH
+        double precision :: p2eint_ratio, log_eint_nH
+        double precision :: g1_val, g1_min, g1_max
+
+        n1 = eos%p2eint%dim1
+        n2 = eos%p2eint%dim2
+
+        ! gamma1_p shares the same axis ranges as p2eint
+        eos%gamma1_p%dim1 = n1
+        eos%gamma1_p%dim2 = n2
+        eos%gamma1_p%var1_min = eos%p2eint%var1_min
+        eos%gamma1_p%var1_max = eos%p2eint%var1_max
+        eos%gamma1_p%var2_min = eos%p2eint%var2_min
+        eos%gamma1_p%var2_max = eos%p2eint%var2_max
+        eos%gamma1_p%filename = 'computed_gamma1_p'
+
+        allocate(eos%gamma1_p%table(n1, n2))
+
+        dx1 = (eos%p2eint%var1_max - eos%p2eint%var1_min) / dble(n1 - 1)
+        dx2 = (eos%p2eint%var2_max - eos%p2eint%var2_min) / dble(n2 - 1)
+
+        g1_min = 1.0d30
+        g1_max = -1.0d30
+
+        do j = 1, n2
+            log_p_nH = eos%p2eint%var2_min + (j - 1) * dx2
+            do i = 1, n1
+                log_nH = eos%p2eint%var1_min + (i - 1) * dx1
+
+                ! Convert from (nH, p/nH) to (nH, eint/nH) via the p2eint table
+                ! p2eint table stores the ratio eint/(p), so:
+                ! log10(eint/nH) = log10(p/nH) + log10(p2eint_ratio)
+                p2eint_ratio = eos%p2eint%table(i, j)
+                log_eint_nH = log_p_nH + dlog10(p2eint_ratio)
+
+                ! Look up Gamma_1 from the eint-indexed table
+                g1_val = gamma1_from_nH_eint(log_nH, log_eint_nH)
+
+                eos%gamma1_p%table(i, j) = g1_val
+
+                g1_min = min(g1_min, g1_val)
+                g1_max = max(g1_max, g1_val)
+            end do
+        end do
+
+        if (mype == 0) then
+            write(*, '(A,F8.4,A,F8.4)') &
+                ' Gamma1_p table built (pressure-indexed): min = ', g1_min, ', max = ', g1_max
+        end if
+
+    end subroutine build_gamma1_p_table
+
+    !> Build inverse T table: given (nH, T), return eint/nH.
+    !> Inverts the forward T(nH, eint/nH) table by scanning each nH column.
+    !> Called during eos_finalise after unit conversion.
+    subroutine build_eint_from_T_table()
+        integer :: n1, n2_fwd, n2_inv, i, j, k
+        double precision :: dx1, dx2_fwd
+        double precision :: T_global_min, T_global_max, dx2_inv
+        double precision :: x1, x2_fwd, T_target, T_lo, T_hi, x2_lo, x2_hi
+        double precision :: frac
+        double precision :: eint_nH_min, eint_nH_max
+
+        n1 = eos%T%dim1
+        n2_fwd = eos%T%dim2
+
+        dx1 = (eos%T%var1_max - eos%T%var1_min) / dble(n1 - 1)
+        dx2_fwd = (eos%T%var2_max - eos%T%var2_min) / dble(n2_fwd - 1)
+
+        !> Find global T range from the forward T table
+        T_global_min = 1.0d30
+        T_global_max = -1.0d30
+        do j = 1, n2_fwd
+            do i = 1, n1
+                T_global_min = min(T_global_min, eos%T%table(i, j))
+                T_global_max = max(T_global_max, eos%T%table(i, j))
+            end do
+        end do
+
+        !> Set up inverse table with same nH axis, T axis spanning global T range
+        n2_inv = n2_fwd  !> Same resolution as forward table
+        eos%eint_from_T%dim1 = n1
+        eos%eint_from_T%dim2 = n2_inv
+        eos%eint_from_T%var1_min = eos%T%var1_min
+        eos%eint_from_T%var1_max = eos%T%var1_max
+        eos%eint_from_T%var2_min = T_global_min
+        eos%eint_from_T%var2_max = T_global_max
+        eos%eint_from_T%filename = 'computed_eint_from_T'
+
+        allocate(eos%eint_from_T%table(n1, n2_inv))
+
+        dx2_inv = (T_global_max - T_global_min) / dble(n2_inv - 1)
+
+        eint_nH_min = 1.0d30
+        eint_nH_max = -1.0d30
+
+        !> For each (nH_i, T_j), find eint/nH by scanning the forward T table column
+        do i = 1, n1
+            do j = 1, n2_inv
+                T_target = T_global_min + (j - 1) * dx2_inv
+
+                !> T table column at nH_i: eos%T%table(i, 1:n2_fwd)
+                !> This is monotonically increasing with k (eint/nH increases → T increases)
+
+                if (T_target <= eos%T%table(i, 1)) then
+                    !> Below minimum: clamp to first eint/nH value
+                    eos%eint_from_T%table(i, j) = eos%T%var2_min
+                else if (T_target >= eos%T%table(i, n2_fwd)) then
+                    !> Above maximum: clamp to last eint/nH value
+                    eos%eint_from_T%table(i, j) = eos%T%var2_max
+                else
+                    !> Bisection to find the bracketing interval
+                    do k = 2, n2_fwd
+                        if (eos%T%table(i, k) >= T_target) then
+                            T_lo = eos%T%table(i, k-1)
+                            T_hi = eos%T%table(i, k)
+                            x2_lo = eos%T%var2_min + (k - 2) * dx2_fwd
+                            x2_hi = eos%T%var2_min + (k - 1) * dx2_fwd
+                            !> Linear interpolation within bracket
+                            frac = (T_target - T_lo) / (T_hi - T_lo)
+                            eos%eint_from_T%table(i, j) = x2_lo + frac * (x2_hi - x2_lo)
+                            exit
+                        end if
+                    end do
+                end if
+
+                eint_nH_min = min(eint_nH_min, eos%eint_from_T%table(i, j))
+                eint_nH_max = max(eint_nH_max, eos%eint_from_T%table(i, j))
+            end do
+        end do
+
+        if (mype == 0) then
+            write(*, '(A,F8.4,A,F8.4)') &
+                ' Inverse T table built: log10(T) range = ', T_global_min, ' to ', T_global_max
+            write(*, '(A,F8.4,A,F8.4)') &
+                '   log10(eint/nH) range = ', eint_nH_min, ' to ', eint_nH_max
+        end if
+
+    end subroutine build_eint_from_T_table
 
     pure double precision function interp_clamped_bilinear_table(vary, varx, table, nx, ny, vmin_y, vmax_y, vmin_x, vmax_x) result(z)
         double precision, intent(in) :: vary, varx

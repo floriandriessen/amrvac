@@ -72,6 +72,7 @@ module mod_hd_phys
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
 
+
   !> The adiabatic index
   double precision, public                :: hd_gamma = 5.d0/3.0d0
 
@@ -305,6 +306,11 @@ contains
       Tcoff_ = -1
     end if
 
+    !> Cache log10(nH) in wextra for LTE+IonE TC (density invariant during STS)
+    if (eos%eos_type == 'LTE' .and. eos%ionE .and. hd_thermal_conduction) then
+        iw_log_nH = var_set_wextra()
+    end if
+
     ! ! choose Rfactor in ideal gas law
     ! if(hd_partial_ionization) then
     !   hd_get_Rfactor=>Rfactor_from_temperature_ionization
@@ -326,7 +332,11 @@ contains
       allocate(tc_fl)
       call tc_get_hd_params(tc_fl,tc_params_read_hd)
       call add_sts_method(hd_get_tc_dt_hd,hd_sts_set_source_tc_hd,e_,1,e_,1,.false.)
-      call set_conversion_methods_to_head(hd_e_to_ei, hd_ei_to_e)
+      if (iw_log_nH > 0) then
+        call set_conversion_methods_to_head(hd_e_to_ei_and_cache_log_nH, hd_ei_to_e)
+      else
+        call set_conversion_methods_to_head(hd_e_to_ei, hd_ei_to_e)
+      end if
       call set_error_handling_to_head(hd_tc_handle_small_e)
       ! tc_fl%get_temperature_from_conserved => hd_get_temperature_from_etot
       ! tc_fl%get_temperature_from_eint => hd_get_temperature_from_eint
@@ -515,19 +525,19 @@ contains
       ! list parameters
       integer :: ncool = 4000
       double precision :: cfrac=0.1d0
-    
+
       !> Name of cooling curve
       character(len=std_len)  :: coolcurve='JCcorona'
-    
+
       !> Name of cooling method
       character(len=std_len)  :: coolmethod='exact'
-    
+
       !> Fixed temperature not lower than tlow
       logical    :: Tfix=.false.
-    
+
       !> Lower limit of temperature
       double precision   :: tlow=bigdouble
-    
+
       !> Add cooling source in a split way (.true.) or un-split way (.false.)
       logical    :: rc_split=.false.
 
@@ -612,7 +622,7 @@ contains
       !> Remove the assumed FI normalisation from the units and handle in EoS
       a=1d0
       b=1d0
-      eos%nH2rhoFactor = 1d0+4d0*He_abundance
+      eos%nH2rhoFactor = 1d0+4d0*eos%He_abundance
       RR=(2d0+3d0*eos%He_abundance) / (1d0+4d0*eos%He_abundance)
     else
       a=1d0
@@ -801,6 +811,19 @@ contains
 
   end subroutine hd_e_to_ei
 
+  !> Wrapper: e_to_ei + cache log10(nH) in wextra for LTE TC fast path.
+  !> During STS substeps density is invariant, so log10(nH) is computed once
+  !> per STS cycle (in sts_before_first_cycle hook) and reused across all substeps.
+  subroutine hd_e_to_ei_and_cache_log_nH(ixI^L,ixO^L,w,x)
+    use mod_global_parameters
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(inout) :: w(ixI^S, nw)
+    double precision, intent(in)    :: x(ixI^S, 1:ndim)
+
+    call hd_e_to_ei(ixI^L,ixO^L,w,x)
+    block%wextra(ixO^S, iw_log_nH) = dlog10(w(ixO^S, rho_) / eos%nH2rhoFactor)
+  end subroutine hd_e_to_ei_and_cache_log_nH
+
   !> Calculate internal energy from total energy (non-modifying version)
   function hd_get_ei(w, ixI^L, ixO^L) result(ei)
     use mod_global_parameters
@@ -848,9 +871,11 @@ contains
     ! w in primitive form
     double precision, intent(in)              :: w(ixI^S, nw), x(ixI^S, 1:ndim)
     double precision, intent(inout)           :: cmax(ixI^S)
+    double precision                          :: csound2(ixI^S)
 
     if(hd_energy) then
-      cmax(ixO^S)=dabs(w(ixO^S,mom(idim)))+dsqrt(eos%gamma*w(ixO^S,p_)/w(ixO^S,rho_))
+      call eos%get_csound2(w, x, ixI^L, ixO^L, csound2)
+      cmax(ixO^S)=dabs(w(ixO^S,mom(idim)))+dsqrt(csound2(ixO^S))
     else
       if (.not. associated(usr_set_pthermal)) then
         cmax(ixO^S) = hd_adiab * w(ixO^S, rho_)**eos%gamma
@@ -977,8 +1002,8 @@ contains
       umean(ixO^S)=(wLp(ixO^S,mom(idim))*tmp1(ixO^S)+wRp(ixO^S,mom(idim))*tmp2(ixO^S))*tmp3(ixO^S)
 
       if(hd_energy) then
-        csoundL(ixO^S)=eos%gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
-        csoundR(ixO^S)=eos%gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+        call eos%get_csound2(wLp, x, ixI^L, ixO^L, csoundL)
+        call eos%get_csound2(wRp, x, ixI^L, ixO^L, csoundR)
       else
         call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
         call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
@@ -1032,8 +1057,8 @@ contains
     case (3)
       ! Miyoshi 2005 JCP 208, 315 equation (67)
       if(hd_energy) then
-        csoundL(ixO^S)=eos%gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
-        csoundR(ixO^S)=eos%gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+        call eos%get_csound2(wLp, x, ixI^L, ixO^L, csoundL)
+        call eos%get_csound2(wRp, x, ixI^L, ixO^L, csoundR)
       else
         call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
         call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
@@ -1055,23 +1080,132 @@ contains
         wmean(ixO^S,1:nwflux)=0.5d0*(wLC(ixO^S,1:nwflux)+wRC(ixO^S,1:nwflux))
         call dust_get_cmax(wmean, x, ixI^L, ixO^L, idim, cmax, cmin)
       end if
+    case (4)
+      !> PVRS pressure-based wave speed estimate (Toro 1999, Section 10.5.2)
+      !> Recommended by Coleman 2020 for general EoS given limitations of constant gamma approximation.
+      !> Estimates star pressure from linearised Riemann problem, then uses
+      !> RH to detect shock vs rarefaction on each side.
+
+      if(hd_energy) then
+        call eos%get_csound2(wLp, x, ixI^L, ixO^L, csoundL)
+        call eos%get_csound2(wRp, x, ixI^L, ixO^L, csoundR)
+      else
+        call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
+        call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
+      end if
+      csoundL(ixO^S) = dsqrt(csoundL(ixO^S))
+      csoundR(ixO^S) = dsqrt(csoundR(ixO^S))
+      if(present(cmin)) then
+        {do ix^DB=ixOmin^DB,ixOmax^DB\}
+          !> PVRS star pressure estimate (Toro Eq. 9.28)
+          !> cup = rho_bar * a_bar
+          tmp1(ix^D) = 0.25d0*(wLp(ix^D,rho_)+wRp(ix^D,rho_)) &
+                      *(csoundL(ix^D)+csoundR(ix^D))
+          !> p* = max(0, p_avg + 0.5*(u_L - u_R)*cup)
+          tmp2(ix^D) = max(zero, 0.5d0*(wLp(ix^D,e_)+wRp(ix^D,e_)) &
+                     + 0.5d0*(wLp(ix^D,mom(idim))-wRp(ix^D,mom(idim))) &
+                     *tmp1(ix^D))
+          !> Left wave speed: S_L = u_L - a_L * q_L
+          if(tmp2(ix^D) > wLp(ix^D,e_) .and. wLp(ix^D,e_) > zero) then
+            !> Left shock: q_L from R-H with local Gamma1 = a^2*rho/p
+            tmp3(ix^D) = csoundL(ix^D)**2*wLp(ix^D,rho_)/wLp(ix^D,e_)
+            dmean(ix^D) = dsqrt(1.0d0 + (tmp3(ix^D)+1.0d0) &
+                        /(2.0d0*tmp3(ix^D)) &
+                        *(tmp2(ix^D)/wLp(ix^D,e_) - 1.0d0))
+          else
+            !> Left rarefaction
+            dmean(ix^D) = 1.0d0
+          end if
+          cmin(ix^D,1) = wLp(ix^D,mom(idim)) - csoundL(ix^D)*dmean(ix^D)
+          !> Right wave speed: S_R = u_R + a_R * q_R
+          if(tmp2(ix^D) > wRp(ix^D,e_) .and. wRp(ix^D,e_) > zero) then
+            !> Right shock: q_R from R-H with local Gamma1
+            tmp3(ix^D) = csoundR(ix^D)**2*wRp(ix^D,rho_)/wRp(ix^D,e_)
+            dmean(ix^D) = dsqrt(1.0d0 + (tmp3(ix^D)+1.0d0) &
+                        /(2.0d0*tmp3(ix^D)) &
+                        *(tmp2(ix^D)/wRp(ix^D,e_) - 1.0d0))
+          else
+            !> Right rarefaction
+            dmean(ix^D) = 1.0d0
+          end if
+          cmax(ix^D,1) = wRp(ix^D,mom(idim)) + csoundR(ix^D)*dmean(ix^D)
+        {end do\}
+        if(H_correction) then
+          {do ix^DB=ixOmin^DB,ixOmax^DB\}
+            cmin(ix^D,1)=sign(one,cmin(ix^D,1))*max(abs(cmin(ix^D,1)),Hspeed(ix^D,1))
+            cmax(ix^D,1)=sign(one,cmax(ix^D,1))*max(abs(cmax(ix^D,1)),Hspeed(ix^D,1))
+          {end do\}
+        end if
+      else
+        {do ix^DB=ixOmin^DB,ixOmax^DB\}
+          tmp1(ix^D) = 0.25d0*(wLp(ix^D,rho_)+wRp(ix^D,rho_)) &
+                      *(csoundL(ix^D)+csoundR(ix^D))
+          tmp2(ix^D) = max(zero, 0.5d0*(wLp(ix^D,e_)+wRp(ix^D,e_)) &
+                     + 0.5d0*(wLp(ix^D,mom(idim))-wRp(ix^D,mom(idim))) &
+                     *tmp1(ix^D))
+          if(tmp2(ix^D) > wLp(ix^D,e_) .and. wLp(ix^D,e_) > zero) then
+            tmp3(ix^D) = csoundL(ix^D)**2*wLp(ix^D,rho_)/wLp(ix^D,e_)
+            dmean(ix^D) = dsqrt(1.0d0 + (tmp3(ix^D)+1.0d0) &
+                        /(2.0d0*tmp3(ix^D)) &
+                        *(tmp2(ix^D)/wLp(ix^D,e_) - 1.0d0))
+          else
+            dmean(ix^D) = 1.0d0
+          end if
+          umean(ix^D) = dabs(wLp(ix^D,mom(idim)) &
+                      - csoundL(ix^D)*dmean(ix^D))
+          if(tmp2(ix^D) > wRp(ix^D,e_) .and. wRp(ix^D,e_) > zero) then
+            tmp3(ix^D) = csoundR(ix^D)**2*wRp(ix^D,rho_)/wRp(ix^D,e_)
+            dmean(ix^D) = dsqrt(1.0d0 + (tmp3(ix^D)+1.0d0) &
+                        /(2.0d0*tmp3(ix^D)) &
+                        *(tmp2(ix^D)/wRp(ix^D,e_) - 1.0d0))
+          else
+            dmean(ix^D) = 1.0d0
+          end if
+          cmax(ix^D,1) = max(umean(ix^D), &
+                        wRp(ix^D,mom(idim))+csoundR(ix^D)*dmean(ix^D))
+        {end do\}
+      end if
+      if (hd_dust) then
+        wmean(ixO^S,1:nwflux)=0.5d0*(wLC(ixO^S,1:nwflux)+wRC(ixO^S,1:nwflux))
+        call dust_get_cmax(wmean, x, ixI^L, ixO^L, idim, cmax, cmin)
+      end if
     end select
 
   end subroutine hd_get_cbounds
 
   !> Calculate the square of the thermal sound speed csound2 within ixO^L.
-  !> csound2=gamma*p/rho
+  !> For conserved w: extracts pthermal first, then applies Gamma_1.
+  !> For LTE+IonE: computes eint from conserved state to look up Gamma_1 from table.
   subroutine hd_get_csound2(w,x,ixI^L,ixO^L,csound2)
     use mod_global_parameters
+    use mod_timing
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(out)   :: csound2(ixI^S)
     double precision :: pthermal(ixI^S)
+    double precision :: nH_val, eint_val, log_nH, log_eint_nH, g1
+    double precision :: local_t0
+    integer :: ix^D
 
-    ! call hd_get_pthermal(w,x,ixI^L,ixO^L,pthermal)
+    !> get_thermal_pressure has its own timing; only time the gamma1 loop here
     call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pthermal)
-    csound2(ixO^S)=eos%gamma*pthermal(ixO^S)/w(ixO^S,rho_)
+
+    if (eos%ionE) then
+      local_t0 = MPI_WTIME()
+      !> For LTE+IonE: compute eint from conserved state, look up Gamma_1
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        eint_val = w(ix^D,e_) - half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+        nH_val = w(ix^D,rho_) / eos%nH2rhoFactor
+        log_nH = dlog10(nH_val)
+        log_eint_nH = dlog10(eint_val) - log_nH
+        g1 = gamma1_from_nH_eint(log_nH, log_eint_nH)
+        csound2(ix^D) = g1 * pthermal(ix^D) / w(ix^D,rho_)
+      {end do\}
+      timeeos_csound=timeeos_csound+(MPI_WTIME()-local_t0)
+    else
+      csound2(ixO^S) = eos%gamma * pthermal(ixO^S) / w(ixO^S,rho_)
+    end if
 
   end subroutine hd_get_csound2
 
@@ -1372,7 +1506,7 @@ contains
     logical, intent(inout)          :: active
 
     double precision :: gravity_field(ixI^S, 1:ndim)
-    integer :: idust, idim
+    integer :: idust, idim, ix^D
 
     if(hd_dust .and. .not. use_imex_scheme) then
       call dust_add_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)

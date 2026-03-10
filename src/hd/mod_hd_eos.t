@@ -39,6 +39,13 @@ module mod_hd_eos
             
             eos%p_to_e => p_to_e !> suitable for both FI and LTE
 
+            ! Link sound speed computation
+            if (eos%eos_type == 'LTE' .and. eos%ionE) then
+                eos%get_csound2 => hd_get_csound2_LTE
+            else
+                eos%get_csound2 => hd_get_csound2_FI
+            end if
+
             ! choose Rfactor in ideal gas law
             if(hd_partial_ionization) then
                 eos%get_Rfactor=>Rfactor_from_PI_temperature !> defined in eos file
@@ -54,7 +61,13 @@ module mod_hd_eos
         subroutine bind_eos_to_source() !> this is called in eos_finalise through mod_physics procedure linking
             if (allocated(tc_fl)) then
                 tc_fl%get_temperature_from_conserved => eos%get_temperature_from_etot
-                tc_fl%get_temperature_from_eint => eos%get_temperature_from_eint
+                !> Use fast bilinear T lookup for TC STS substeps (density fixed,
+                !> TC flux dominated by corona where T(eint) is smooth)
+                if (eos%eos_type == 'LTE' .and. eos%ionE) then
+                    tc_fl%get_temperature_from_eint => get_temperature_from_eint_LTE_fast
+                else
+                    tc_fl%get_temperature_from_eint => eos%get_temperature_from_eint
+                end if
                 tc_fl%get_rho => eos%get_rho
             end if
 
@@ -92,7 +105,7 @@ module mod_hd_eos
                 call dust_to_conserved(ixI^L, ixO^L, w, x)
             end if
 
-            timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+            timeeos_conv=timeeos_conv+(MPI_WTIME()-timeeos0)
 
         end subroutine hd_to_conserved
 
@@ -130,7 +143,7 @@ module mod_hd_eos
                 call dust_to_primitive(ixI^L, ixO^L, w, x)
             end if
 
-            timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+            timeeos_conv=timeeos_conv+(MPI_WTIME()-timeeos0)
 
         end subroutine hd_to_primitive
 
@@ -153,22 +166,23 @@ module mod_hd_eos
                 call dust_to_conserved(ixI^L, ixO^L, w, x)
             end if
 
-            timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
-            
+            timeeos_conv=timeeos_conv+(MPI_WTIME()-timeeos0)
+
         end subroutine hd_to_conserved_LTE
 
         subroutine p_to_e(ixI^L, ixO^L, w, x)
             !> Needed to separate this for compatibility with hd_small_values_check
-            !> i.e., to avoid circular calls
+            !> i.e., to avoid circular calls.
+            !> Includes FI bypass: for fully ionised cells, eint = p/(gamma-1) + eion*nH.
             use mod_global_parameters
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
             integer :: ix^D
-            double precision :: p_to_eint
+            double precision :: p_to_eint, p_over_rho
             double precision :: nH(ixI^S), nH_in(ixI^S), p_in(ixI^S)
-            
+
             if (eos%ionE) then
                 call eos%get_nH(w, x, ixI^L, ixO^L, nH)
                 nH_in(ixO^S) = dlog10(nH(ixO^S))
@@ -178,8 +192,16 @@ module mod_hd_eos
             p_to_eint = eos%inv_gamma_minus_1 !> default assumed conversion value
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                 if (hd_energy) then
-                    !> calculate scaling according to tables
-                    if (eos%ionE) p_to_eint = p2eint_from_nH_p(nH_in(ix^D), p_in(ix^D))
+                    if (eos%ionE) then
+                        p_over_rho = w(ix^D,p_) / w(ix^D,rho_)
+                        if (p_over_rho > eos%p_rho_FI_threshold) then
+                            !> Fully ionised: eint = p/(gamma-1) + eion*nH
+                            p_to_eint = eos%inv_gamma_minus_1 &
+                                + eos%eion_per_nH * nH(ix^D) / w(ix^D,p_)
+                        else
+                            p_to_eint = p2eint_from_nH_p(nH_in(ix^D), p_in(ix^D))
+                        end if
+                    end if
                     w(ix^D,e_)=w(ix^D,p_)*p_to_eint+&
                         half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                 end if
@@ -239,9 +261,63 @@ module mod_hd_eos
                 call dust_to_primitive(ixI^L, ixO^L, w, x)
             end if
 
-            timeeos_tot=timeeos_tot+(MPI_WTIME()-timeeos0) !> For monitoring cost of eos module
+            timeeos_conv=timeeos_conv+(MPI_WTIME()-timeeos0)
 
         end subroutine hd_to_primitive_LTE
+
+        !> Sound speed squared for FI (fully ionized / constant gamma) EoS.
+        !> Expects w in primitive form: w(p_) = pressure, w(rho_) = density.
+        subroutine hd_get_csound2_FI(w, x, ixI^L, ixO^L, cs2)
+            use mod_global_parameters
+            integer, intent(in)             :: ixI^L, ixO^L
+            double precision, intent(in)    :: w(ixI^S, nw)
+            double precision, intent(in)    :: x(ixI^S, 1:ndim)
+            double precision, intent(out)   :: cs2(ixI^S)
+
+            timeeos0 = MPI_WTIME()
+
+            cs2(ixO^S) = eos%gamma * w(ixO^S, p_) / w(ixO^S, rho_)
+
+            timeeos_csound = timeeos_csound + (MPI_WTIME()-timeeos0)
+
+        end subroutine hd_get_csound2_FI
+
+        !> Sound speed squared for LTE+IonE EoS using pressure-indexed Gamma_1 table.
+        !> Expects w in primitive form: w(p_) = pressure, w(rho_) = density.
+        !> Single table lookup: Gamma_1(nH, p/nH) from precomputed gamma1_p table.
+        subroutine hd_get_csound2_LTE(w, x, ixI^L, ixO^L, cs2)
+            !> Sound speed squared with regime-aware bypass.
+            !> For fully ionised cells (p/rho > threshold): cs2 = gamma * p/rho (exact).
+            !> For ionisation zone cells: Gamma_1 from pressure-indexed table.
+            use mod_global_parameters
+            integer, intent(in)             :: ixI^L, ixO^L
+            double precision, intent(in)    :: w(ixI^S, nw)
+            double precision, intent(in)    :: x(ixI^S, 1:ndim)
+            double precision, intent(out)   :: cs2(ixI^S)
+
+            double precision :: nH_val, log_nH, log_p_nH, g1, p_over_rho
+            integer :: ix^D
+
+            timeeos0 = MPI_WTIME()
+
+            {do ix^DB=ixOmin^DB,ixOmax^DB\}
+                p_over_rho = w(ix^D, p_) / w(ix^D, rho_)
+                if (p_over_rho > eos%p_rho_FI_threshold) then
+                    !> Fully ionised: Gamma_1 = gamma = 5/3
+                    cs2(ix^D) = eos%gamma * p_over_rho
+                else
+                    !> Ionisation zone: table lookup for Gamma_1
+                    nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
+                    log_nH = dlog10(nH_val)
+                    log_p_nH = dlog10(w(ix^D, p_) / nH_val)
+                    g1 = gamma1_from_nH_p(log_nH, log_p_nH)
+                    cs2(ix^D) = g1 * p_over_rho
+                end if
+            {end do\}
+
+            timeeos_csound = timeeos_csound + (MPI_WTIME()-timeeos0)
+
+        end subroutine hd_get_csound2_LTE
 
         subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
             use mod_global_parameters

@@ -269,6 +269,7 @@ mod_hd_phys.o: mod_small_values.mod
 mod_hd_phys.o: mod_supertimestepping.mod
 mod_hd_phys.o: mod_thermal_conduction.mod
 mod_hd_phys.o: mod_thermal_emission.mod
+mod_hd_phys.o: mod_timing.mod
 mod_hd_phys.o: mod_usr_methods.mod
 mod_hd_phys.o: mod_variables.mod
 mod_hd_phys.o: mod_viscosity.mod
