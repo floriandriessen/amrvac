@@ -63,6 +63,7 @@
         Busr=50.d0
         He_abundance=0.d0
         mhd_eta=-0.1d0
+        mhd_htc_sat=.true.
  /
 
  &sts_list
