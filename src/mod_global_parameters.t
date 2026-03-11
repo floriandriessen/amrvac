@@ -663,6 +663,9 @@ module mod_global_parameters
   !> Use TRAC for MHD or 1D HD
   logical :: phys_trac=.false.
 
+  !> Use escape probability for radiative cooling modification
+  logical :: phys_escape_prob=.false.
+
   !> Whether to apply flux conservation at refinement boundaries
   logical :: fix_conserve_global = .true.
   logical :: flux_adaptive_diffusion

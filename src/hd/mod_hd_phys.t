@@ -72,6 +72,8 @@ module mod_hd_phys
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
 
+  !> Index into wextra for escape probability column mass
+  integer, public, protected              :: iw_colmass = -1
 
   !> The adiabatic index
   double precision, public                :: hd_gamma = 5.d0/3.0d0
@@ -178,6 +180,7 @@ contains
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_ionization_degree
     use mod_usr_methods, only: usr_Rfactor
+    use mod_escape_probability, only: escape_prob_init
 
     integer :: itr, idir
 
@@ -357,6 +360,13 @@ contains
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
+      ! Initialize escape probability if requested
+      if (rc_fl%rad_escape_prob) then
+        iw_colmass = var_set_wextra()
+        rc_fl%iw_colmass_ = iw_colmass
+        phys_escape_prob = .true.
+        call escape_prob_init(iw_colmass, rc_fl%rad_modify_sym)
+      end if
     end if
     allocate(te_fl_hd)
     ! te_fl_hd%get_rho=> hd_get_rho
@@ -517,7 +527,7 @@ contains
 !!end th cond
 !!rad cool
     subroutine rc_params_read(fl)
-      use mod_global_parameters, only: unitpar,par_files
+      use mod_global_parameters, only: unitpar,par_files,unit_temperature
       use mod_constants, only: bigdouble
       use mod_basic_types, only: std_len
       type(rc_fluid), intent(inout) :: fl
@@ -525,34 +535,55 @@ contains
       ! list parameters
       integer :: ncool = 4000
       double precision :: cfrac=0.1d0
-
+    
       !> Name of cooling curve
       character(len=std_len)  :: coolcurve='JCcorona'
-
+    
       !> Name of cooling method
       character(len=std_len)  :: coolmethod='exact'
-
+    
       !> Fixed temperature not lower than tlow
       logical    :: Tfix=.false.
-
+    
       !> Lower limit of temperature
       double precision   :: tlow=bigdouble
-
+    
       !> Add cooling source in a split way (.true.) or un-split way (.false.)
       logical    :: rc_split=.false.
 
       !> Density cap: losses zeroed where rho > rho_cap (code units). Default: disabled.
       double precision :: rho_cap=bigdouble
 
-      !> Enable density-based taper for optically thick cooling suppression
+      !> Master switch for radiative loss modification (spatial + density taper)
       logical :: rad_modify=.false.
-      !> Density threshold above which cooling is tapered (code units)
+      !> Apply spatial taper at both boundaries (default: lower only)
+      logical :: rad_modify_sym=.false.
+      !> Spatial taper: height from boundary below which taper applies
+      double precision :: rad_cut_hgt=0.0d0
+      !> Spatial taper: Gaussian decay width
+      double precision :: rad_cut_dey=0.15d0
+      !> Density taper: threshold above which taper applies
       double precision :: rad_taper_rho=bigdouble
-      !> Exponential decay scale for density taper (code units)
-      double precision :: rad_taper_dey=1.0d0
+      !> Density taper: Gaussian decay width
+      double precision :: rad_taper_dey=0.0d0
+      !> Enable escape probability cooling modification
+      logical :: rad_escape_prob=.false.
+      !> Effective opacity for escape probability (code units)
+      double precision :: rad_kappa_eff=0.0d0
+      !> Temperature above which kappa→0 (Kelvin); 0 = constant kappa
+      double precision :: rad_kappa_Tcutoff=0.0d0
+      !> Sigmoid sharpness exponent for kappa(T) cutoff
+      double precision :: rad_kappa_alpha=4.0d0
+      !> Escape probability type: 'slab' or 'voigt'
+      character(len=10) :: rad_escape_type='slab'
+      !> Exponential cutoff scale: E *= exp(-tau/tau_cutoff); 0 = disabled
+      double precision :: rad_escape_tau_cutoff=0.0d0
 
-      namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, rho_cap, &
-        rad_modify, rad_taper_rho, rad_taper_dey
+      namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, &
+          rho_cap, rad_modify, rad_modify_sym, &
+          rad_cut_hgt, rad_cut_dey, rad_taper_rho, rad_taper_dey, &
+          rad_escape_prob, rad_kappa_eff, rad_kappa_Tcutoff, rad_kappa_alpha, &
+          rad_escape_type, rad_escape_tau_cutoff
 
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
@@ -569,8 +600,17 @@ contains
       fl%cfrac=cfrac
       fl%rho_cap=rho_cap
       fl%rad_modify=rad_modify
+      fl%rad_modify_sym=rad_modify_sym
+      fl%rad_cut_hgt=rad_cut_hgt
+      fl%rad_cut_dey=rad_cut_dey
       fl%rad_taper_rho=rad_taper_rho
       fl%rad_taper_dey=rad_taper_dey
+      fl%rad_escape_prob=rad_escape_prob
+      fl%rad_kappa_eff=rad_kappa_eff
+      fl%rad_kappa_Tcutoff=rad_kappa_Tcutoff/unit_temperature
+      fl%rad_kappa_alpha=rad_kappa_alpha
+      fl%rad_escape_type=rad_escape_type
+      fl%rad_escape_tau_cutoff=rad_escape_tau_cutoff
     end subroutine rc_params_read
 !! end rad cool
 
@@ -1512,6 +1552,14 @@ contains
       call dust_add_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
     end if
 
+    
+    ! if (mype == 0) then
+    !   {do ix^DB = ixI^LIM^DB\}
+    !     if (abs(x(ix^D,1) - xprobmax1/2.0d0) > (xprobmax1/2.0d0 - 1.0d8/unit_length)) then
+    !       write(*,*) x(ix^D,1), ' ' , wCT(ix^D,e_)
+    !     endif
+    !   {end do\}
+    ! endif
     if(hd_radiative_cooling) then
       call radiative_cooling_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
            qsourcesplit,active, rc_fl)

@@ -36,6 +36,24 @@ module mod_radiative_cooling
   !> inverse of the adiabatic index minus 1
   double precision, private :: invgam
 
+  !> Voigt escape probability lookup table.
+  !> E(tau) is the frequency-integrated single-flight escape probability
+  !> from a uniform slab with a Voigt line profile truncated at x_max
+  !> Doppler widths (CL12 Sec 2.1, mimics PRD):
+  !>   E(tau_0) = [phi(0)/tau_0] * integral_{-xmax}^{xmax} [1 - exp(-tau_0 phi(x)/phi(0))] dx
+  !> Precomputed at initialisation via Gauss-Legendre quadrature, then
+  !> interpolated at runtime from a table in log10(tau).
+  !> Reference Voigt parameter: a_ref = 4.7e-4 at T = 10 kK.
+  !> Sensitivity to a is < 20% for tau < 1e6 (see voigt_escape_derivation.py).
+  integer, parameter, private :: n_voigt_table = 500
+  double precision, parameter, private :: voigt_logtau_min = -2.0d0   ! tau = 0.01
+  double precision, parameter, private :: voigt_logtau_max =  8.0d0   ! tau = 1e8
+  double precision, parameter, private :: voigt_a_ref = 4.7d-4
+  double precision, parameter, private :: voigt_xmax  = 6.0d0
+  double precision, private :: voigt_E_table(n_voigt_table)
+  double precision, private :: voigt_logtau_step
+  logical, private :: voigt_table_ready = .false.
+
   abstract interface
     subroutine get_subr1(w,x,ixI^L,ixO^L,res)
       use mod_global_parameters
@@ -88,12 +106,10 @@ module mod_radiative_cooling
 
     !> cutoff radiative cooling below rad_cut_hgt
     logical :: rad_cut
-    !> Enable density-based taper for optically thick cooling suppression
+    !> Master switch for radiative loss modification (spatial + density taper)
     logical :: rad_modify
-    !> Density threshold above which cooling is tapered (code units)
-    double precision :: rad_taper_rho
-    !> Exponential decay scale for density taper (code units)
-    double precision :: rad_taper_dey
+    !> Apply spatial taper at both boundaries (default: lower only)
+    logical :: rad_modify_sym
     ! these are to be set directly
     logical :: has_equi = .false.
 
@@ -103,6 +119,25 @@ module mod_radiative_cooling
     !> assumes optically thin conditions that break down at high density.
     !> Defaults to bigdouble (cap disabled). Set in the cooling namelist.
     double precision :: rho_cap
+    !> Density threshold for Gaussian taper (code units)
+    double precision :: rad_taper_rho
+    !> Gaussian decay width for density taper
+    double precision :: rad_taper_dey
+
+    !> Enable escape probability cooling modification
+    logical :: rad_escape_prob = .false.
+    !> Effective opacity for escape probability (code units: 1/(density*length))
+    double precision :: rad_kappa_eff = 0.0d0
+    !> Temperature above which kappa→0 (stored in code units, input in Kelvin); 0 = constant kappa
+    double precision :: rad_kappa_Tcutoff = 0.0d0
+    !> Sigmoid sharpness exponent for kappa(T) cutoff
+    double precision :: rad_kappa_alpha = 4.0d0
+    !> Escape probability type: 'slab' = (1-exp(-tau))/tau, 'voigt' = Voigt CRD
+    character(len=10) :: rad_escape_type = 'slab'
+    !> Exponential cutoff scale: E *= exp(-tau/tau_cutoff); 0 = disabled
+    double precision :: rad_escape_tau_cutoff = 0.0d0
+    !> Index into wextra for column mass (set during init)
+    integer :: iw_colmass_ = -1
 
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve
@@ -788,6 +823,182 @@ module mod_radiative_cooling
       He_abundance=He_abund
     end subroutine radiative_cooling_init_params
 
+    !> Build the Voigt escape probability lookup table.
+    !> Called once (guarded by voigt_table_ready flag).
+    !> Uses 64-point Gauss-Legendre quadrature on [0, x_max] to evaluate
+    !>   E(tau_0) = (2 phi(0)/tau_0) * integral_0^{x_max} [1-exp(-tau_0 g(x))] dx
+    !> where g(x) = phi(x)/phi(0) for the Voigt profile H(a,x) truncated at x_max.
+    subroutine voigt_escape_init_table()
+      use mod_global_parameters, only: dpi
+      implicit none
+      integer, parameter :: nquad = 64
+      double precision :: xq(nquad), wq(nquad)
+      double precision :: logtau, tau0, phi0, gx, integrand, E_val
+      double precision :: a_rep
+      integer :: i, k
+
+      if(voigt_table_ready) return
+
+      ! Step size in log10(tau)
+      voigt_logtau_step = (voigt_logtau_max - voigt_logtau_min) / dble(n_voigt_table - 1)
+
+      ! Get Gauss-Legendre nodes and weights on [0, x_max]
+      call voigt_gauss_legendre(0.0d0, voigt_xmax, nquad, xq, wq)
+
+      ! Representative Voigt parameter (a_ref at T = 10 kK)
+      a_rep = voigt_a_ref
+
+      ! phi(0) for the Voigt profile: H(a,0) = exp(a^2)*erfc(a)/sqrt(pi) ≈ 1/sqrt(pi)
+      phi0 = 1.0d0 / sqrt(dpi)
+
+      ! Precompute g(x) = phi(x)/phi(0) at quadrature nodes
+      ! For the Voigt profile: phi(x) = H(a,x), the real part of the
+      ! Faddeeva function divided by sqrt(pi).
+      ! For small a, H(a,x) ≈ exp(-x^2)/sqrt(pi) + a/(pi*x^2) for |x|>few.
+      ! Use the exact Humlicek (1982) rational approximation.
+
+      do i = 1, n_voigt_table
+        logtau = voigt_logtau_min + dble(i-1) * voigt_logtau_step
+        tau0 = 10.0d0**logtau
+
+        if(tau0 < 1.0d-6) then
+          voigt_E_table(i) = 1.0d0
+          cycle
+        end if
+
+        integrand = 0.0d0
+        do k = 1, nquad
+          gx = voigt_profile_ratio(a_rep, xq(k))  ! phi(x)/phi(0)
+          ! [1 - exp(-tau0 * g(x))]
+          if(tau0 * gx > 500.0d0) then
+            integrand = integrand + wq(k) * 1.0d0
+          else if(tau0 * gx < 1.0d-10) then
+            integrand = integrand + wq(k) * tau0 * gx
+          else
+            integrand = integrand + wq(k) * (1.0d0 - exp(-tau0 * gx))
+          end if
+        end do
+
+        E_val = 2.0d0 * phi0 / tau0 * integrand
+        ! Clamp to [0, 1]
+        voigt_E_table(i) = max(0.0d0, min(1.0d0, E_val))
+      end do
+
+      voigt_table_ready = .true.
+
+    end subroutine voigt_escape_init_table
+
+    !> Voigt profile ratio phi(x)/phi(0) using Humlicek (1982) Region I/II approx.
+    !> For the small-a regime (a < 0.01), this simplifies to:
+    !>   H(a,x)/H(a,0) ≈ exp(-x^2) + a*sqrt(pi)/x^2  for |x| > ~2
+    !> We use the exact Gaussian core + Lorentzian wing decomposition.
+    double precision function voigt_profile_ratio(a, x)
+      use mod_global_parameters, only: dpi
+      implicit none
+      double precision, intent(in) :: a, x
+      double precision :: gauss_part, lorentz_part, phi_x, phi_0
+
+      ! phi(0) = H(a,0) ≈ 1/sqrt(pi) * (1 + ...) for small a
+      phi_0 = 1.0d0 / sqrt(dpi)
+
+      ! For small a: H(a,x) ≈ exp(-x²)/sqrt(pi) for |x| < ~3
+      ! and H(a,x) ≈ a/(pi*x²) for |x| >> 1 where Lorentzian dominates
+      ! Use additive approximation: H(a,x) ≈ exp(-x²)/sqrt(pi) + a/(pi*(x²+a²))
+      gauss_part = exp(-x*x) / sqrt(dpi)
+      if(x*x + a*a > 1.0d-30) then
+        lorentz_part = a / (dpi * (x*x + a*a))
+      else
+        lorentz_part = 0.0d0
+      end if
+      phi_x = gauss_part + lorentz_part
+
+      voigt_profile_ratio = phi_x / phi_0
+
+    end function voigt_profile_ratio
+
+    !> Look up the Voigt escape probability for a given tau.
+    !> Uses linear interpolation in log10(tau) space.
+    double precision function voigt_escape_lookup(tau)
+      implicit none
+      double precision, intent(in) :: tau
+      double precision :: logtau, frac
+      integer :: idx
+
+      if(tau < 1.0d-6) then
+        voigt_escape_lookup = 1.0d0
+        return
+      end if
+
+      logtau = log10(tau)
+
+      if(logtau <= voigt_logtau_min) then
+        voigt_escape_lookup = voigt_E_table(1)
+        return
+      end if
+
+      if(logtau >= voigt_logtau_max) then
+        ! Extrapolate with 1/tau scaling from last table entry
+        voigt_escape_lookup = voigt_E_table(n_voigt_table) &
+          * (10.0d0**voigt_logtau_max) / tau
+        return
+      end if
+
+      ! Linear interpolation
+      frac = (logtau - voigt_logtau_min) / voigt_logtau_step
+      idx = int(frac) + 1
+      idx = max(1, min(idx, n_voigt_table - 1))
+      frac = frac - dble(idx - 1)
+
+      voigt_escape_lookup = voigt_E_table(idx) * (1.0d0 - frac) &
+                          + voigt_E_table(idx + 1) * frac
+
+    end function voigt_escape_lookup
+
+    !> Gauss-Legendre quadrature nodes and weights on [a,b].
+    !> Uses the Golub-Welsch algorithm for n points.
+    subroutine voigt_gauss_legendre(a, b, n, x, w)
+      use mod_global_parameters, only: dpi
+      implicit none
+      double precision, intent(in) :: a, b
+      integer, intent(in) :: n
+      double precision, intent(out) :: x(n), w(n)
+      double precision :: xi, wi, p0, p1, p2, pp, z, z1
+      integer :: i, j, k, m
+
+      m = (n + 1) / 2
+
+      do i = 1, m
+        ! Initial guess for i-th root
+        z = cos(dpi * (dble(i) - 0.25d0) / (dble(n) + 0.5d0))
+
+        ! Newton iteration
+        do j = 1, 100
+          p0 = 1.0d0
+          p1 = 0.0d0
+          do k = 1, n
+            p2 = p1
+            p1 = p0
+            p0 = ((2.0d0*dble(k) - 1.0d0) * z * p1 - (dble(k) - 1.0d0) * p2) / dble(k)
+          end do
+          ! p0 = P_n(z), derivative:
+          pp = dble(n) * (z * p0 - p1) / (z*z - 1.0d0)
+          z1 = z
+          z = z - p0 / pp
+          if(abs(z - z1) < 1.0d-15) exit
+        end do
+
+        ! Map from [-1,1] to [a,b]
+        xi = 0.5d0 * ((b - a) * z + (b + a))
+        wi = (b - a) / ((1.0d0 - z*z) * pp*pp)
+
+        x(i) = xi
+        w(i) = wi
+        x(n + 1 - i) = a + b - xi
+        w(n + 1 - i) = wi
+      end do
+
+    end subroutine voigt_gauss_legendre
+
     subroutine radiative_cooling_init(fl,read_params)
       use mod_global_parameters
       interface 
@@ -816,13 +1027,24 @@ module mod_radiative_cooling
       fl%Tfix=.false.
       fl%rc_split=.false.
       fl%rad_cut=.false.
-      fl%rad_cut_hgt=0.5d0
+      fl%rad_cut_hgt=0.0d0
       fl%rad_cut_dey=0.15d0
-      fl%rad_modify=.false.
-      fl%rad_taper_rho=bigdouble
-      fl%rad_taper_dey=1.0d0
       fl%rho_cap=bigdouble
+      fl%rad_modify=.false.
+      fl%rad_modify_sym=.false.
+      fl%rad_taper_rho=bigdouble
+      fl%rad_taper_dey=0.0d0
       call read_params(fl)
+
+      ! Build Voigt escape lookup table if needed (once, shared across fluids)
+      if(fl%rad_escape_prob .and. fl%rad_escape_type == 'voigt') then
+        call voigt_escape_init_table()
+        if(mype == 0) then
+          write(*,'(A,I0,A,ES9.2,A,F4.1,A)') &
+            ' Voigt escape table: ', n_voigt_table, ' points, a_ref=', &
+            voigt_a_ref, ', x_max=', voigt_xmax, ' Doppler widths'
+        end if
+      end if
 
       if(fl%rc_split) any_source_split=.true.
 
@@ -1257,6 +1479,7 @@ module mod_radiative_cooling
 
       double precision :: etherm(ixI^S), rho(ixI^S), Rfactor(ixI^S)
       double precision :: L1,Te(ixI^S), pth(ixI^S), lum(ixI^S)
+      double precision :: taper
       integer :: ix^D
       !
       ! Limit timestep to avoid cooling problems when using explicit cooling
@@ -1265,15 +1488,15 @@ module mod_radiative_cooling
         call fl%get_pthermal(w,x,ixI^L,ixO^L,pth)
         call fl%get_rho(w,x,ixI^L,ixO^L,rho)
         call fl%get_Te(w,x,ixI^L,ixO^L,Te)
-        
+
         ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
         {do ix^DB = ixO^LIM^DB\}
           !  Determine explicit cooling
-          !  If temperature is below floor level, no cooling. 
+          !  If temperature is below floor level, no cooling.
           !  Stop wasting time and go to next gridpoint.
           !  If the temperature is higher than the maximum,
           !  assume Bremsstrahlung
-          if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+          if( Te(ix^D)<=fl%tcoolmin ) then
              L1 = zero
           else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1, fl)
@@ -1282,6 +1505,8 @@ module mod_radiative_cooling
              call findL(Te(ix^D),L1,fl)
              L1 = L1*rho(ix^D)**2
           end if
+          call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+          L1 = L1 * taper
           lum(ix^D) = L1
         {end do\}
         etherm(ixO^S)=pth(ixO^S)*invgam
@@ -1304,6 +1529,7 @@ module mod_radiative_cooling
 
       double precision :: pth(ixI^S),rho(ixI^S)
       double precision :: L1,Te(ixI^S),Rfactor(ixI^S)
+      double precision :: taper
       integer :: ix^D
 
       ! call fl%get_pthermal(w,x,ixI^L,ixO^L,pth)
@@ -1314,7 +1540,7 @@ module mod_radiative_cooling
 
       {do ix^DB = ixO^LIM^DB\}
          ! Determine explicit cooling
-         if(Te(ix^D) <= fl%tcoolmin .or. rho(ix^D)>fl%rho_cap) then
+         if(Te(ix^D) <= fl%tcoolmin) then
            L1 = zero
          else if(Te(ix^D) >= fl%tcoolmax)then
            call calc_l_extended(Te(ix^D),L1,fl)
@@ -1323,12 +1549,8 @@ module mod_radiative_cooling
            call findL(Te(ix^D),L1,fl)
            L1 = L1*rho(ix^D)**2
          end if
-         if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-           L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-         end if
-         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
-           L1 = L1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-         end if
+         call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+         L1 = L1 * taper
          coolrate(ix^D) = L1
       {end do\}
     end subroutine getvar_cooling
@@ -1339,6 +1561,7 @@ module mod_radiative_cooling
     ! The TEF must be known, so this routine can only be used
     ! together with the "exact" cooling method.
       use mod_global_parameters
+      use mod_eos, only: eos, p2eint_from_nH_p
 
       integer, intent(in)           :: ixI^L, ixO^L
       double precision, intent(in)  :: qdt, x(ixI^S, 1:ndim), wCT(ixI^S, 1:nw)
@@ -1348,6 +1571,10 @@ module mod_radiative_cooling
       double precision              :: y1, y2, l1, tlocal2
       double precision              :: Te(ixI^S), pnew(ixI^S), rho(ixI^S), rhonew(ixI^S)
       double precision              :: emin, Lmax, fact, Rfactor(ixI^S), pth(ixI^S)
+      double precision              :: taper
+      ! LTE+IonE variables
+      double precision              :: nH_val, log_nH, log_p_nH
+      double precision              :: eint_current, gamma_eff_m1
       integer                       :: ix^D
 
       ! Check cooling method
@@ -1368,11 +1595,19 @@ module mod_radiative_cooling
 
       {do ix^DB = ixO^LIM^DB\}
          emin = rhonew(ix^D) * fl%tlow * Rfactor(ix^D) * invgam
-         lmax = max(zero, ( pnew(ix^D)*invgam - emin ) / qdt)
+         if (eos%ionE) then
+           nH_val = rhonew(ix^D) / eos%nH2rhoFactor
+           log_nH = dlog10(nH_val)
+           log_p_nH = dlog10(pnew(ix^D) / nH_val)
+           eint_current = pnew(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+           lmax = max(zero, (eint_current - emin) / qdt)
+         else
+           lmax = max(zero, ( pnew(ix^D)*invgam - emin ) / qdt)
+         end if
 
          ! No cooling if temperature is below floor level.
          ! Assuming Bremsstrahlung if temperature is higher than maximum.
-         if( Te(ix^D)<= fl%tcoolmin .or. rho(ix^D)>fl%rho_cap) then
+         if( Te(ix^D)<= fl%tcoolmin) then
            l1 = zero
          else if( Te(ix^D)>= fl%tcoolmax ) then
            call calc_l_extended(Te(ix^D), l1, fl)
@@ -1380,21 +1615,22 @@ module mod_radiative_cooling
            l1 = min(l1, lmax)
          else
            call findY(Te(ix^D), y1, fl)
-           y2   = y1 +  fact * rho(ix^D)*rc_gamma_1
+           if (eos%ionE) then
+             gamma_eff_m1 = pnew(ix^D) / eint_current
+             y2 = y1 + fact * rho(ix^D) * gamma_eff_m1
+           else
+             y2 = y1 + fact * rho(ix^D)*rc_gamma_1
+           end if
            call findT(tlocal2, y2, fl)
            if( tlocal2 <= fl%tcoolmin ) then
              l1 = lmax
            else
-             l1 = (Te(ix^D)- tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam/qdt !> This is going to need to be changed for the LTE module
+             l1 = (Te(ix^D)- tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam/qdt
            end if
            l1 = min(l1, lmax)
          end if
-         if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-           l1 = l1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-         end if
-         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
-           l1 = l1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-         end if
+         call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+         l1 = l1 * taper
         coolrate(ix^D) = l1
       {end do\}
     end subroutine getvar_cooling_exact
@@ -1465,10 +1701,72 @@ module mod_radiative_cooling
       {end do\}
     end subroutine floortemperature
 
-    subroutine get_cool_equi(qdt,ixI^L,ixO^L,wCT,w,x,fl,res)!> This is going to need revisiting in LTE
-    ! explicit cooling routine that depends on getdt to 
+    subroutine radiative_cooling_taper(ix^D, x_ndim, rho_val, Te_val, fl, factor)
+      !> Compute multiplicative taper factor for radiative cooling.
+      !> Returns 1.0 when no tapering applies; < 1.0 near boundaries,
+      !> at high density, or in optically thick regions (escape probability).
+      use mod_global_parameters
+      integer, intent(in) :: ix^D
+      double precision, intent(in) :: x_ndim, rho_val, Te_val
+      type(rc_fluid), intent(in) :: fl
+      double precision, intent(out) :: factor
+      double precision :: d_boundary, tau, kappa_local
+
+      factor = 1.0d0
+
+      ! Spatial + density taper (existing)
+      if(slab_uniform .and. fl%rad_modify) then
+        ! Spatial taper: distance from nearest relevant boundary
+        if(fl%rad_modify_sym) then
+          d_boundary = min(x_ndim - xprobmin^ND, xprobmax^ND - x_ndim)
+        else
+          d_boundary = x_ndim - xprobmin^ND
+        end if
+        if(d_boundary .le. fl%rad_cut_hgt) then
+          factor = factor * exp(-((d_boundary - fl%rad_cut_hgt) / fl%rad_cut_dey)**2)
+        end if
+
+        ! Density taper
+        if(rho_val .gt. fl%rad_taper_rho) then
+          factor = factor * exp(-((rho_val - fl%rad_taper_rho) / fl%rad_taper_dey)**2)
+        end if
+      end if
+
+      ! Escape probability: cooling suppression by optical depth
+      ! kappa(T) = kappa_0 / (1 + (T/T_cutoff)^alpha) — sigmoid cutoff
+      if(fl%rad_escape_prob .and. fl%iw_colmass_ > 0) then
+        kappa_local = fl%rad_kappa_eff
+        if(fl%rad_kappa_Tcutoff > 0.0d0) then
+          kappa_local = kappa_local &
+            / (1.0d0 + (Te_val / fl%rad_kappa_Tcutoff)**fl%rad_kappa_alpha)
+        end if
+        tau = kappa_local * block%wextra(ix^D, fl%iw_colmass_)
+        if(tau > 1.0d-6) then
+          select case(fl%rad_escape_type)
+          case('slab')
+            ! Plane-parallel slab: beta(tau) = (1 - exp(-tau))/tau
+            factor = factor * (1.0d0 - exp(-tau)) / tau
+          case('voigt')
+            ! Frequency-integrated escape from a truncated Voigt profile
+            ! (CL12 Sec 2.1).  Precomputed lookup table; see voigt_escape_init_table.
+            factor = factor * voigt_escape_lookup(tau)
+          case default
+            call mpistop("Unknown rad_escape_type: use 'slab' or 'voigt'")
+          end select
+          ! Exponential cutoff at large tau: kills residual cooling
+          ! where rho^2 outpaces the escape function decay
+          if(fl%rad_escape_tau_cutoff > 0.0d0) then
+            factor = factor * exp(-tau / fl%rad_escape_tau_cutoff)
+          end if
+        end if
+      end if
+    end subroutine radiative_cooling_taper
+
+    subroutine get_cool_equi(qdt,ixI^L,ixO^L,wCT,w,x,fl,res)
+    ! explicit cooling routine that depends on getdt to
     ! adjust the timestep. Accurate but incredibly slow
       use mod_global_parameters
+      use mod_eos, only: eos, p2eint_from_nH_p
 
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(in)    :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw)
@@ -1481,6 +1779,10 @@ module mod_radiative_cooling
       double precision :: emin, Lmax
       double precision :: Y1, Y2
       double precision :: de, emax,fact
+      double precision :: taper
+      ! LTE+IonE variables
+      double precision :: nH_val, log_nH, log_p_nH
+      double precision :: eint_current, gamma_eff_m1
       integer :: ix^D
 
       call fl%get_pthermal_equi(wCT,x,ixI^L,ixO^L,pth)
@@ -1496,14 +1798,23 @@ module mod_radiative_cooling
         fact = fl%lref*qdt/fl%tref
         {do ix^DB = ixO^LIM^DB\}
            emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
-           Lmax = max(zero,(pth(ix^D)*invgam-emin)/qdt)
-           emax = max(zero, pth(ix^D)*invgam-emin)
+           if (eos%ionE) then
+             nH_val = rho(ix^D) / eos%nH2rhoFactor
+             log_nH = dlog10(nH_val)
+             log_p_nH = dlog10(pth(ix^D) / nH_val)
+             eint_current = pth(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+             Lmax = max(zero, (eint_current - emin) / qdt)
+             emax = max(zero, eint_current - emin)
+           else
+             Lmax = max(zero,(pth(ix^D)*invgam-emin)/qdt)
+             emax = max(zero, pth(ix^D)*invgam-emin)
+           end if
            !  Determine explicit cooling
-           !  If temperature is below floor level, no cooling. 
+           !  If temperature is below floor level, no cooling.
            !  Stop wasting time and go to next gridpoint.
            !  If the temperature is higher than the maximum,
            !  assume Bremsstrahlung
-           if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+           if( Te(ix^D)<=fl%tcoolmin ) then
              ! res already initialised to 0d0 above; no cooling
            else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1,fl)
@@ -1517,7 +1828,12 @@ module mod_radiative_cooling
              res(ix^D) = L1*qdt
            else
              call findY(Te(ix^D),Y1,fl)
-             Y2 = Y1 + fact * rho(ix^D)*rc_gamma_1
+             if (eos%ionE) then
+               gamma_eff_m1 = pth(ix^D) / eint_current
+               Y2 = Y1 + fact * rho(ix^D) * gamma_eff_m1
+             else
+               Y2 = Y1 + fact * rho(ix^D)*rc_gamma_1
+             end if
              call findT(Tlocal2,Y2,fl)
              if(Tlocal2<=fl%tcoolmin) then
                de = emax
@@ -1532,17 +1848,27 @@ module mod_radiative_cooling
              de = min(de,emax)
              res(ix^D) = de
            end if
+           call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+           res(ix^D) = res(ix^D) * taper
         {end do\}
       else
         {do ix^DB = ixO^LIM^DB\}
            emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
-           Lmax = max(zero,pth(ix^D)*invgam-emin)/qdt
+           if (eos%ionE) then
+             nH_val = rho(ix^D) / eos%nH2rhoFactor
+             log_nH = dlog10(nH_val)
+             log_p_nH = dlog10(pth(ix^D) / nH_val)
+             eint_current = pth(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+             Lmax = max(zero, (eint_current - emin) / qdt)
+           else
+             Lmax = max(zero,pth(ix^D)*invgam-emin)/qdt
+           end if
            !  Determine explicit cooling
            !  If temperature is below floor level, no cooling.
            !  Stop wasting time and go to next gridpoint.
            !  If the temperature is higher than the maximum,
            !  assume Bremsstrahlung
-           if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+           if( Te(ix^D)<=fl%tcoolmin ) then
              L1 = zero
            else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1,fl)
@@ -1556,6 +1882,8 @@ module mod_radiative_cooling
              end if
            end if
            L1 = min(L1,Lmax)
+           call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+           L1 = L1 * taper
            res(ix^D) = L1*qdt
         {end do\}
      end if
@@ -1574,6 +1902,7 @@ module mod_radiative_cooling
       double precision :: L1,pth(ixI^S),pnew(ixI^S),rho(ixI^S),Rfactor(ixI^S)
       double precision :: Te(ixI^S)
       double precision :: emin, Lmax
+      double precision :: taper
       integer :: ix^D
 
       call fl%get_pthermal(wCT,x,ixI^L,ixO^L,pth)
@@ -1587,11 +1916,11 @@ module mod_radiative_cooling
          emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
          Lmax = max(zero,pnew(ix^D)*invgam-emin)/qdt
          !  Determine explicit cooling
-         !  If temperature is below floor level, no cooling. 
+         !  If temperature is below floor level, no cooling.
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremsstrahlung
-         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+         if( Te(ix^D)<=fl%tcoolmin ) then
            L1 = zero
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), L1,fl)
@@ -1612,12 +1941,8 @@ module mod_radiative_cooling
            end if
            L1 = min(L1,Lmax)
          end if
-         if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-           L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-         end if
-         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
-           L1 = L1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-         end if
+         call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+         L1 = L1 * taper
          w(ix^D,fl%e_) = w(ix^D,fl%e_)-L1*qdt
       {end do\}
     end subroutine cool_explicit1
@@ -1638,6 +1963,7 @@ module mod_radiative_cooling
       double precision :: L1,pth(ixI^S),pnew(ixI^S),rho(ixI^S),Rfactor(ixI^S)
       double precision :: Tlocal1,plocal,Te(ixI^S)
       double precision :: emin, Lmax
+      double precision :: taper
       integer :: idt,ndtstep
       integer :: ix^D
 
@@ -1659,7 +1985,7 @@ module mod_radiative_cooling
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremmstrahlung
-         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+         if( Te(ix^D)<=fl%tcoolmin ) then
            Ltest = zero
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), Ltest,fl)
@@ -1694,7 +2020,7 @@ module mod_radiative_cooling
            Lmax   = max(zero,etherm-emin)/dtstep
            !  Tlocal = P/(rho*R)
            Tlocal1 = plocal/(rho(ix^D)*Rfactor(ix^D))
-           if( Tlocal1<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+           if( Tlocal1<=fl%tcoolmin ) then
              L1 = zero
              exit
            else if( Tlocal1>=fl%tcoolmax )then
@@ -1719,12 +2045,8 @@ module mod_radiative_cooling
            de     = de + L1*dtstep
            etherm = etherm - L1*dtstep
          end do
-         if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-           de = de*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-         end if
-         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
-           de = de*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-         end if
+         call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+         de = de * taper
          w(ix^D,fl%e_) = w(ix^D,fl%e_) -de
       {end do\}
     end subroutine cool_explicit2
@@ -1741,6 +2063,7 @@ module mod_radiative_cooling
       double precision :: etemp
       double precision :: emin, Lmax
       double precision :: pth(ixI^S),pnew(ixI^S),rho(ixI^S),Rfactor(ixI^S),Te(ixI^S)
+      double precision :: taper
       integer :: ix^D
 
       call fl%get_pthermal(wCT,x,ixI^L,ixO^L,pth)
@@ -1759,7 +2082,7 @@ module mod_radiative_cooling
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremsstrahlung
-         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+         if( Te(ix^D)<=fl%tcoolmin ) then
            ! no cooling
          else
            if( Te(ix^D)>=fl%tcoolmax ) then
@@ -1789,14 +2112,9 @@ module mod_radiative_cooling
                L2=L2*sqrt((Tlocal2/block%wextra(ix^D,fl%Tcoff_))**5)
              end if
            end if
-           if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-             L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-             L2 = L2*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-           end if
-           if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
-             L1 = L1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-             L2 = L2*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-           end if
+           call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+           L1 = L1 * taper
+           L2 = L2 * taper
            w(ix^D,fl%e_) = w(ix^D,fl%e_) - min(half*(L1+L2),Lmax)*qdt
          end if
       {end do\}
@@ -1813,6 +2131,7 @@ module mod_radiative_cooling
       double precision :: Ltemp,Tnew,f1,f2,pth(ixI^S), pnew(ixI^S), rho(ixI^S), Rfactor(ixI^S)
       double precision :: elocal, Te(ixI^S)
       double precision :: emin, Lmax, eold, enew, estep
+      double precision :: taper
       double precision, parameter :: e_error = 1.0D-6
       integer, parameter :: maxiter = 100
       integer :: ix^D, j
@@ -1833,7 +2152,7 @@ module mod_radiative_cooling
          !  Stop wasting time and go to next gridpoint.
          !  If the temperature is higher than the maximum,
          !  assume Bremsstrahlung
-         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+         if( Te(ix^D)<=fl%tcoolmin ) then
            Ltemp = zero
          else
            eold  = elocal
@@ -1866,12 +2185,8 @@ module mod_radiative_cooling
              enew = enew +estep
            end do
          end if
-         if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-           Ltemp = Ltemp*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-         end if
-         if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
-           Ltemp = Ltemp*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-         end if
+         call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+         Ltemp = Ltemp * taper
          w(ix^D,fl%e_) = w(ix^D,fl%e_) - min(Ltemp,Lmax)*qdt
       {end do\}
     end subroutine cool_implicit
@@ -1879,6 +2194,8 @@ module mod_radiative_cooling
     subroutine cool_exact(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,fl)
     !  Cooling routine using exact integration method from Townsend 2009
       use mod_global_parameters
+      use mod_eos, only: eos, p2eint_from_nH_p
+      use mod_physics, only: phys_get_ei
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(in)    :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw), wCTprim(ixI^S,1:nw)
       double precision, intent(inout) :: w(ixI^S,1:nw)
@@ -1888,34 +2205,39 @@ module mod_radiative_cooling
       double precision :: rho(ixI^S), Te(ixI^S), rhonew(ixI^S), Rfactor(ixI^S)
       double precision :: emin, Lmax, fact
       double precision :: de, emax
+      double precision :: taper
+      ! LTE+IonE variables
+      double precision :: nH_val, log_nH, log_p_nH
+      double precision :: eint_current, gamma_eff_m1
+      double precision :: eint_w(ixI^S)  ! actual internal energy from conserved state
       integer :: ix^D
 
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
       call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
-      ! if(phys_equi_pe) then
-      !   ! need pressure splitting
-      !   call fl%get_pthermal(wCT,x,ixI^L,ixO^L,Te)
-      !   Te(ixO^S)=Te(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
-      ! else
-      !   Te(ixO^S)=wCTprim(ixO^S,iw_e)/(rho(ixO^S)*Rfactor(ixO^S))
-      ! end if
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(w,x,ixI^L,ixO^L,rhonew)
-      
+      if (eos%ionE) eint_w(ixO^S) = phys_get_ei(w, ixI^L, ixO^L)
 
       fact = fl%lref*qdt/fl%tref
 
       {do ix^DB = ixO^LIM^DB\}
+         ! Energy floor: always use FI formula (generous safety margin at low T
+         ! where ionE floor would be ~2x lower due to neutral vs FI mean mol. weight)
          emin = rhonew(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
-         Lmax = max(zero,pnew(ix^D)*invgam-emin)/qdt
-         emax = max(zero,pnew(ix^D)*invgam-emin)
-         !  Determine explicit cooling
-         !  If temperature is below floor level, no cooling.
-         !  Stop wasting time and go to next gridpoint.
-         !  If the temperature is higher than the maximum,
-         !  assume Bremsstrahlung
-         if( Te(ix^D)<=fl%tcoolmin .or. rho(ix^D)>fl%rho_cap ) then
+         if (eos%ionE) then
+           ! LTE+IonE: EoS quantities for Y-advance; cap from conserved state
+           nH_val = rhonew(ix^D) / eos%nH2rhoFactor
+           log_nH = dlog10(nH_val)
+           log_p_nH = dlog10(pnew(ix^D) / nH_val)
+           eint_current = pnew(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+           Lmax = max(zero, eint_w(ix^D) - emin) / qdt
+           emax = max(zero, eint_w(ix^D) - emin)
+         else
+           Lmax = max(zero,pnew(ix^D)*invgam-emin)/qdt
+           emax = max(zero,pnew(ix^D)*invgam-emin)
+         end if
+         if( Te(ix^D)<=fl%tcoolmin ) then
            ! no cooling
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), L1,fl)
@@ -1926,20 +2248,24 @@ module mod_radiative_cooling
              end if
            end if
            L1 = min(L1,Lmax)
-           if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-             L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-           end if
-           if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
-             L1 = L1*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-           end if
+           call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+           L1 = L1 * taper
            w(ix^D,fl%e_) = w(ix^D,fl%e_)-L1*qdt
          else
            call findY(Te(ix^D),Y1,fl)
-           Y2 = Y1 + fact*rho(ix^D)*rc_gamma_1
+           if (eos%ionE) then
+             gamma_eff_m1 = pnew(ix^D) / eint_current
+             Y2 = Y1 + fact*rho(ix^D)*gamma_eff_m1
+           else
+             Y2 = Y1 + fact*rho(ix^D)*rc_gamma_1
+           end if
            call findT(Tlocal2,Y2,fl)
            if(Tlocal2<=fl%tcoolmin) then
              de = emax
            else
+             ! Use FI formula for de in both paths: safe, avoids ionization energy
+             ! overshoot. The ionE Y-advance (gamma_eff_m1) already gives the correct
+             ! temperature drop; FI de formula is conservative in ionization zone.
              de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
            end if
            if(phys_trac) then
@@ -1948,12 +2274,8 @@ module mod_radiative_cooling
              end if
            end if
            de = min(de,emax)
-           if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-             de = de*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-           end if
-           if(fl%rad_modify .and. rho(ix^D) > fl%rad_taper_rho) then
-             de = de*dexp(-(rho(ix^D) - fl%rad_taper_rho) / fl%rad_taper_dey)
-           end if
+           call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
+           de = de * taper
            w(ix^D,fl%e_) = w(ix^D,fl%e_)-de
          end if
       {end do\}
@@ -2044,13 +2366,20 @@ module mod_radiative_cooling
       else
         lgtp = dlog10(tpoint)
         jl = int((lgtp - fl%lgtcoolmin) / fl%lgstep) + 1
+        ! Bounds check: jl must satisfy 1 <= jl <= ncool-1 so jl+1 <= ncool
+        if(jl < 1 .or. jl >= fl%ncool) then
+          write(*,'(a,es14.6,a,i0,a,2es14.6)') &
+            'findY: tpoint=',tpoint,' jl=',jl,' out of bounds [1,ncool-1]; tcoolmin/max=', &
+            fl%tcoolmin,fl%tcoolmax
+          call mpistop('findY: temperature index out of bounds')
+        end if
         Ypoint = fl%Yc(jl)+ (tpoint-fl%tcool(jl)) &
                   * (fl%Yc(jl+1)-fl%Yc(jl)) &
                   / (fl%tcool(jl+1)-fl%tcool(jl))
       end if
 
   !    integer i
-  !    
+  !
   !    if (tpoint == tcoolmin) then
   !      Ypoint = Yc(1)
   !    else if (tpoint == tcoolmax) then

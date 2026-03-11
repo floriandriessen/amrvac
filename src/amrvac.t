@@ -23,6 +23,7 @@ program amrvac
   use mod_trac, only: initialize_trac_after_settree
   use mod_convert_files, only: generate_plotfile
   use mod_comm_lib, only: comm_start, comm_finalize,mpistop
+  use mod_escape_probability, only: escape_prob_compute_colmass
 
 
   double precision :: time0, time_in
@@ -312,6 +313,9 @@ contains
 
        ! exit time loop if time is up
        if (it>=it_max .or. global_time>=time_max .or. pass_wall_time .or. final_dt_exit) exit time_evol
+
+       ! Pre-compute column mass for escape probability cooling modification
+       if(phys_escape_prob) call escape_prob_compute_colmass()
 
        ! solving equations
        call advance(it)

@@ -27,6 +27,7 @@ amrvac.o: mod_convert.mod
 amrvac.o: mod_convert_files.mod
 amrvac.o: mod_dt.mod
 amrvac.o: mod_eos.mod
+amrvac.o: mod_escape_probability.mod
 amrvac.o: mod_fix_conserve.mod
 amrvac.o: mod_forest.mod
 amrvac.o: mod_ghostcells_update.mod
@@ -181,6 +182,9 @@ mod_errest.o: mod_forest.mod
 mod_errest.o: mod_global_parameters.mod
 mod_errest.o: mod_physics.mod
 mod_errest.o: mod_usr_methods.mod
+mod_escape_probability.o: mod_connectivity.mod
+mod_escape_probability.o: mod_global_parameters.mod
+mod_escape_probability.o: mod_variables.mod
 mod_finite_difference.o: mod_comm_lib.mod
 mod_finite_difference.o: mod_finite_volume.mod
 mod_finite_difference.o: mod_global_parameters.mod
@@ -256,6 +260,7 @@ mod_hd_phys.o: mod_comm_lib.mod
 mod_hd_phys.o: mod_constants.mod
 mod_hd_phys.o: mod_dust.mod
 mod_hd_phys.o: mod_eos.mod
+mod_hd_phys.o: mod_escape_probability.mod
 mod_hd_phys.o: mod_fix_conserve.mod
 mod_hd_phys.o: mod_geometry.mod
 mod_hd_phys.o: mod_global_parameters.mod
@@ -413,6 +418,7 @@ mod_point_searching.o: mod_physics.mod
 mod_ppm.o: mod_global_parameters.mod
 mod_ppm.o: mod_physics.mod
 mod_radiative_cooling.o: mod_comm_lib.mod
+mod_radiative_cooling.o: mod_eos.mod
 mod_radiative_cooling.o: mod_global_parameters.mod
 mod_radiative_cooling.o: mod_physics.mod
 mod_random_heating.o: mod_comm_lib.mod
