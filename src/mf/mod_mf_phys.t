@@ -72,9 +72,6 @@ module mod_mf_phys
   !> Whether divB cleaning sources are added splitting from fluid solver
   logical, public, protected              :: source_split_divb = .false.
 
-  !> MHD fourth order
-  logical, public, protected              :: mf_4th_order = .false.
-
   !> set to true if need to record electric field on cell edges
   logical, public, protected              :: mf_record_electric_field = .false.
 
@@ -129,7 +126,7 @@ contains
     namelist /mf_list/ mf_nu, mf_vmax, mf_decay_scale, &
       mf_eta, mf_eta_hyper, mf_glm_alpha, mf_particles,&
       particles_eta, mf_record_electric_field,&
-      mf_4th_order, typedivbfix, source_split_divb, divbdiff,&
+      typedivbfix, source_split_divb, divbdiff,&
       typedivbdiff, type_ct, compactres, divbwave, He_abundance, SI_unit, &
       Bdip, Bquad, Boct, Busr, clean_initial_divb, &
       boundary_divbfix, boundary_divbfix_skip, mf_divb_nth
@@ -844,11 +841,7 @@ contains
     integer :: lxO^L, kxO^L
 
     ! Calculating resistive sources involve one extra layer
-    if (mf_4th_order) then
       ixA^L=ixO^L^LADD2;
-    else
-      ixA^L=ixO^L^LADD1;
-    end if
 
     if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
          call mpistop("Error in add_source_res1: Non-conforming input limits")
@@ -872,7 +865,6 @@ contains
 
     do idir=1,ndir
        ! Put B_idir into tmp2 and eta*Laplace B_idir into tmp
-       if (mf_4th_order) then
          tmp(ixO^S)=zero
          tmp2(ixI^S)=Bf(ixI^S,idir)
          do idim=1,ndim
@@ -884,16 +876,6 @@ contains
                  (-tmp2(lxO^S)+16.0d0*tmp2(jxO^S)-30.0d0*tmp2(ixO^S)+16.0d0*tmp2(hxO^S)-tmp2(kxO^S)) &
                  /(12.0d0 * dxlevel(idim)**2)
          end do
-       else
-         tmp(ixO^S)=zero
-         tmp2(ixI^S)=Bf(ixI^S,idir)
-         do idim=1,ndim
-            jxO^L=ixO^L+kr(idim,^D);
-            hxO^L=ixO^L-kr(idim,^D);
-            tmp(ixO^S)=tmp(ixO^S)+&
-                 (tmp2(jxO^S)-2.0d0*tmp2(ixO^S)+tmp2(hxO^S))/dxlevel(idim)**2
-         end do
-       end if
 
        ! Multiply by eta
        tmp(ixO^S)=tmp(ixO^S)*eta(ixO^S)

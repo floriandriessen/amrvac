@@ -239,7 +239,6 @@ contains
 
     phys_get_dt              => hd_get_dt
     phys_get_cmax            => hd_get_cmax
-    phys_get_a2max           => hd_get_a2max
     phys_get_tcutoff         => hd_get_tcutoff
     phys_get_cbounds         => hd_get_cbounds
     phys_get_flux            => hd_get_flux
@@ -804,28 +803,6 @@ contains
       call dust_get_cmax_prim(w, x, ixI^L, ixO^L, idim, cmax)
     end if
   end subroutine hd_get_cmax
-
-  subroutine hd_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
-
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nw)=dabs(-w(kxO^S,1:nw)+16.d0*w(jxO^S,1:nw)&
-        -30.d0*w(ixO^S,1:nw)+16.d0*w(hxO^S,1:nw)-w(gxO^S,1:nw))
-      a2max(i)=maxval(a2(ixO^S,i,1:nw))/12.d0/dxlevel(i)**2
-    end do
-  end subroutine hd_get_a2max
 
   !> get adaptive cutoff temperature for TRAC (Johnston 2019 ApJL, 873, L22)
   subroutine hd_get_tcutoff(ixI^L,ixO^L,w,x,tco_local,Tmax_local)

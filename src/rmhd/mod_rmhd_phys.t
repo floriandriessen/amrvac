@@ -130,8 +130,6 @@ module mod_rmhd_phys
   logical, public, protected              :: rmhd_partial_ionization = .false.
   !> Whether CAK radiation line force is activated
   logical, public, protected              :: rmhd_cak_force = .false.
-  !> MHD fourth order
-  logical, public, protected              :: rmhd_4th_order = .false.
   !> whether split off equilibrium density
   logical, public :: has_equi_rho0 = .false.
   !> whether split off equilibrium thermal pressure
@@ -234,7 +232,7 @@ contains
     namelist /rmhd_list/ rmhd_energy, rmhd_n_tracer, rmhd_gamma, rmhd_adiab,&
       rmhd_eta, rmhd_eta_hyper, rmhd_etah, rmhd_glm_alpha, rmhd_glm_extended,&
       rmhd_thermal_conduction, rmhd_gravity,&
-      rmhd_viscosity, rmhd_4th_order, typedivbfix, source_split_divb, divbdiff,&
+      rmhd_viscosity, typedivbfix, source_split_divb, divbdiff,&
       typedivbdiff, type_ct, compactres, divbwave, He_abundance,&
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,rmhd_dump_full_vars,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr, rmhd_particles, rmhd_partial_ionization,&
@@ -499,7 +497,6 @@ contains
     phys_get_rho             => rmhd_get_rho
     phys_get_dt              => rmhd_get_dt
     phys_get_cmax            => rmhd_get_cmax_origin
-    phys_get_a2max           => rmhd_get_a2max
     phys_get_tcutoff         => rmhd_get_tcutoff
     phys_get_H_speed         => rmhd_get_H_speed
     if(has_equi_rho0) then
@@ -1451,27 +1448,6 @@ contains
      {end do\}
     end if
   end subroutine rmhd_get_cmax_origin
-
-  subroutine rmhd_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(in)    :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
-
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nw)=abs(-w(kxO^S,1:nw)+16.d0*w(jxO^S,1:nw)&
-         -30.d0*w(ixO^S,1:nw)+16.d0*w(hxO^S,1:nw)-w(gxO^S,1:nw))
-      a2max(i)=maxval(a2(ixO^S,i,1:nw))/12.d0/dxlevel(i)**2
-    end do
-  end subroutine rmhd_get_a2max
 
   !> get adaptive cutoff temperature for TRAC (Johnston 2019 ApJL, 873, L22)
   subroutine rmhd_get_tcutoff(ixI^L,ixO^L,w,x,Tco_local,Tmax_local)
@@ -2935,11 +2911,7 @@ contains
     double precision :: gradeta(ixI^S,1:ndim), Bf(ixI^S,1:ndir)
 
     ! Calculating resistive sources involve one extra layer
-    if (rmhd_4th_order) then
       ixA^L=ixO^L^LADD2;
-    else
-      ixA^L=ixO^L^LADD1;
-    end if
     if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
          call mpistop("Error in add_source_res1: Non-conforming input limits")
     ! Calculate current density and idirmin
@@ -2962,7 +2934,6 @@ contains
     end if
     do idir=1,ndir
        ! Put B_idir into tmp2 and eta*Laplace B_idir into tmp
-       if (rmhd_4th_order) then
          tmp(ixO^S)=zero
          tmp2(ixI^S)=Bf(ixI^S,idir)
          do idim=1,ndim
@@ -2974,16 +2945,6 @@ contains
                  (-tmp2(lxO^S)+16.0d0*tmp2(jxO^S)-30.0d0*tmp2(ixO^S)+16.0d0*tmp2(hxO^S)-tmp2(kxO^S)) &
                  /(12.0d0 * dxlevel(idim)**2)
          end do
-       else
-         tmp(ixO^S)=zero
-         tmp2(ixI^S)=Bf(ixI^S,idir)
-         do idim=1,ndim
-            jxO^L=ixO^L+kr(idim,^D);
-            hxO^L=ixO^L-kr(idim,^D);
-            tmp(ixO^S)=tmp(ixO^S)+&
-                 (tmp2(jxO^S)-2.0d0*tmp2(ixO^S)+tmp2(hxO^S))/dxlevel(idim)**2
-         end do
-       end if
        ! Multiply by eta
        tmp(ixO^S)=tmp(ixO^S)*eta(ixO^S)
        ! Subtract grad(eta) x J = eps_ijk d_j eta J_k if eta is non-constant

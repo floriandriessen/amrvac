@@ -310,7 +310,6 @@ contains
 
     phys_get_dt              => ffhd_get_dt
     phys_get_cmax            => ffhd_get_cmax_origin
-    phys_get_a2max           => ffhd_get_a2max
     phys_get_tcutoff         => ffhd_get_tcutoff
     phys_get_cbounds         => ffhd_get_cbounds
     phys_to_primitive        => ffhd_to_primitive_origin
@@ -841,31 +840,6 @@ contains
     cmax(ixO^S)=dabs(wprim(ixO^S,mom(1))*block%B0(ixO^S,idim,0))+cmax(ixO^S)
 
   end subroutine ffhd_get_cmax_origin
-
-  subroutine ffhd_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-    use mod_geometry
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
-
-    if(.not.slab_uniform)then
-       call mpistop("subroutine get_a2max in mod_ffhd_phys adopts cartesian setting")
-    endif
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nw)=dabs(-w(kxO^S,1:nw)+16.d0*w(jxO^S,1:nw)&
-         -30.d0*w(ixO^S,1:nw)+16.d0*w(hxO^S,1:nw)-w(gxO^S,1:nw))
-      a2max(i)=maxval(a2(ixO^S,i,1:nw))/12.d0/dxlevel(i)**2
-    end do
-  end subroutine ffhd_get_a2max
 
   subroutine ffhd_get_tcutoff(ixI^L,ixO^L,w,x,Tco_local,Tmax_local)
     use mod_global_parameters

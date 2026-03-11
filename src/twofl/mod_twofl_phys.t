@@ -84,9 +84,6 @@ module mod_twofl_phys
   !> taking values within [0, 1]
   double precision, public                :: twofl_glm_alpha = 0.5d0
 
-  !> MHD fourth order
-  logical, public, protected              :: twofl_4th_order = .false.
-
   !> Index of the density (in the w array)
   integer, public             :: rho_c_
 
@@ -291,7 +288,7 @@ contains
     namelist /twofl_list/ twofl_eq_energy, twofl_gamma, twofl_adiab,&
       twofl_eta, twofl_eta_hyper, twofl_etah, twofl_glm_alpha,& 
       twofl_thermal_conduction_c, use_twofl_tc_c, twofl_radiative_cooling_c, twofl_Hall, twofl_gravity,&
-      twofl_viscosity, twofl_4th_order, typedivbfix, source_split_divb, divbdiff,&
+      twofl_viscosity, typedivbfix, source_split_divb, divbdiff,&
       typedivbdiff, type_ct, divbwave, SI_unit, B0field,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr,twofl_equi_thermal_c,twofl_equi_thermal,&
       twofl_dump_full_vars, has_equi_rho_c0, has_equi_pe_c0, twofl_hyperdiffusivity,twofl_dump_hyperdiffusivity_coef,&
@@ -615,7 +612,6 @@ contains
 
     phys_get_dt              => twofl_get_dt
     phys_get_cmax            => twofl_get_cmax
-    phys_get_a2max           => twofl_get_a2max
     !phys_get_tcutoff         => twofl_get_tcutoff_c
     if(twofl_cbounds_species) then
       if (mype .eq. 0) print*, "Using different cbounds for each species nspecies = ", number_species
@@ -831,11 +827,7 @@ contains
     ! in getflux: assuming one additional ghost layer (two for FOURTHORDER) was
     ! added in nghostcells.
     if (twofl_hall) then
-       if (twofl_4th_order) then
-          phys_wider_stencil = 2
-       else
           phys_wider_stencil = 1
-       end if
     end if
 
     if(twofl_hyperdiffusivity) then
@@ -1841,28 +1833,6 @@ contains
             abs(w(ixO^S,mom_c(idim)))+cmax(ixO^S))
 
   end subroutine twofl_get_cmax
-
-  subroutine twofl_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
-
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nw)=abs(-w(kxO^S,1:nw)+16.d0*w(jxO^S,1:nw)&
-         -30.d0*w(ixO^S,1:nw)+16.d0*w(hxO^S,1:nw)-w(gxO^S,1:nw))
-      a2max(i)=maxval(a2(ixO^S,i,1:nw))/12.d0/dxlevel(i)**2
-    end do
-  end subroutine twofl_get_a2max
 
   ! COPIED from hd/moh_hd_phys
   !> get adaptive cutoff temperature for TRAC (Johnston 2019 ApJL, 873, L22)
@@ -3985,11 +3955,7 @@ contains
     double precision :: gradeta(ixI^S,1:ndim), Bf(ixI^S,1:ndir)
 
     ! Calculating resistive sources involve one extra layer
-    if (twofl_4th_order) then
       ixA^L=ixO^L^LADD2;
-    else
-      ixA^L=ixO^L^LADD1;
-    end if
 
     if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
          call mpistop("Error in add_source_res1: Non-conforming input limits")
@@ -4017,7 +3983,6 @@ contains
 
     do idir=1,ndir
        ! Put B_idir into tmp2 and eta*Laplace B_idir into tmp
-       if (twofl_4th_order) then
          tmp(ixO^S)=zero
          tmp2(ixI^S)=Bf(ixI^S,idir)
          do idim=1,ndim
@@ -4029,16 +3994,6 @@ contains
                  (-tmp2(lxO^S)+16.0d0*tmp2(jxO^S)-30.0d0*tmp2(ixO^S)+16.0d0*tmp2(hxO^S)-tmp2(kxO^S)) &
                  /(12.0d0 * dxlevel(idim)**2)
          end do
-       else
-         tmp(ixO^S)=zero
-         tmp2(ixI^S)=Bf(ixI^S,idir)
-         do idim=1,ndim
-            jxO^L=ixO^L+kr(idim,^D);
-            hxO^L=ixO^L-kr(idim,^D);
-            tmp(ixO^S)=tmp(ixO^S)+&
-                 (tmp2(jxO^S)-2.0d0*tmp2(ixO^S)+tmp2(hxO^S))/dxlevel(idim)**2
-         end do
-       end if
 
        ! Multiply by eta
        tmp(ixO^S)=tmp(ixO^S)*eta(ixO^S)

@@ -263,8 +263,7 @@ contains
          rk2_alfa,imex222_lambda,ssprk_order,rk3_switch,imex_switch,&
          small_temperature,small_pressure,small_density, &
          small_values_method, small_values_daverage, fix_small_values, check_small_values, &
-         trace_small_values, small_values_fix_iw, &
-         schmid_rad^D
+         trace_small_values, small_values_fix_iw
 
     namelist /boundlist/ nghostcells,ghost_copy,&
          internalboundary, typeboundary_^L, save_physical_boundary
@@ -473,7 +472,6 @@ contains
     else
       cada3_radius  = 0.1d0
     end if
-    {schmid_rad^D = 1.d0\}
     typetvd         = 'roe'
     typeboundspeed  = 'Einfeldt'
     source_split_usr= .false.
@@ -820,7 +818,6 @@ contains
 
     ! finite difference scheme fd need global maximal speed
     if(any(flux_scheme=='fd')) need_global_cmax=.true.
-    if(any(limiter=='schmid1')) need_global_a2max=.true.
 
     ! initialize type_curl
      select case (typecurl)

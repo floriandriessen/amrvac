@@ -179,8 +179,6 @@ contains
     ! dummy for now, no extra source terms precoded
     phys_add_source          => srhd_add_source
     phys_get_dt              => srhd_get_dt
-    ! copied in from HD/MHD, for certain limiters
-    phys_get_a2max           => srhd_get_a2max
 
     ! actual srhd routines
     phys_check_params        => srhd_check_params
@@ -625,29 +623,6 @@ contains
     cmax(ixO^S) = max(dabs(cmax(ixO^S)),dabs(cmin(ixO^S)))
 
   end subroutine srhd_get_cmax
-
-  subroutine srhd_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i
-
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nwflux)=dabs(-w(kxO^S,1:nwflux)+16.d0*w(jxO^S,1:nwflux)&
-        -30.d0*w(ixO^S,1:nwflux)+16.d0*w(hxO^S,1:nwflux)-w(gxO^S,1:nwflux))
-      a2max(i)=maxval(a2(ixO^S,i,1:nwflux))/12.d0/dxlevel(i)**2
-    end do
-
-  end subroutine srhd_get_a2max
 
   !> local version for recycling code when computing cmax-cmin
   subroutine srhd_get_cmax_loc(ixI^L,ixO^L,vidim,csound2,v2,cmax,cmin)

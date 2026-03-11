@@ -153,8 +153,6 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_partial_ionization = .false.
   !> Whether CAK radiation line force is activated
   logical, public, protected              :: mhd_cak_force = .false.
-  !> MHD fourth order
-  logical, public, protected              :: mhd_4th_order = .false.
   !> whether split off equilibrium density and pressure
   logical, public :: has_equi_rho_and_p = .false.
   logical, public :: mhd_equi_thermal = .false.
@@ -249,7 +247,7 @@ contains
     namelist /mhd_list/ mhd_energy, mhd_n_tracer, mhd_gamma, mhd_adiab,&
       mhd_eta, mhd_eta_hyper, mhd_etah, mhd_eta_ambi, mhd_glm_alpha, mhd_glm_extended, mhd_magnetofriction,&
       mhd_thermal_conduction, mhd_radiative_cooling, mhd_hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
-      mhd_rotating_frame,mhd_viscosity, mhd_4th_order, typedivbfix, source_split_divb, divbdiff,&
+      mhd_rotating_frame,mhd_viscosity, typedivbfix, source_split_divb, divbdiff,&
       typedivbdiff, type_ct, divbwave, He_abundance, &
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
@@ -522,7 +520,6 @@ contains
       ! hyperbolic thermal conduction flux q
       q_ = var_set_q()
       need_global_cmax=.true.
-      need_global_cs2 = .true.
     else
       q_=-1
     end if
@@ -617,7 +614,6 @@ contains
         phys_get_cmax            => mhd_get_cmax_origin_noe
       end if
     end if
-    phys_get_a2max           => mhd_get_a2max
     phys_get_tcutoff         => mhd_get_tcutoff
     phys_get_H_speed         => mhd_get_H_speed
     if(has_equi_rho_and_p) then
@@ -811,7 +807,6 @@ contains
         ! in cgs
         hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
       endif
-      phys_get_cs2            => mhd_get_csound2
     end if
 
     if(mhd_equi_thermal)then
@@ -955,9 +950,6 @@ contains
       call magnetofriction_init()
     end if
 
-    ! For Hall, we need one more reconstructed layer since currents are computed
-    ! in mhd_get_flux: assuming one additional ghost layer (two for FOURTHORDER) was
-    ! added in nghostcells.
     if(mhd_hall) then
       if(mhd_semirelativistic) then
         ! semirelativistic does not incorporate hall terms
@@ -967,11 +959,9 @@ contains
         ! normal unsplit case or split cases do not have geometric sources for Hall included
         call mpistop("Must have Cartesian coordinates for Hall")
       endif
-      if(mhd_4th_order) then
-        phys_wider_stencil = 2
-      else
-        phys_wider_stencil = 1
-      end if
+      ! For Hall, we need one more reconstructed layer since currents are computed
+      ! in mhd_get_flux: assuming one additional ghost layer added in nghostcells.
+      phys_wider_stencil = 1
     end if
 
     if(mhd_ambipolar) then
@@ -988,13 +978,8 @@ contains
       else
         mhd_ambipolar_exp=.true.
         ! For flux ambipolar term, we need one more reconstructed layer since currents are computed
-        ! in mhd_get_flux: assuming one additional ghost layer (two for FOURTHORDER) was
-        ! added in nghostcells.
-        if(mhd_4th_order) then
-          phys_wider_stencil = 2
-        else
-          phys_wider_stencil = 1
-        end if
+        ! in mhd_get_flux: assuming one additional ghost layer added in nghostcells.
+        phys_wider_stencil = 1
       end if
     end if
 
@@ -2735,29 +2720,6 @@ contains
    {end do\}
 
   end subroutine mhd_get_cmax_semirelati_noe
-
-  subroutine mhd_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
-
-    if(.not.slab_uniform) call mpistop("get_a2max uses CD4 for uniform cartesian mesh")
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nw)=abs(-w(kxO^S,1:nw)+16.d0*w(jxO^S,1:nw)&
-         -30.d0*w(ixO^S,1:nw)+16.d0*w(hxO^S,1:nw)-w(gxO^S,1:nw))
-      a2max(i)=maxval(a2(ixO^S,i,1:nw))/12.d0/dxlevel(i)**2
-    end do
-  end subroutine mhd_get_a2max
 
   !> get adaptive cutoff temperature for TRAC (Johnston 2019 ApJL, 873, L22)
   subroutine mhd_get_tcutoff(ixI^L,ixO^L,w,x,Tco_local,Tmax_local)
@@ -5488,8 +5450,8 @@ contains
   end subroutine add_source_hydrodynamic_e
 
   !> Add resistive source to w within ixO Uses 3 point stencil (1 neighbour) in
-  !> each direction, non-conservative. If the fourthorder flag is
-  !> set, uses fourth order central difference for the laplacian. Then the
+  !> each direction, non-conservative. Uses the generic Laplacian
+  !> with fourth order central difference (on uniform cartesian) for the laplacian. Then the
   !> stencil is 5 (2 neighbours). NOTE: Unused subroutine!
   subroutine add_source_res1(qdt,ixI^L,ixO^L,wCT,w,x)
     use mod_global_parameters
@@ -5500,21 +5462,17 @@ contains
     double precision, intent(in)    :: qdt
     double precision, intent(in) :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
-    integer :: ixA^L,idir,jdir,kdir,idirmin,idim,jxO^L,hxO^L,ix
-    integer :: lxO^L, kxO^L
 
+    integer :: ixA^L,idir,jdir,kdir,idirmin,idim
     double precision :: tmp(ixI^S),tmp2(ixI^S)
 
     ! For ndir=2 only 3rd component of J can exist, ndir=1 is impossible for MHD
     double precision :: current(ixI^S,7-2*ndir:3),eta(ixI^S)
     double precision :: gradeta(ixI^S,1:ndim), Bf(ixI^S,1:ndir)
 
-    ! Calculating resistive sources involve one extra layer
-    if (mhd_4th_order) then
-      ixA^L=ixO^L^LADD2;
-    else
-      ixA^L=ixO^L^LADD1;
-    end if
+    ! Calculating resistive sources involves one extra layer
+    ! asking here for two, so Cartesian works with 4th order CD
+    ixA^L=ixO^L^LADD2;
 
     if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
          call mpistop("Error in add_source_res1: Non-conforming input limits")
@@ -5527,7 +5485,6 @@ contains
        gradeta(ixO^S,1:ndim)=zero
     else
        call usr_special_resistivity(wCT,ixI^L,ixA^L,idirmin,x,current,eta)
-       ! assumes that eta is not function of current?
        do idim=1,ndim
           call gradient(eta,ixI^L,ixO^L,idim,tmp)
           gradeta(ixO^S,idim)=tmp(ixO^S)
@@ -5542,31 +5499,11 @@ contains
 
     do idir=1,ndir
        ! Put B_idir into tmp2 and Laplace B_idir into tmp
-       ! This is ok for pure Cartesian, uniform grid settings only
-       ! uses CD4 or CD2, depending on mhd_4th_order
-       if (mhd_4th_order) then
-         tmp(ixO^S)=zero
-         tmp2(ixI^S)=Bf(ixI^S,idir)
-         do idim=1,ndim
-            lxO^L=ixO^L+2*kr(idim,^D);
-            jxO^L=ixO^L+kr(idim,^D);
-            hxO^L=ixO^L-kr(idim,^D);
-            kxO^L=ixO^L-2*kr(idim,^D);
-            tmp(ixO^S)=tmp(ixO^S)+&
-                 (-tmp2(lxO^S)+16.0d0*tmp2(jxO^S)-30.0d0*tmp2(ixO^S)+16.0d0*tmp2(hxO^S)-tmp2(kxO^S)) &
-                 /(12.0d0 * dxlevel(idim)**2)
-         end do
-       else
-         tmp(ixO^S)=zero
-         tmp2(ixI^S)=Bf(ixI^S,idir)
-         do idim=1,ndim
-            jxO^L=ixO^L+kr(idim,^D);
-            hxO^L=ixO^L-kr(idim,^D);
-            tmp(ixO^S)=tmp(ixO^S)+&
-                 (tmp2(jxO^S)-2.0d0*tmp2(ixO^S)+tmp2(hxO^S))/dxlevel(idim)**2
-         end do
-       end if
-
+       tmp2(ixI^S)=Bf(ixI^S,idir)
+       ! the added 2 is relevant for cartesian only
+       ! and then switches to 4th order CD
+       call laplacian(tmp2,ixI^L,ixO^L,tmp,2)
+       
        ! Multiply by eta to store eta*Laplace B_idir
        tmp(ixO^S)=tmp(ixO^S)*eta(ixO^S)
 
