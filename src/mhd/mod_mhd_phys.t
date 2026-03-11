@@ -5469,6 +5469,7 @@ contains
     ! For ndir=2 only 3rd component of J can exist, ndir=1 is impossible for MHD
     double precision :: current(ixI^S,7-2*ndir:3),eta(ixI^S)
     double precision :: gradeta(ixI^S,1:ndim), Bf(ixI^S,1:ndir)
+    double precision :: lapl_vec(ixI^S,1:ndir)
 
     ! Calculating resistive sources involves one extra layer
     ! asking here for two, so Cartesian works with 4th order CD
@@ -5497,16 +5498,12 @@ contains
       Bf(ixI^S,1:ndir)=wCT(ixI^S,mag(1:ndir))
     end if
 
-    do idir=1,ndir
-       ! Put B_idir into tmp2 and Laplace B_idir into tmp
-       tmp2(ixI^S)=Bf(ixI^S,idir)
-       ! the added 2 is relevant for cartesian only
-       ! and then switches to 4th order CD
-       call laplacian(tmp2,ixI^L,ixO^L,tmp,2)
-       
-       ! Multiply by eta to store eta*Laplace B_idir
-       tmp(ixO^S)=tmp(ixO^S)*eta(ixO^S)
+    call laplacian_of_vector(Bf,ixI^L,ixO^L,lapl_vec)
 
+    do idir=1,ndir
+       ! Multiply by eta to store eta*Laplace B_idir
+       tmp(ixO^S)=lapl_vec(ixO^S,idir)*eta(ixO^S)
+       
        ! Subtract grad(eta) x J = eps_ijk d_j eta J_k if eta is non-constant
        if (mhd_eta<zero)then
           do jdir=1,ndim; do kdir=idirmin,3

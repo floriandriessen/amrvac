@@ -764,6 +764,27 @@ contains
     end select
   end subroutine laplacian
 
+  !**************************************************************************
+  ! Purpose: Computes the Laplacian of a vector field qvec(ixI^S,1:ndir) at cell 
+  !          centers and outputs it in lapl_qvec(ixO^S,1:ndir), 
+  !          which is also defined at cell **centers**. 
+  !**************************************************************************
+  subroutine laplacian_of_vector(qvec,ixI^L,ixO^L,lapl_qvec)
+    use mod_global_parameters
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(in)    :: qvec(ixI^S,1:ndir)
+    double precision, intent(inout) :: lapl_qvec(ixI^S,1:ndir)
+    integer :: idir
+    double precision :: tmp(ixI^S)
+
+    do idir=1,ndir
+       call laplacian(qvec(ixI^S,idir),ixI^L,ixO^L,tmp)
+       lapl_qvec(ixO^S,idir)=tmp(ixO^S)
+    enddo
+
+  end subroutine laplacian_of_vector
+
+
   !> Calculate curl of a vector qvec within ixL
   !> Options to
   !>        employ standard second order CD evaluations
