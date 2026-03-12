@@ -1522,13 +1522,13 @@ contains
       ! radiation force
       call get_fld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
         hd_energy,qsourcesplit,active)
-      call rhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
+      call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
     case('afld')
       call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       ! radiation force
       call get_afld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
         hd_energy,qsourcesplit,active)
-      call rhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
+      call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
       ! photon tiring, heating and cooling
       call get_afld_energy_interact(qdt,ixI^L,ixO^L,wCT,w,x,&
         hd_energy,qsourcesplit,active)
