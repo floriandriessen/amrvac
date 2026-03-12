@@ -3,7 +3,7 @@
 !> the zeroth moment of the radiative transfer equation. A closure is
 !> provided by the flux limited diffusion (FLD)-approximation in the mod_fld.t module. See
 !> [1]Moens, N., Sundqvist, J. O., El Mellah, I., Poniatowski, L., Teunissen, J., and Keppens, R.,
-!> “Radiation-hydrodynamics with MPI-AMRVAC . Flux-limited diffusion”,
+!> Radiation-hydrodynamics with MPI-AMRVAC . Flux-limited diffusion
 !> <i>Astronomy and Astrophysics</i>, vol. 657, 2022. doi:10.1051/0004-6361/202141023.
 !> For more information.
 !> Another possible closure in the works is the anisotropic flux limited diffusion approximation (AFLD) described in mod_afld.t.
@@ -859,36 +859,6 @@ contains
 
   end subroutine rhd_e_to_ei
 
-  subroutine e_to_rhos(ixI^L, ixO^L, w, x)
-    use mod_global_parameters
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision             :: w(ixI^S, nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-
-    if (rhd_energy) then
-       w(ixO^S, e_) = (rhd_gamma - 1.0d0) * w(ixO^S, rho_)**(1.0d0 - rhd_gamma) * &
-            (w(ixO^S, e_) - rhd_kin_en(w, ixI^L, ixO^L))
-    else
-       call mpistop("energy from entropy can not be used with -eos = iso !")
-    end if
-  end subroutine e_to_rhos
-
-  subroutine rhos_to_e(ixI^L, ixO^L, w, x)
-    use mod_global_parameters
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision             :: w(ixI^S, nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-
-    if (rhd_energy) then
-       w(ixO^S, e_) = w(ixO^S, rho_)**(rhd_gamma - 1.0d0) * w(ixO^S, e_) &
-            / (rhd_gamma - 1.0d0) + rhd_kin_en(w, ixI^L, ixO^L)
-    else
-       call mpistop("entropy from energy can not be used with -eos = iso !")
-    end if
-  end subroutine rhos_to_e
-
   !> Calculate v_i = m_i / rho within ixO^L
   subroutine rhd_get_v(w, x, ixI^L, ixO^L, idim, v)
     use mod_global_parameters
@@ -1326,79 +1296,6 @@ contains
 
   end subroutine rhd_get_trad
 
-
-  !these are very similar to the subroutines without 1, used in mod_thermal_conductivity
-  !but no check on whether energy variable is present
-  subroutine rhd_ei_to_e1(ixI^L,ixO^L,w,x)
-    use mod_global_parameters
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(inout) :: w(ixI^S, nw)
-    double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-    ! Calculate total energy from internal and kinetic energy
-    w(ixO^S,e_)=w(ixO^S,e_)&
-                 +rhd_kin_en(w,ixI^L,ixO^L)
-
-  end subroutine rhd_ei_to_e1
-
-  !> Transform total energy to internal energy
-  !but no check on whether energy variable is present
-  subroutine rhd_e_to_ei1(ixI^L,ixO^L,w,x)
-    use mod_global_parameters
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(inout) :: w(ixI^S, nw)
-    double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-    ! Calculate ei = e - ek
-    w(ixO^S,e_)=w(ixO^S,e_)&
-                  -rhd_kin_en(w,ixI^L,ixO^L)
-
-  end subroutine rhd_e_to_ei1
-
-  ! Calculate flux f_idim[iw]
-  subroutine rhd_get_flux_cons(w, x, ixI^L, ixO^L, idim, f)
-    use mod_global_parameters
-    use mod_dust, only: dust_get_flux
-
-    integer, intent(in)             :: ixI^L, ixO^L, idim
-    double precision, intent(in)    :: w(ixI^S, 1:nw), x(ixI^S, 1:ndim)
-    double precision, intent(out)   :: f(ixI^S, nwflux)
-    double precision                :: pth(ixI^S), v(ixI^S),frame_vel(ixI^S)
-    integer                         :: idir, itr
-
-    call rhd_get_pthermal(w, x, ixI^L, ixO^L, pth)
-    call rhd_get_v(w, x, ixI^L, ixO^L, idim, v)
-
-    f(ixO^S, rho_) = v(ixO^S) * w(ixO^S, rho_)
-
-    ! Momentum flux is v_i*m_i, +p in direction idim
-    do idir = 1, ndir
-       f(ixO^S, mom(idir)) = v(ixO^S) * w(ixO^S, mom(idir))
-    end do
-
-    f(ixO^S, mom(idim)) = f(ixO^S, mom(idim)) + pth(ixO^S)
-
-    if(rhd_energy) then
-      ! Energy flux is v_i*(e + p)
-      f(ixO^S, e_) = v(ixO^S) * (w(ixO^S, e_) + pth(ixO^S))
-    end if
-
-    if (rhd_radiation_advection) then
-      f(ixO^S, r_e) = v(ixO^S) * w(ixO^S,r_e)
-    else
-      f(ixO^S, r_e) = zero
-    endif
-
-    do itr = 1, rhd_n_tracer
-       f(ixO^S, tracer(itr)) = v(ixO^S) * w(ixO^S, tracer(itr))
-    end do
-
-    ! Dust fluxes
-    if (rhd_dust) then
-      call dust_get_flux(w, x, ixI^L, ixO^L, idim, f)
-    end if
-
-  end subroutine rhd_get_flux_cons
 
   ! Calculate flux f_idim[iw]
   subroutine rhd_get_flux(wC, w, x, ixI^L, ixO^L, idim, f)
