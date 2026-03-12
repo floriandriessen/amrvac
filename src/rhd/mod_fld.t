@@ -2,7 +2,7 @@
 !> Module for including flux limited diffusion (FLD)-approximation in Radiation-hydrodynamics simulations using mod_rhd
 !> Based on Turner and stone 2001. See
 !> [1]Moens, N., Sundqvist, J. O., El Mellah, I., Poniatowski, L., Teunissen, J., and Keppens, R.,
-!> “Radiation-hydrodynamics with MPI-AMRVAC . Flux-limited diffusion”,
+!> Radiation-hydrodynamics with MPI-AMRVAC . Flux-limited diffusion
 !> <i>Astronomy and Astrophysics</i>, vol. 657, 2022. doi:10.1051/0004-6361/202141023.
 !> For more information.
 
@@ -31,8 +31,6 @@ module mod_fld
     character(len=16) :: fld_fluxlimiter = 'Pomraning'
     !> diffusion coefficient for multigrid method
     integer :: i_diff_mg
-    !> Which method to solve diffusion part
-    character(len=8) :: fld_diff_scheme = 'mg'
     !> Which method to find the root for the energy interaction polynomial
     character(len=8) :: fld_interaction_method = 'Halley'
     !> Take running average for Diffusion coefficient
@@ -54,7 +52,6 @@ module mod_fld
     !> public methods
     !> these are called in mod_rhd_phys
     public :: get_fld_rad_force
-!    public :: get_fld_energy_interact
     public :: fld_radforce_get_dt
     public :: fld_init
     public :: fld_get_radflux
@@ -72,7 +69,7 @@ module mod_fld
 
     namelist /fld_list/ fld_kappa0, fld_Eint_split, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_tol,&
-    fld_opacity_law, fld_fluxlimiter, fld_diff_scheme, fld_interaction_method, &
+    fld_opacity_law, fld_fluxlimiter, fld_interaction_method, &
     diff_coef_filter, size_D_filter, flux_lim_filter, size_L_filter, &
     lineforce_opacities, diffcrash_resume, fld_opal_table
 
@@ -90,7 +87,7 @@ module mod_fld
   !> Add extra variables to w-array, flux, kappa, eddington Tensor
   !> Lambda and R
   !> ...
-  subroutine fld_init(He_abundance, radiation_diffusion, energy_interact, r_gamma)
+  subroutine fld_init(He_abundance, r_gamma)
     use mod_global_parameters
     use mod_variables
     use mod_physics
@@ -98,7 +95,6 @@ module mod_fld
     use mod_multigrid_coupling
 
     double precision, intent(in) :: He_abundance, r_gamma
-    logical, intent(in) :: radiation_diffusion, energy_interact
     double precision :: sigma_thomson
     integer :: idir,jdir
     character(len=1) :: ind_1
@@ -117,15 +113,11 @@ module mod_fld
         i_opf(idir) = var_set_extravar(cmp_f,cmp_f)
       enddo
     endif
-    if(radiation_diffusion .or. energy_interact) then
-      phys_implicit_update => fld_implicit_update
-      phys_evaluate_implicit => Evaluate_E_rad_mg !> need to check
-      if(radiation_diffusion .and. fld_diff_scheme .eq. 'mg') then
-        use_multigrid = .true.
-        mg%n_extra_vars = 1
-        mg%operator_type = mg_vhelmholtz
-      endif
-    endif
+    phys_implicit_update => fld_implicit_update
+    phys_evaluate_implicit => Evaluate_E_rad_mg
+    use_multigrid = .true.
+    mg%n_extra_vars = 1
+    mg%operator_type = mg_vhelmholtz
     i_diff_mg = var_set_extravar("D", "D")
     !> Need mean molecular weight
     fld_mu = (1.+4*He_abundance)/(2.+3.*He_abundance)

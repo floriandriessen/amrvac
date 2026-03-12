@@ -535,7 +535,6 @@ contains
     phys_check_w             => rmhd_check_w_origin
 
     phys_set_mg_bounds       => rmhd_set_mg_bounds
-    phys_get_trad            => rmhd_get_trad
     phys_get_tgas            => rmhd_get_tgas
  
     phys_get_pthermal        => rmhd_get_pthermal_origin
@@ -604,9 +603,9 @@ contains
     !> Initiate radiation-closure module
     select case(rmhd_radiation_formalism)
     case('fld')
-      call fld_init(He_abundance, rmhd_radiation_diffusion, rmhd_energy_interact, rmhd_gamma)
+      call fld_init(He_abundance, rmhd_gamma)
     case('afld')
-      call afld_init(He_abundance, rmhd_radiation_diffusion, rmhd_gamma)
+      call afld_init(He_abundance, rmhd_gamma)
     case default
       call mpistop('Radiation formalism unknown')
     end select
@@ -2587,12 +2586,12 @@ contains
 
     select case(rmhd_radiation_formalism)
     case('fld')
-      if(fld_diff_scheme .eq. 'mg') call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       !> radiation force
       if(rmhd_radiation_force) call get_fld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,rmhd_energy,qsourcesplit,active)
       call rmhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
     case('afld')
-      if(fld_diff_scheme .eq. 'mg') call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       !> radiation force
       if(rmhd_radiation_force) call get_afld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,rmhd_energy,qsourcesplit,active)
       call rmhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')

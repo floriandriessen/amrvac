@@ -1,7 +1,7 @@
 !> Module for including anisotropic flux limited diffusion (AFLD)-approximation in Radiation-hydrodynamics simulations using mod_rhd
 !> Based on Turner and stone 2001. See
 !> [1]Moens, N., Sundqvist, J. O., El Mellah, I., Poniatowski, L., Teunissen, J., and Keppens, R.,
-!> “Radiation-hydrodynamics with MPI-AMRVAC . Flux-limited diffusion”,
+!> Radiation-hydrodynamics with MPI-AMRVAC . Flux-limited diffusion
 !> <i>Astronomy and Astrophysics</i>, vol. 657, 2022. doi:10.1051/0004-6361/202141023.
 !> For more information.
 
@@ -30,8 +30,6 @@ module mod_afld
     character(len=16) :: fld_fluxlimiter = 'Pomraning'
     ! !> diffusion coefficient for multigrid method
     integer, allocatable :: i_diff_mg(:)
-    !> Which method to solve diffusion part
-    character(len=8) :: afld_diff_scheme = 'mg'
     !> Which method to find the root for the energy interaction polynomial
     character(len=8) :: fld_interaction_method = 'Halley'
     !> Set Diffusion coefficient to unity
@@ -71,7 +69,7 @@ module mod_afld
 
     namelist /fld_list/ fld_kappa0, fld_Eint_split, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_testcase, fld_diff_tol, fld_opal_table, &
-    fld_opacity_law, fld_fluxlimiter, afld_diff_scheme, fld_interaction_method, &
+    fld_opacity_law, fld_fluxlimiter, fld_interaction_method, &
     diff_coef_filter, size_D_filter, flux_lim_filter, size_L_filter, &
     lineforce_opacities, diffcrash_resume
 
@@ -89,14 +87,13 @@ module mod_afld
   !> Add extra variables to w-array, flux, kappa, eddington Tensor
   !> Lambda and R
   !> ...
-  subroutine afld_init(He_abundance, rhd_radiation_diffusion, afld_gamma)
+  subroutine afld_init(He_abundance, afld_gamma)
     use mod_global_parameters
     use mod_variables
     use mod_physics
     use mod_opal_opacity, only: init_opal_table
     use mod_multigrid_coupling
     double precision, intent(in) :: He_abundance, afld_gamma
-    logical, intent(in) :: rhd_radiation_diffusion
     double precision :: sigma_thomson
     integer :: idir,jdir
     character(len=1) :: ind_1
@@ -115,15 +112,11 @@ module mod_afld
     !> read par files
     call afld_params_read(par_files)
 
-    if (rhd_radiation_diffusion) then
-      if (afld_diff_scheme .eq. 'mg') then
-        use_multigrid = .true.
-        phys_implicit_update => Diffuse_E_rad_mg
-        phys_evaluate_implicit => Evaluate_E_rad_mg
-        mg%n_extra_vars = 1
-        mg%operator_type = mg_ahelmholtz
-      endif
-    endif
+    use_multigrid = .true.
+    phys_implicit_update => Diffuse_E_rad_mg
+    phys_evaluate_implicit => Evaluate_E_rad_mg
+    mg%n_extra_vars = 1
+    mg%operator_type = mg_ahelmholtz
     allocate(i_diff_mg(ndim))
     do idir = 1,ndim
       write(ind_1,'(I1)') idir

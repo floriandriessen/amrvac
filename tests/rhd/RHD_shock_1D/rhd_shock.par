@@ -71,7 +71,6 @@
   fld_Radforce_split = .false.
   fld_opacity_law = 'const'
   fld_kappa0 = 0.4d0
-  fld_diff_scheme = 'mg'
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
   fld_diff_tol = 1.d-7
