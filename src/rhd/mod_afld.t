@@ -101,10 +101,6 @@ module mod_afld
     character(len=2) :: cmp_f
     character(len=5) :: cmp_e
 
-    {^IFONED
-    call mpistop("Anisotropic in 1D... really?")
-    }
-
     !> allocate boundary conditions
     allocate(fld_opacity_law(1:ndim))
     fld_opacity_law(1:ndim) = 'const'

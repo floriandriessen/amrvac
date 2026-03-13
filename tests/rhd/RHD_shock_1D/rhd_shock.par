@@ -3,7 +3,7 @@
 /
 
 &filelist
-  base_filename='./rhd_shock'
+  base_filename='rhd_shock'
   saveprim         = F
   autoconvert      = F
   typefilelog='regression_test'
@@ -33,7 +33,6 @@
 &boundlist
   typeboundary_min1 = 4*'special'
   typeboundary_max1 = 4*'cont' 
-  internalboundary = F
 /
 
  &meshlist
@@ -43,27 +42,20 @@
    block_nx1          = 16
    xprobmin1       = -0.5d0
    xprobmax1       = 0.5d0
-   refine_threshold   = 20*0.5d0
-   derefine_ratio     = 20*1.d0/2.d0
  /
 
  &paramlist
   courantpar       = 0.6d0
-  !dtpar           = 2.d-3
   slowsteps = 200
  /
 
- &rhd_list
-  He_abundance = 0.d0 !0.075d0
-  rhd_gravity = .false.
-  rhd_energy = .true.
-  rhd_gamma = 1.4d0
-  rhd_radiation_formalism = 'fld'
-  radio_acoustic_filter = .false.
-  rhd_radiation_force = .true.
-  rhd_energy_interact = .true.
-  rhd_radiation_diffusion = .true.
-  rhd_radiation_advection = .true.
+ &hd_list
+  He_abundance = 0.d0
+  hd_gravity = .false.
+  hd_energy = .true.
+  hd_gamma = 1.4d0
+  hd_radiation_fld_formalism = 'fld'
+  hd_radiation_fld = .true.
  /
 
  &fld_list

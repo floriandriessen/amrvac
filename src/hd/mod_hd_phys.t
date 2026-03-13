@@ -269,7 +269,14 @@ contains
 
     if(hd_radiation_fld)then
        if(hd_cak_force)then
-          call mpistop('CAK force addition not compatible with FLD radiation')
+          if(mype==0) then
+            write(*,*)'Warning: CAK force addition together with FLD radiation'
+          endif
+       endif
+       if(hd_radiative_cooling)then
+          if(mype==0) then
+            write(*,*)'Warning: Optically thin cooling together with FLD radiation'
+          endif
        endif
        if(hd_dust.and.hd_dust_implicit)then
           call mpistop('implicit dust addition not compatible with FLD radiation')
@@ -279,25 +286,20 @@ contains
        else
           !> set added variable and equation for radiation energy
           r_e = var_set_radiation_energy()
-         phys_set_mg_bounds       => hd_set_mg_bounds
-         phys_get_tgas            => hd_get_temperature_from_etot
-         !> Initiate radiation-closure module
-         select case (hd_radiation_fld_formalism)
-         case('fld')
+          phys_set_mg_bounds       => hd_set_mg_bounds
+          phys_get_tgas            => hd_get_temperature_from_etot
+          !> Initiate radiation-closure module
+          select case (hd_radiation_fld_formalism)
+          case('fld')
            call fld_init(He_abundance, hd_gamma)
-         case('afld')
+          case('afld')
+           {^IFONED
+          call mpistop('using anisotropic FLD implies multidimensional setup')
+           }
            call afld_init(He_abundance, hd_gamma)
-         case default
+          case default
            call mpistop('Radiation formalism unknown')
-         end select
-         if(.not.use_imex_scheme)then
-           call mpistop('select IMEX scheme for FLD radiation use')
-         endif
-         if(use_multigrid)then
-           call hd_set_mg_bounds()
-         else
-           call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
-         endif
+          end select
        endif
     endif
 
@@ -323,11 +325,6 @@ contains
 
     if (hd_dust) then
         call dust_init(rho_, mom(:), e_)
-        if(hd_dust_implicit)then
-           if(.not.use_imex_scheme)then
-              call mpistop('select IMEX scheme for implicit dust update')
-           endif
-        endif
     endif
 
     allocate(tracer(hd_n_tracer))
@@ -337,18 +334,18 @@ contains
        tracer(itr) = var_set_fluxvar("trc", "trp", itr, need_bc=.false.)
     end do
 
-    ! set number of variables which need update ghostcells
-    nwgc=nwflux+nwaux
-
-    ! set the index of the last flux variable for species 1
-    stop_indices(1)=nwflux
-
     !  set temperature as an auxiliary variable to get ionization degree
     if(hd_partial_ionization) then
       Te_ = var_set_auxvar('Te','Te')
     else
       Te_ = -1
     end if
+
+    ! set number of variables which need update ghostcells
+    nwgc=nwflux+nwaux
+
+    ! set the index of the last flux variable for species 1
+    stop_indices(1)=nwflux
 
     if(hd_trac) then
       Tcoff_ = var_set_wextra()
@@ -609,10 +606,23 @@ contains
     if (hd_dust) call dust_check_params()
 
     if(hd_dust_implicit) then
+        if(.not.use_imex_scheme)then
+           call mpistop('select IMEX scheme for implicit dust update')
+        endif
         ! implicit dust update
         phys_implicit_update => dust_implicit_update
         phys_evaluate_implicit => dust_evaluate_implicit
     endif  
+    if(hd_radiation_fld) then
+        if(.not.use_imex_scheme)then
+           call mpistop('select IMEX scheme for FLD radiation use')
+        endif
+        if(use_multigrid)then
+           call hd_set_mg_bounds()
+        else
+           call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
+        endif
+    endif
 
   end subroutine hd_check_params
 
@@ -1452,7 +1462,7 @@ contains
     double precision :: gravity_field(ixI^S, 1:ndim)
     integer :: idust, idim
 
-    if(hd_dust .and. .not. use_imex_scheme) then
+    if(hd_dust .and. .not. hd_dust_implicit) then
       call dust_add_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
     end if
 

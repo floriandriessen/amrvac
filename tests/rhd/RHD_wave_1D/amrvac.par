@@ -3,7 +3,7 @@
 /
 
 &filelist
-  base_filename='./rhd_wave'
+  base_filename='rhd_wave'
   autoconvert      = F
   level_io         = 1
   saveprim         = F
@@ -28,8 +28,8 @@
  &methodlist
    time_stepper = 'onestep'
    time_integrator = 'IMEX_Euler'
-   flux_scheme     = 20*'hll' !'tvdlf'/'hll'
-   limiter         = 20*'weno5' !'minmod'/'koren'
+   flux_scheme     = 20*'hll'
+   limiter         = 20*'weno5'
    typesourcesplit = 'sfs'
    check_small_values = .true.
    small_values_method = 'replace'
@@ -56,15 +56,12 @@
   !dtpar           = 1.d-4
  /
 
- &rhd_list
+ &hd_list
   He_abundance = 0.0d0
-  rhd_energy = .true.
-  rhd_gamma = 1.6666667d0
-  rhd_radiation_formalism = 'fld'
-  rhd_radiation_force = .true.
-  rhd_energy_interact = .true.
-  rhd_radiation_diffusion = .true.
-  rhd_radiation_advection = .true.
+  hd_energy = .true.
+  hd_gamma = 1.6666667d0
+  hd_radiation_fld_formalism = 'fld'
+  hd_radiation_fld = .true.
  /
 
  &fld_list
@@ -72,7 +69,6 @@
   fld_Radforce_split = .false.
   fld_opacity_law = 'const'
   fld_kappa0 = 0.4d0
-  fld_diff_scheme = 'mg'
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
   fld_diff_tol = 1.d-7

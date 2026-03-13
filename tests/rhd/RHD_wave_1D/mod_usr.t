@@ -2,7 +2,7 @@
 module mod_usr
 
   ! Include a physics module
-  use mod_rhd
+  use mod_hd
 
   implicit none
 
@@ -37,7 +37,7 @@ contains
     usr_internal_bc => Initialize_Wave
 
     ! Active the physics module
-    call rhd_activate()
+    call hd_activate()
 
   end subroutine usr_init
 
@@ -49,8 +49,8 @@ contains
     call params_read(par_files)
 
 
-    p0 = eg0*(rhd_gamma - one)
-    ca = dsqrt(rhd_gamma*p0/rho0)
+    p0 = eg0*(hd_gamma - one)
+    ca = dsqrt(hd_gamma*p0/rho0)
     a0 = dsqrt(p0/rho0)
 
     T0 = const_mp*fld_mu/const_kB*(p0/rho0)
@@ -59,8 +59,8 @@ contains
     omega = 2.d0*dpi*a0/wvl
     wavenumber = 2.d0*dpi/wvl
 
-    Bo = 4*rhd_gamma*ca*eg0/(const_c*Er0)
-    r_Bo = Er0/(4*rhd_gamma*eg0)
+    Bo = 4*hd_gamma*ca*eg0/(const_c*Er0)
+    r_Bo = Er0/(4*hd_gamma*eg0)
 
     !-------------------
     tau_c = const_c*fld_kappa0*rho0/omega
@@ -114,7 +114,7 @@ contains
     A_rho = ampl
     A_v = omega/(wavenumber*rho0)*A_rho
     A_p = omega**2/wavenumber**2*A_rho
-    A_e = 1.d0/(rhd_gamma-one)*p0/rho0*A_rho
+    A_e = 1.d0/(hd_gamma-one)*p0/rho0*A_rho
     A_Er = Er0/rho0*A_rho
 
   end subroutine initglobaldata_usr

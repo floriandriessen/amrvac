@@ -1,8 +1,7 @@
-!> This is a template for a new user problem
 module mod_usr
 
   ! Include a physics module
-  use mod_rhd
+  use mod_hd
   use mod_fld
 
   implicit none
@@ -41,7 +40,7 @@ contains
     usr_special_mg_bc => mg_boundary_conditions
 
     ! Active the physics module
-    call rhd_activate()
+    call hd_activate()
 
   end subroutine usr_init
 
@@ -55,14 +54,15 @@ contains
     p1 = const_kB*T1*rho1/(const_mp*fld_mu)
     p2 = const_kB*T2*rho2/(const_mp*fld_mu)
 
-    eg1 = p1/(rhd_gamma-1.d0) + half*v1*v1*rho1
-    eg2 = p2/(rhd_gamma-1.d0) + half*v2*v2*rho2
+    eg1 = p1/(hd_gamma-1.d0) + half*v1*v1*rho1
+    eg2 = p2/(hd_gamma-1.d0) + half*v2*v2*rho2
 
     Er1 = const_rad_a*T1**4.d0
     Er2 = const_rad_a*T2**4.d0
 
-    print*, 'M_1: ', v1/dsqrt(rhd_gamma*p1/rho1)
-    print*, 'M_2: ', v2/dsqrt(rhd_gamma*p2/rho2)
+    if(mype==0)then
+    print*, 'M_1: ', v1/dsqrt(hd_gamma*p1/rho1)
+    print*, 'M_2: ', v2/dsqrt(hd_gamma*p2/rho2)
 
     print*, 'RHD-quantity: ', 'Left', ' | ', 'Right'
     print*, 'density', rho1, ' | ', rho2
@@ -71,8 +71,9 @@ contains
     print*, 'gas pressure', p1, ' | ', p2
     print*, 'gas energy', eg1, ' | ', eg2
     print*, 'radiation energy', Er1, ' | ', Er2
+    endif
 
-    unit_velocity = v1 !r_arr(nghostcells) ! cm
+    unit_velocity = v1
     unit_numberdensity = rho1/((1.d0+4.d0*He_abundance)*const_mp)
     unit_length = 1.d5
 
@@ -85,12 +86,14 @@ contains
     unit_radflux = unit_velocity*unit_pressure
     unit_opacity = one/(unit_density*unit_length)
 
+    if(mype==0)then
     print*, 'unit_numberdensity', unit_numberdensity
     print*, 'unit_temperature', unit_temperature
     print*, 'unit_length', unit_length
     print*, 'unit_density', unit_density
     print*, 'unit_v', unit_velocity
     print*, 'unit_p', unit_pressure
+    endif
 
 
     rho1 = rho1/unit_density
@@ -112,12 +115,14 @@ contains
     Er2 = Er2/unit_pressure
 
 
+    if(mype==0)then
     print*, 'RHD-fluxes: ', 'Left', ' | ', 'Right'
     print*, 'density', rho1*v1, ' | ', rho2*v2
     print*, 'momentum', rho1*v1*v1 + p1 + Er1/3, ' | ', rho2*v2*v2 + p2 + Er2/3
     print*, 'gas energy', p1*v1 + eg1*v1, ' | ', p2*v2 + eg2*v2
     print*, 'radiation energy', Er1*v1, ' | ', Er2*v2
     print*, 'total energy', (p1+eg1+Er1)*v1, ' | ', (p2+eg2+Er2)*v2
+    endif
 
   end subroutine initglobaldata_usr
 
@@ -208,10 +213,8 @@ contains
     case (2)
         mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
         mg%bc(iB, mg_iphi)%bc_value = Er2
-
-      case default
-        print *, "Not a standard: ", typeboundary(r_e, iB)
-        error stop "Set special bound for this Boundary "
+    case default
+        call mpistop("no such boundary for MG in mod_usr")
     end select
   end subroutine mg_boundary_conditions
 
