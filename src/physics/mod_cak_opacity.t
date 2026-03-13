@@ -7,6 +7,7 @@
 module mod_cak_opacity
 
   use mod_comm_lib, only: mpistop
+  use mod_global_parameters, only: mype
 
   implicit none
   private
@@ -52,6 +53,9 @@ contains
     call read_table(logD_list, logT_list, Q0_vals, trim(path_table_dir)//"/Q0_TD")
     call read_table(logD_list, logT_list, kappae_vals, trim(path_table_dir)//"/Ke_TD")
 
+    if(mype==0)then
+       write(*,*)'Initialized CAK tables, read in from',path_table_dir
+    endif
   end subroutine init_cak_table
 
   !> This subroutine calculates the opacity for a given temperature-density

@@ -5,6 +5,7 @@
 module mod_opal_opacity
 
   use mod_comm_lib, only: mpistop
+  use mod_global_parameters, only: mype
 
   implicit none
   private
@@ -46,6 +47,10 @@ contains
     ! Read in the OPAL table
     call read_table(logR_list, logT_list, Kappa_vals, path_table_dir)
 
+    if(mype==0)then
+      write(*,*)' Initialized OPAL tables: read in the table from', path_table_dir
+    endif
+
   end subroutine init_opal_table
 
   !> This subroutine calculates the opacity for a given temperature-density
@@ -64,19 +69,21 @@ contains
     logR_in = log10(rho/(temp*1.0d-6)**3.0d0)
     logT_in = log10(temp)
 
+    !!print *,'enter get_kappa with logR_in and logT_in=',logR_in,logT_in
     call get_kappa(Kappa_vals, logR_list, logT_list, logR_in, logT_in, logKappa_out)
+    !!print *,'got logKappa_out=',logKappa_out
 
     ! If the outcome is 9.999 (no table entry), look right in the table
-    do while (logKappa_out > 9.0d0)
-        logR_in = logR_in + 0.5d0
-        call get_kappa(Kappa_vals, logR_list, logT_list, logR_in, logT_in, logKappa_out)
-    enddo
+    !!do while (logKappa_out > 9.0d0)
+    !!    logR_in = logR_in + 0.5d0
+    !!    call get_kappa(Kappa_vals, logR_list, logT_list, logR_in, logT_in, logKappa_out)
+    !!enddo
 
     ! If the outcome is NaN, look left in the table
-    do while (logKappa_out <= 1.0d-4)
-        logR_in = logR_in - 0.5d0
-        call get_kappa(Kappa_vals, logR_list, logT_list, logR_in, logT_in, logKappa_out)
-    enddo
+    !!do while (logKappa_out <= 1.0d-4)
+    !!    logR_in = logR_in - 0.5d0
+    !!    call get_kappa(Kappa_vals, logR_list, logT_list, logR_in, logT_in, logKappa_out)
+    !!enddo
 
     ! Convert OPAL opacity for output
     kappa = 10.0d0**logKappa_out
@@ -134,12 +141,12 @@ contains
     integer :: low_R_index, up_R_index
     integer :: low_T_index, up_T_index
 
+    !print *,'enter with R and T=',R,T
+    !print *,'check max-min(logR_list)=',maxval(logR_list),minval(logR_list)
     if (R > maxval(logR_list)) then
-      ! print*, 'Extrapolating in logR'
       low_R_index = iRmax-1
       up_R_index = iRmax
     elseif (R < minval(logR_list)) then
-      ! print*, 'Extrapolating in logR'
       low_R_index = iRmin
       up_R_index = iRmin+1
     else
@@ -147,11 +154,9 @@ contains
     endif
 
     if (T > maxval(logT_list)) then
-      ! print*, 'Extrapolating in logT'
       low_T_index = iTmax-1
       up_T_index = iTmax
     elseif (T < minval(logT_list)) then
-      ! print*, 'Extrapolating in logT'
       low_T_index = iTmin
       up_T_index = iTmin+1
     else

@@ -3,10 +3,8 @@
 /
 
 &filelist
-  base_filename='./output/adv_eu'
+  base_filename='output/adv_eu'
   autoconvert      = F
-  convert_type     = 'oneblock'
-  level_io         = 1
   saveprim         = T
 /
 
@@ -40,7 +38,6 @@
 &boundlist
   typeboundary_min1 = 4*'periodic'
   typeboundary_max1 = 4*'periodic'
-  internalboundary = F
 /
 
  &meshlist
@@ -59,17 +56,13 @@
   !dtpar           = 2.d-6
  /
 
- &rhd_list
+ &hd_list
   He_abundance = 0.1d0
-  rhd_gravity = .false.
-  rhd_energy = .true.
-  rhd_gamma = 1.6667d0
-  rhd_radiation_formalism = 'fld'
-  radio_acoustic_filter = .false.
-  rhd_radiation_force = .true.
-  rhd_energy_interact = .true.
-  rhd_radiation_diffusion = .true.
-  rhd_radiation_advection = .true.
+  hd_gravity = .false.
+  hd_energy = .true.
+  hd_gamma = 1.6667d0
+  hd_radiation_fld_formalism = 'fld'
+  hd_radiation_fld = .true.
  /
 
  &fld_list
@@ -77,7 +70,6 @@
   fld_Radforce_split = .false.
   fld_opacity_law = 'const'
   fld_kappa0 = 100.d0
-  fld_diff_scheme = 'mg'
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
   fld_diff_tol = 1.d-4

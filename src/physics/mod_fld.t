@@ -637,7 +637,7 @@ module mod_fld
     if(res .le. 0.d0) then
       if (diffcrash_resume) then
         if (mg%my_rank == 0) &
-        write(*,*) it, ' resiudal zero ', res
+        write(*,*) it, ' residual zero ', res
         return
       endif
       if(mg%my_rank == 0) then

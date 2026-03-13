@@ -1,8 +1,7 @@
-!> This is a template for a new user problem
 module mod_usr
 
   ! Include a physics module
-  use mod_rhd
+  use mod_hd
   use mod_fld
 
   implicit none
@@ -30,11 +29,9 @@ contains
     usr_init_one_grid => initial_conditions
 
     ! Active the physics module
-    call rhd_activate()
+    call hd_activate()
 
   end subroutine usr_init
-
-!==========================================================================================
 
 subroutine initglobaldata_usr
   use mod_global_parameters
@@ -55,7 +52,7 @@ subroutine initglobaldata_usr
   call usr_params_read(par_files)
 
   e_eq = (E_r0/(const_rad_a))**(1.d0/4.d0) &
-        *one/(rhd_gamma-one)*const_kB*rho0 &
+        *one/(hd_gamma-one)*const_kB*rho0 &
         /(fld_mu*const_mp)
 
 end subroutine initglobaldata_usr
@@ -63,8 +60,6 @@ end subroutine initglobaldata_usr
 
 subroutine usr_params_read(files)
   use mod_global_parameters, only: unitpar
-  use mod_fld
-  use mod_constants
   character(len=*), intent(in) :: files(:)
   integer                      :: n
 
@@ -79,13 +74,10 @@ subroutine usr_params_read(files)
 
 end subroutine usr_params_read
 
-!==========================================================================================
-
   !> A routine for specifying initial conditions
   subroutine initial_conditions(ixI^L, ixO^L, w, x)
     use mod_global_parameters
     use mod_constants
-    use mod_rhd_phys, only: rhd_get_pthermal
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: x(ixI^S, ndim)
@@ -99,15 +91,6 @@ end subroutine usr_params_read
     w(ixI^S, mom(:)) = zero
     w(ixI^S,r_e) = E_r0
     w(ixI^S, e_) = t0*e_eq
-
-    print*, 'unit_time', unit_time
-    print*, 'unit_temperature', unit_temperature
-    print*, 'unit_length', unit_length
-    print*, 'unit_density', unit_density
-    print*, 'unit_numberdensity', unit_numberdensity
-    print*, 'unit_velocity', unit_velocity
-    print*, 'unit_pressure', unit_pressure
-    print*, '================================================================'
 
   end subroutine initial_conditions
 

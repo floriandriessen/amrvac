@@ -597,7 +597,7 @@ module mod_afld
     if (res .le. 0.d0) then
       if (diffcrash_resume) then
         if (mg%my_rank == 0) &
-        write(*,*) it, ' resiudal zero ', res
+        write(*,*) it, ' residual zero ', res
         return
       endif
       if (mg%my_rank == 0) then
@@ -608,7 +608,7 @@ module mod_afld
     if(n == max_its + 1) then
       if(diffcrash_resume) then
         if(mg%my_rank == 0) &
-        write(*,*) it, ' resiudal high ', res
+        write(*,*) it, ' residual high ', res
         return
       endif
       if(mg%my_rank == 0) then
