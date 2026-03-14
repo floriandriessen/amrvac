@@ -409,12 +409,14 @@ mod_mhd_hllc.o: mod_functions_bfield.mod
 mod_mhd_hllc.o: mod_global_parameters.mod
 mod_mhd_hllc.o: mod_mhd_phys.mod
 mod_mhd_hllc.o: mod_physics_hllc.mod
+mod_mhd_phys.o: mod_afld.mod
 mod_mhd_phys.o: mod_cak_force.mod
 mod_mhd_phys.o: mod_comm_lib.mod
 mod_mhd_phys.o: mod_constants.mod
 mod_mhd_phys.o: mod_constrained_transport.mod
 mod_mhd_phys.o: mod_convert.mod
 mod_mhd_phys.o: mod_fix_conserve.mod
+mod_mhd_phys.o: mod_fld.mod
 mod_mhd_phys.o: mod_forest.mod
 mod_mhd_phys.o: mod_functions_bfield.mod
 mod_mhd_phys.o: mod_geometry.mod
