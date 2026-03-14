@@ -352,6 +352,8 @@ module mod_afld
         call gradient(rad_e,ixI^L,ixO^L,idir,grad_r_e,nth)
         normgrad2(ixO^S) = grad_r_e(ixO^S)**2
         fld_R(ixO^S,idir) = dsqrt(normgrad2(ixO^S))/(kappa(ixO^S,idir)*w(ixO^S,iw_rho)*w(ixO^S,iw_r_e))
+        ! Note: possible zeros for uniform setup, to adjust
+        if(maxval(normgrad2(ixO^S))==0.0d0)call mpistop("choose other fluxlimiter, FreeStream has issues")
         !> Calculate the flux limiter, lambda
         fld_lambda(ixO^S,idir) = one/fld_R(ixO^S,idir)
       end do
@@ -487,13 +489,12 @@ module mod_afld
       do jdir = 1,ndim
         if(idir .ne. jdir) eddington_tensor(ixO^S,idir,jdir) = zero
         tnsr2(ixO^S,idir,jdir) =  half*(3.d0*f(ixO^S,idir) - 1)&
-          * grad_r_e(ixO^S,idir)*grad_r_e(ixO^S,jdir)/normgrad2(ixO^S)
+          * grad_r_e(ixO^S,idir)*grad_r_e(ixO^S,jdir)/max(normgrad2(ixO^S),smalldouble)
       enddo
     enddo
     do idir = 1,ndim
       do jdir = 1,ndim
-        where((tnsr2(ixO^S,idir,jdir) .eq. tnsr2(ixO^S,idir,jdir)) &
-          .and. (normgrad2(ixO^S) .gt. smalldouble))
+        where(normgrad2(ixO^S) .gt. smalldouble)
           eddington_tensor(ixO^S,idir,jdir) = eddington_tensor(ixO^S,idir,jdir)+tnsr2(ixO^S,idir,jdir)
         endwhere
       enddo

@@ -28,6 +28,8 @@ module mod_mhd_phys
   double precision, public                :: mhd_eta_ambi = 0.0d0
   !> The small_est allowed energy
   double precision, protected             :: small_e
+  !> The smallest allowed radiation energy (when fld active)
+  double precision, public, protected     :: small_r_e
   !> Height of the mask used in the TRAC method
   double precision, public, protected     :: mhd_trac_mask = 0.d0
   !> GLM-MHD parameter: ratio of the diffusive and advective time scales for div b
@@ -79,6 +81,8 @@ module mod_mhd_phys
   integer, public, protected :: q_
   !> Indices of the GLM psi
   integer, public, protected :: psi_
+  !> Index of the radiation energy
+  integer, public, protected              :: r_e
   !> Indices of temperature
   integer, public, protected :: Te_
   !> Index of the cutoff temperature for the TRAC method
@@ -153,6 +157,10 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_partial_ionization = .false.
   !> Whether CAK radiation line force is activated
   logical, public, protected              :: mhd_cak_force = .false.
+  !> Whether radiation-gas interaction is handled using flux limited diffusion
+  logical, public, protected              :: mhd_radiation_fld = .false.
+  !> Formalism to treat radiation: either fld or afld (anisotropic fld)
+  character(len=8), public :: mhd_radiation_fld_formalism = 'fld'
   !> whether split off equilibrium density and pressure
   logical, public :: has_equi_rho_and_p = .false.
   logical, public :: mhd_equi_thermal = .false.
@@ -234,6 +242,17 @@ module mod_mhd_phys
   {^NOONED
   public :: mhd_clean_divb_multigrid
   }
+  ! Begin: following relevant for radiative MHD using FLD
+  ! first three are local and of interest for mod_usr applications
+  public :: mhd_get_pradiation
+  public :: mhd_get_pthermal_plus_pradiation
+  public :: mhd_get_trad
+  ! the following used in FLD modules
+  !    as pointer phys_get_tgas
+  public :: mhd_get_temperature_from_etot
+  !    as pointer phys_set_mg_bounds
+  public :: mhd_set_mg_bounds              
+  ! End: following relevant for radiative MHD using FLD
 
 contains
 
@@ -255,7 +274,8 @@ contains
       boundary_divbfix, boundary_divbfix_skip, mhd_divb_nth, mhd_semirelativistic,&
       mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
       mhd_hydrodynamic_e, mhd_trac, mhd_trac_type, mhd_trac_mask, mhd_trac_finegrid, mhd_cak_force, &
-      mhd_hyperbolic_thermal_conduction, mhd_htc_sat
+      mhd_hyperbolic_thermal_conduction, mhd_htc_sat,&
+      mhd_radiation_fld,mhd_radiation_fld_formalism
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -302,6 +322,8 @@ contains
     {^NOONED
     use mod_multigrid_coupling
     }
+    use mod_fld
+    use mod_afld
 
     integer :: itr, idir
 
@@ -529,6 +551,54 @@ contains
     do itr = 1, mhd_n_tracer
       tracer(itr) = var_set_fluxvar("trc", "trp", itr, need_bc=.false.)
     end do
+ 
+    if(mhd_radiation_fld)then
+       if(mhd_cak_force)then
+          if(mype==0) then
+            write(*,*)'Warning: CAK force addition together with FLD radiation'
+          endif
+       endif
+       if(mhd_radiative_cooling)then
+          if(mype==0) then
+            write(*,*)'Warning: Optically thin cooling together with FLD radiation'
+          endif
+       endif
+       if(SI_unit)then
+          call mpistop('using FLD implies the use of cgs units')
+       endif
+       if(.not.mhd_energy)then
+          call mpistop('using FLD implies the use of an energy equation, set mhd_energy=T')
+       else
+          if(mhd_semirelativistic)then
+            call mpistop('using FLD not yet with semirelativistic energy formalism')
+          endif
+          if(mhd_hydrodynamic_e.or.mhd_internal_e)then
+            call mpistop('using FLD not yet with hydrodynamic or internal energy formalism')
+          endif
+          if(has_equi_rho_and_p)then
+            call mpistop('using FLD not yet with split off rho and p')
+          endif
+          ! Note: so far ok with total energy equation but allow both split or unsplit B0
+          !> set added variable and equation for radiation energy
+          r_e = var_set_radiation_energy()
+          phys_set_mg_bounds       => mhd_set_mg_bounds
+          phys_get_tgas            => mhd_get_temperature_from_etot
+          !> Initiate radiation-closure module
+          select case (mhd_radiation_fld_formalism)
+          case('fld')
+           call fld_init(He_abundance, mhd_gamma)
+          case('afld')
+           {^IFONED
+          call mpistop('using anisotropic FLD implies multidimensional setup')
+           }
+           call afld_init(He_abundance, mhd_gamma)
+          case default
+           call mpistop('Radiation formalism unknown')
+          end select
+       endif
+    else
+      r_e=-1
+    endif
 
     !  set temperature as an auxiliary variable to get ionization degree
     if(mhd_partial_ionization) then
@@ -1288,6 +1358,7 @@ contains
             call mpistop ("Error: mhd_gamma <= 0 or mhd_gamma == 1")
        inv_gamma_1=1.d0/gamma_1
        small_e = small_pressure * inv_gamma_1
+       small_r_e = small_pressure*inv_gamma_1
     end if
 
     if (number_equi_vars > 0 .and. .not. associated(usr_set_equi_vars)) then
@@ -1301,7 +1372,54 @@ contains
         endif
       endif
     endif
+
+    if(mhd_radiation_fld) then 
+        if(.not.use_imex_scheme)then
+           call mpistop('select IMEX scheme for FLD radiation use')
+        endif
+        if(use_multigrid)then
+           call mhd_set_mg_bounds()
+        else
+           call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
+        endif
+    endif
+
   end subroutine mhd_check_params
+
+  !> Set the boundaries for the diffusion of E
+  subroutine mhd_set_mg_bounds 
+    use mod_global_parameters
+    use mod_multigrid_coupling
+    use mod_usr_methods
+    integer :: iB
+  
+    ! Set boundary conditions for the multigrid solver
+    do iB = 1, 2*ndim
+       select case (typeboundary(r_e, iB))
+       case (bc_symm)
+       ! d/dx u = 0
+           mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
+           mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
+       case (bc_asymm)
+           ! u = 0
+           mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
+           mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
+       case (bc_cont)
+           ! d/dx u = 0
+           ! mg%bc(iB, mg_iphi)%bc_type = mg_bc_continuous
+           mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
+           mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
+       case (bc_periodic)
+           ! Nothing to do here
+       case (bc_noinflow)
+           call usr_special_mg_bc(iB)
+       case (bc_special)
+           call usr_special_mg_bc(iB)
+       case default
+           call mpistop("divE_multigrid warning: unknown b.c. ")
+       end select
+    end do
+  end subroutine mhd_set_mg_bounds
 
   subroutine mhd_physical_units()
     use mod_global_parameters
@@ -1532,6 +1650,9 @@ contains
         if(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+&
           (^C&w(ix^D,b^C_)**2+))<small_e) flag(ix^D,e_) = .true.
       end if
+      if(mhd_radiation_fld)then
+         if(w(ix^D,r_e)<small_r_e) flag(ix^D,r_e) = .true.
+      endif
    {end do\}
 
   end subroutine mhd_check_w_origin
@@ -2247,6 +2368,9 @@ contains
             if(flag(ix^D,e_)) &
               w(ix^D,e_)=small_e+half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+))
           end if
+          if(mhd_radiation_fld)then
+             if(flag(ix^D,r_e)) w(ix^D,r_e)=small_r_e
+          endif
        {end do\}
       case ("average")
         ! do averaging of density
@@ -2266,6 +2390,9 @@ contains
                 +half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+))
          {end do\}
         end if
+        if(mhd_radiation_fld) then
+           call small_values_average(ixI^L, ixO^L, w, x, flag, r_e)
+        endif
       case default
         if(.not.primitive) then
           !convert w to primitive
@@ -3840,6 +3967,62 @@ contains
     res(ixO^S) = block%equi_vars(ixO^S,equi_pe0_,b0i)
   end subroutine mhd_get_pe_equi
 
+  !> Calculate radiation pressure within ixO^L
+  subroutine mhd_get_pradiation(w, x, ixI^L, ixO^L, prad, nth)
+    use mod_global_parameters
+    use mod_fld
+    use mod_afld
+    integer, intent(in)          :: ixI^L, ixO^L, nth
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: prad(ixO^S, 1:ndim, 1:ndim)
+       
+    select case (mhd_radiation_fld_formalism)
+    case('fld')
+      call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
+    case('afld')
+      call afld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
+    case default
+      call mpistop('Radiation formalism unknown')
+    end select
+  end subroutine mhd_get_pradiation
+
+  !> Calculates the sum of the gas pressure and the max Prad tensor element
+  subroutine mhd_get_pthermal_plus_pradiation(w, x, ixI^L, ixO^L, pth_plus_prad)
+    use mod_global_parameters
+    integer, intent(in)           :: ixI^L, ixO^L
+    double precision, intent(in)  :: w(ixI^S, 1:nw)
+    double precision, intent(in)  :: x(ixI^S, 1:ndim)
+    double precision              :: pth(ixI^S)
+    double precision              :: prad_tensor(ixO^S, 1:ndim, 1:ndim)
+    double precision              :: prad_max(ixO^S)
+    double precision, intent(out) :: pth_plus_prad(ixI^S)
+    integer :: ix^D
+        
+    call mhd_get_pthermal(w, x, ixI^L, ixO^L, pth)
+    call mhd_get_pradiation(w, x, ixI^L, ixO^L, prad_tensor, nghostcells)
+    {do ix^D = ixOmin^D,ixOmax^D\}
+      prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
+    {enddo\}
+    pth_plus_prad(ixO^S) = pth(ixO^S) + prad_max(ixO^S)
+  end subroutine mhd_get_pthermal_plus_pradiation
+
+  !> Calculates radiation temperature 
+  ! note: const_rad_a is assuming cgs units
+  subroutine mhd_get_trad(w, x, ixI^L, ixO^L, trad)
+    use mod_global_parameters
+    use mod_constants
+
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: trad(ixI^S)
+          
+    trad(ixI^S) = (w(ixI^S,r_e)*unit_pressure&
+    /const_rad_a)**(1.d0/4.d0)/unit_temperature
+
+  end subroutine mhd_get_trad
+
   !> Calculate fluxes within ixO^L without any splitting
   subroutine mhd_get_flux(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
@@ -3899,6 +4082,7 @@ contains
         ^C&f(ix^D,b^C_)=f(ix^D,b^C_)+vHall(ix^D,idim)*w(ix^D,b^C_)-vHall(ix^D,^C)*w(ix^D,mag(idim))\
      {end do\}
     end if
+
     if(mhd_glm) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,mag(idim))=w(ix^D,psi_)
@@ -3906,6 +4090,13 @@ contains
         f(ix^D,psi_) = cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
+
+    if(mhd_radiation_fld) then
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        f(ix^D,r_e)=w(ix^D,mom(idim))*wC(ix^D,r_e)
+      {end do\}
+    endif
+
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -4110,6 +4301,12 @@ contains
         f(ix^D,psi_) = cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
+
+    if(mhd_radiation_fld) then
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        f(ix^D,r_e)=w(ix^D,mom(idim))*wC(ix^D,r_e)
+      {end do\}
+    endif
 
     if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
@@ -4815,6 +5012,11 @@ contains
       call cak_add_source(qdt,ixI^L,ixO^L,wCT,w,x,mhd_energy,qsourcesplit,active)
     end if
 
+    ! This is where the radiation force and heating/cooling are added
+    if (mhd_radiation_fld) then
+       call mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
+    endif
+
     ! update temperature from new pressure, density, and old ionization degree
     if(mhd_partial_ionization) then
       if(.not.qsourcesplit) then
@@ -4824,6 +5026,43 @@ contains
     end if
 
   end subroutine mhd_add_source
+
+  subroutine mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
+    use mod_constants
+    use mod_global_parameters
+    use mod_usr_methods
+    use mod_fld
+    use mod_afld
+
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
+    double precision, intent(in)    :: wCT(ixI^S,1:nw)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+    logical, intent(in) :: qsourcesplit
+    logical, intent(inout) :: active
+    double precision :: cmax(ixI^S)
+
+    select case(mhd_radiation_fld_formalism)
+    case('fld')
+      call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      ! radiation force
+      call get_fld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
+        mhd_energy,qsourcesplit,active)
+      call mhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_add_radiation')
+    case('afld')
+      call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      ! radiation force
+      call get_afld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
+        mhd_energy,qsourcesplit,active)
+      call mhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'afld_add_radiation')
+      ! photon tiring, heating and cooling
+      call get_afld_energy_interact(qdt,ixI^L,ixO^L,wCT,w,x,&
+        mhd_energy,qsourcesplit,active)
+    case default
+      call mpistop('Radiation formalism unknown')
+    end select
+
+  end subroutine mhd_add_radiation_source
 
   !> add some source terms to total energy related to has_equi_rho_and_p=T
   subroutine add_equi_terms(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
@@ -5981,13 +6220,15 @@ contains
         block%J0(ixO^S,idirmin0:3)
   end subroutine get_current
 
-  !> If resistivity is not zero, check diffusion time limit for dt
+  !> If resistivity is not zero, check diffusion time limit for dt and similar other effects
   subroutine mhd_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
     use mod_viscosity, only: viscosity_get_dt
     use mod_gravity, only: gravity_get_dt
     use mod_cak_force, only: cak_get_dt
+    use mod_fld, only: fld_radforce_get_dt
+    use mod_afld, only: afld_radforce_get_dt
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
@@ -6046,6 +6287,17 @@ contains
     if (mhd_cak_force) then
       call cak_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
+
+    if(mhd_radiation_fld) then
+      select case(mhd_radiation_fld_formalism)
+        case('fld')
+          call fld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+        case('afld')
+          call afld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+        case default
+          call mpistop('Radiation formalism unknown')
+      end select
+    endif
 
   end subroutine mhd_get_dt
 

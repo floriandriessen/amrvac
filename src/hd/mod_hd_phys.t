@@ -281,6 +281,9 @@ contains
        if(hd_dust.and.hd_dust_implicit)then
           call mpistop('implicit dust addition not compatible with FLD radiation')
        endif
+       if(SI_unit)then
+          call mpistop('using FLD implies the use of cgs units')
+       endif
        if(.not.hd_energy)then
           call mpistop('using FLD implies the use of an energy equation, set hd_energy=T')
        else
@@ -301,6 +304,8 @@ contains
            call mpistop('Radiation formalism unknown')
           end select
        endif
+    else
+      r_e=-1
     endif
 
     phys_get_dt              => hd_get_dt
@@ -1532,13 +1537,13 @@ contains
       ! radiation force
       call get_fld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
         hd_energy,qsourcesplit,active)
-      call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
+      call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_add_radiation')
     case('afld')
       call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       ! radiation force
       call get_afld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
         hd_energy,qsourcesplit,active)
-      call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
+      call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'afld_add_radiation')
       ! photon tiring, heating and cooling
       call get_afld_energy_interact(qdt,ixI^L,ixO^L,wCT,w,x,&
         hd_energy,qsourcesplit,active)
@@ -1694,7 +1699,7 @@ contains
                +0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_)
            end if
            if(hd_radiation_fld) then
-              ! do averaging of density
+              ! do averaging of radiative energy density
               call small_values_average(ixI^L, ixO^L, w, x, flag, r_e)
            endif
            if(hd_dust)then

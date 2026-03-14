@@ -162,7 +162,7 @@ module mod_fld
         !> Momentum equation source term
         w(ixO^S,iw_mom(idir)) = w(ixO^S,iw_mom(idir)) &
             + qdt*radiation_forceCT(ixO^S,idir)
-        !> Energy equation source term (kinetic energy)
+        !> Energy equation source term 
         w(ixO^S,iw_e) = w(ixO^S,iw_e) &
             + qdt*wCT(ixO^S,iw_mom(idir))/wCT(ixO^S,iw_rho)*radiation_forceCT(ixO^S,idir)
       enddo
@@ -295,6 +295,8 @@ module mod_fld
         normgrad2(ixO^S) = normgrad2(ixO^S)+grad_r_e(ixO^S)**2
       end do
       call fld_get_opacity(w,x,ixI^L,ixO^L,kappa)
+      ! Note: possible zeros for uniform setup, to adjust
+      if(maxval(normgrad2(ixO^S))==0.0d0)call mpistop("choose other fluxlimiter, FreeStream has issues")
       fld_R(ixO^S) = dsqrt(normgrad2(ixO^S))/(kappa(ixO^S)*w(ixO^S,iw_rho)*w(ixO^S,iw_r_e))
       !> Calculate the flux limiter, lambda
       fld_lambda(ixO^S) = one/fld_R(ixO^S)
@@ -428,13 +430,12 @@ module mod_fld
       do jdir = 1,ndim
         if(idir .ne. jdir) eddington_tensor(ixO^S,idir,jdir) = zero
         tnsr2(ixO^S,idir,jdir) = half*(3.d0*f(ixO^S)-one) &
-            * grad_r_e(ixO^S,idir)*grad_r_e(ixO^S,jdir)/max(normgrad2(ixO^S),1.e-8)
+            * grad_r_e(ixO^S,idir)*grad_r_e(ixO^S,jdir)/max(normgrad2(ixO^S),smalldouble)
       enddo
     enddo
     do idir = 1,ndim
       do jdir = 1,ndim
-        where((tnsr2(ixO^S,idir,jdir) .eq. tnsr2(ixO^S,idir,jdir)) &
-          .and. (normgrad2(ixO^S) .gt. smalldouble))
+        where(normgrad2(ixO^S) .gt. smalldouble)
           eddington_tensor(ixO^S,idir,jdir) = eddington_tensor(ixO^S,idir,jdir)+tnsr2(ixO^S,idir,jdir)
         endwhere
       enddo
