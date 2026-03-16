@@ -32,7 +32,7 @@ module mod_fld
     !> Which method to find the root for the energy interaction polynomial
     character(len=8) :: fld_interaction_method = 'Halley'
     !> Use or dont use lineforce opacities
-    logical :: Lineforce_opacities = .false.
+    logical :: lineforce_opacities = .false.
     !> Resume run when multigrid returns error
     logical :: diffcrash_resume = .true.
     !> Index for Flux weighted opacities
@@ -118,7 +118,8 @@ module mod_fld
     fld_gamma = r_gamma
     !> Read in opacity table if necesary
     if(fld_opacity_law .eq. 'opal') call init_opal_table(fld_opal_table)
-    if((fld_opacity_law .eq. 'thomson') .or. (fld_opacity_law .eq. 'fastwind'))  then
+    if(fld_opacity_law .eq. 'thomson')  then
+      ! special fixed value for thomson opacity, assuming cgs units
       sigma_thomson = 6.6524585d-25
       fld_kappa0 = sigma_thomson/const_mp * (1.+2.*He_abundance)/(1.+4.*He_abundance)
     endif
@@ -162,6 +163,7 @@ module mod_fld
     end if
   end subroutine add_fld_rad_force
 
+  !> get dt limit for radiation force: NOTE: only uniform cartesian here!
   subroutine fld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
@@ -189,7 +191,6 @@ module mod_fld
   !> by calling mod_opal_opacity
   subroutine fld_get_opacity(w, x, ixI^L, ixO^L, fld_kappa)
     use mod_global_parameters
-    use mod_physics, only: phys_get_pthermal
     use mod_physics, only: phys_get_tgas
     use mod_usr_methods
     use mod_opal_opacity
@@ -197,42 +198,14 @@ module mod_fld
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out) :: fld_kappa(ixO^S)
-    double precision :: Temp(ixI^S), pth(ixI^S), a2(ixO^S)
-    double precision :: rho0,Temp0,n,sigma_b
-    double precision :: akram, bkram
+    double precision :: Temp(ixI^S)
+    double precision :: rho0,Temp0,n
     integer :: i,j,ix^D, idir
     select case (fld_opacity_law)
       case('const')
         fld_kappa(ixO^S) = fld_kappa0/unit_opacity
       case('thomson')
         fld_kappa(ixO^S) = fld_kappa0/unit_opacity
-      case('kramers')
-        rho0 = half !> Take lower value of rho in domain
-        fld_kappa(ixO^S) = fld_kappa0/unit_opacity*((w(ixO^S,iw_rho)/rho0))
-      case('bump')
-        !> Opacity bump
-        rho0 = 0.2d0 
-        n = 7.d0
-        sigma_b = 2.d-2
-        fld_kappa(ixO^S) = fld_kappa0/unit_opacity*(one + n*dexp(-one/sigma_b*(dlog(w(ixO^S,iw_rho)/rho0))**two))
-      case('non_iso')
-        call phys_get_pthermal(w,x,ixI^L,ixO^L,Temp)
-        Temp(ixO^S)=Temp(ixO^S)/w(ixO^S,iw_rho)
-        rho0 = 0.5d0 !> Take lower value of rho in domain
-        Temp0 = one
-        n = -7.d0*half
-        fld_kappa(ixO^S) = fld_kappa0/unit_opacity*(w(ixO^S,iw_rho)/rho0)*(Temp(ixO^S)/Temp0)**n
-      case('fastwind')
-        call phys_get_pthermal(w,x,ixI^L,ixO^L,pth)
-        a2(ixO^S) = pth(ixO^S)/w(ixO^S,iw_rho)*unit_velocity**2.d0
-        akram = 13.1351597305
-        bkram = -4.5182188206
-        fld_kappa(ixO^S) = fld_kappa0/unit_opacity &
-        * (1.d0+10.d0**akram*w(ixO^S,iw_rho)*unit_density*(a2(ixO^S)/1.d12)**bkram)
-        {do ix^D = ixOmin^D,ixOmax^D\ }
-          !> Hard limit on kappa
-          fld_kappa(ix^D) = min(fld_kappa(ix^D), 2.3d0*fld_kappa0/unit_opacity)
-        {enddo\ }
       case('opal')
         call phys_get_tgas(w,x,ixI^L,ixO^L,Temp)
         {do ix^D=ixOmin^D,ixOmax^D\ }

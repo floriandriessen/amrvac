@@ -22,7 +22,7 @@
         time_integrator= 'IMEX_ARS3'
         flux_scheme=    20*'hll'
         limiter= 20*'weno3'
-        check_small_values=.false 
+        check_small_values=.false.
         small_values_method = 'replace'
         small_pressure = 1.d-12
         small_density = 1.d-12
@@ -50,16 +50,13 @@
         slowsteps=20000
  /
 
- &rmhd_list
+ &mhd_list
      typedivbfix='none'
      He_abundance = 0.0d0 
-     rmhd_energy = .true.
-     rmhd_gamma = 1.6666667d0
-     rmhd_radiation_formalism = 'fld'
-     rmhd_radiation_force = .T.
-     rmhd_energy_interact = .T.
-     rmhd_radiation_diffusion = .T.
-     rmhd_radiation_advection = .T.
+     mhd_energy = .true.
+     mhd_gamma = 1.6666667d0
+     mhd_radiation_fld_formalism = 'fld'
+     mhd_radiation_fld = .T.
  /
 
  &fld_list

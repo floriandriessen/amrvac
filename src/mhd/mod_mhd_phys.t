@@ -3972,20 +3972,20 @@ contains
   end subroutine mhd_get_pe_equi
 
   !> Calculate radiation pressure within ixO^L
-  subroutine mhd_get_pradiation(w, x, ixI^L, ixO^L, prad, nth)
+  subroutine mhd_get_pradiation(w, x, ixI^L, ixO^L, prad)
     use mod_global_parameters
     use mod_fld
     use mod_afld
-    integer, intent(in)          :: ixI^L, ixO^L, nth
+    integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: prad(ixO^S, 1:ndim, 1:ndim)
        
     select case (mhd_radiation_fld_formalism)
     case('fld')
-      call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
+      call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nghostcells)
     case('afld')
-      call afld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
+      call afld_get_radpress(w, x, ixI^L, ixO^L, prad, nghostcells)
     case default
       call mpistop('Radiation formalism unknown')
     end select
@@ -4004,7 +4004,7 @@ contains
     integer :: ix^D
         
     call mhd_get_pthermal(w, x, ixI^L, ixO^L, pth)
-    call mhd_get_pradiation(w, x, ixI^L, ixO^L, prad_tensor, nghostcells)
+    call mhd_get_pradiation(w, x, ixI^L, ixO^L, prad_tensor)
     {do ix^D = ixOmin^D,ixOmax^D\}
       prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
     {enddo\}

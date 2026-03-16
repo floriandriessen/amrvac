@@ -31,10 +31,6 @@ module mod_afld
     integer, allocatable :: i_diff_mg(:)
     !> Which method to find the root for the energy interaction polynomial
     character(len=8) :: fld_interaction_method = 'Halley'
-    !> Set Diffusion coefficient to unity
-    logical :: fld_diff_testcase = .false.
-    !> Use or dont use lineforce opacities
-    logical :: Lineforce_opacities = .false.
     !> Resume run when multigrid returns error
     logical :: diffcrash_resume = .true.
     !> A copy of (m)hd_Gamma
@@ -62,9 +58,9 @@ module mod_afld
     integer                      :: n
 
     namelist /fld_list/ fld_kappa0, fld_Eint_split, fld_Radforce_split, &
-    fld_bisect_tol, fld_diff_testcase, fld_diff_tol, fld_opal_table, &
+    fld_bisect_tol, fld_diff_tol, fld_opal_table, &
     fld_opacity_law, fld_fluxlimiter, fld_interaction_method, &
-    lineforce_opacities, diffcrash_resume
+    diffcrash_resume
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -87,7 +83,6 @@ module mod_afld
     use mod_opal_opacity, only: init_opal_table
     use mod_multigrid_coupling
     double precision, intent(in) :: He_abundance, afld_gamma
-    double precision :: sigma_thomson
     integer :: idir,jdir
     character(len=1) :: ind_1
     character(len=1) :: ind_2
@@ -195,6 +190,7 @@ module mod_afld
     end if
   end subroutine add_afld_rad_force
 
+  !> get dt limit for radiation force: NOTE: only uniform cartesian here!
   subroutine afld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
@@ -226,7 +222,6 @@ module mod_afld
     use mod_constants
     use mod_global_parameters
     use mod_usr_methods
-    use mod_physics, only: phys_get_pthermal !needed to get temp
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
     double precision, intent(in)    :: wCT(ixI^S,1:nw)
@@ -246,7 +241,6 @@ module mod_afld
   !> by calling mod_opal_opacity
   subroutine afld_get_opacity(w, x, ixI^L, ixO^L, fld_kappa)
     use mod_global_parameters
-    use mod_physics, only: phys_get_pthermal
     use mod_physics, only: phys_get_tgas
     use mod_usr_methods
     use mod_opal_opacity
@@ -254,45 +248,14 @@ module mod_afld
     double precision, intent(in)  :: w(ixI^S, 1:nw)
     double precision, intent(in)  :: x(ixI^S, 1:ndim)
     double precision, intent(out) :: fld_kappa(ixO^S,1:ndim)
-    integer :: i,j,ix^D, idir
-    double precision :: Temp(ixI^S), pth(ixI^S), a2(ixO^S)
-    double precision :: rho0,Temp0,n,sigma_b
-    double precision :: akram, bkram
-    double precision :: vth(ixO^S), gradv(ixI^S), eta(ixO^S), t(ixO^S)
+    integer :: ix^D, idir
+    double precision :: Temp(ixI^S)
+    double precision :: rho0,Temp0,n
 
     do idir = 1, ndim
       select case (fld_opacity_law(idir))
       case('const')
         fld_kappa(ixO^S,idir) = fld_kappa0/unit_opacity
-      case('thomson')
-        fld_kappa(ixO^S,idir) = fld_kappa0/unit_opacity
-      case('kramers')
-        rho0 = half !> Take lower value of rho in domain
-        fld_kappa(ixO^S,idir) = fld_kappa0/unit_opacity*((w(ixO^S,iw_rho)/rho0))
-      case('bump')
-        !> Opacity bump
-        rho0 = 0.2d0
-        n = 7.d0
-        sigma_b = 2.d-2
-        fld_kappa(ixO^S,idir) = fld_kappa0/unit_opacity*(one + n*dexp(-one/sigma_b*(dlog(w(ixO^S,iw_rho)/rho0))**two))
-      case('non_iso')
-        call phys_get_pthermal(w,x,ixI^L,ixO^L,Temp)
-        Temp(ixO^S) = Temp(ixO^S)/w(ixO^S,iw_rho)
-        rho0 = 0.5d0 !> Take lower value of rho in domain
-        Temp0 = one
-        n = -7.d0/two
-        fld_kappa(ixO^S,idir) = fld_kappa0/unit_opacity*(w(ixO^S,iw_rho)/rho0)*(Temp(ixO^S)/Temp0)**n
-      case('fastwind')
-        call phys_get_pthermal(w,x,ixI^L,ixO^L,pth)
-        a2(ixO^S) = pth(ixO^S)/w(ixO^S,iw_rho)*unit_velocity**2.d0
-        akram = 13.1351597305d0
-        bkram = -4.5182188206d0
-        fld_kappa(ixO^S,idir) = fld_kappa0/unit_opacity &
-            * (1.d0+10.d0**akram*w(ixO^S,iw_rho)*unit_density*(a2(ixO^S)/1.d12)**bkram)
-        {do ix^D=ixOmin^D,ixOmax^D\ }
-          !> Hard limit on kappa
-          fld_kappa(ix^D,idir) = min(fld_kappa(ix^D,idir),2.3d0*fld_kappa0/unit_opacity)
-        {enddo\}
       case('opal')
         call phys_get_tgas(w,x,ixI^L,ixO^L,Temp)
         {do ix^D=ixOmin^D,ixOmax^D\ }
@@ -651,24 +614,19 @@ module mod_afld
     double precision, intent(in) :: wCT(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision :: kappa(ixO^S,1:ndim), lambda(ixO^S,1:ndim), fld_R(ixO^S,1:ndim)
-    double precision :: max_D(ixI^S), grad_r_e(ixI^S), rad_e(ixI^S)
     double precision :: cc
-    integer :: idir,i,j,ix^D
+    integer :: idir
 
     cc = const_c/unit_velocity
-    if(fld_diff_testcase) then
-      w(ixO^S,i_diff_mg(:)) = 1.d0
-    else
-      call afld_get_opacity(wCT, x, ixI^L, ixO^L, kappa)
-      call afld_get_fluxlimiter(wCT, x, ixI^L, ixO^L, lambda, fld_R, nghostcells-1)
-      do idir = 1,ndim
-        !> calculate diffusion coefficient
-        w(ixO^S,i_diff_mg(idir)) = cc*lambda(ixO^S,idir)/(kappa(ixO^S,idir)*wCT(ixO^S,iw_rho))
-        where(w(ixO^S,i_diff_mg(idir)) .lt. 0.d0)
-          w(ixO^S,i_diff_mg(idir)) = smalldouble
-        end where
-      enddo
-    endif
+    call afld_get_opacity(wCT, x, ixI^L, ixO^L, kappa)
+    call afld_get_fluxlimiter(wCT, x, ixI^L, ixO^L, lambda, fld_R, nghostcells-1)
+    do idir = 1,ndim
+       !> calculate diffusion coefficient
+       w(ixO^S,i_diff_mg(idir)) = cc*lambda(ixO^S,idir)/(kappa(ixO^S,idir)*wCT(ixO^S,iw_rho))
+       where(w(ixO^S,i_diff_mg(idir)) .lt. 0.d0)
+         w(ixO^S,i_diff_mg(idir)) = smalldouble
+       end where
+    enddo
     if(associated(usr_special_diffcoef)) &
       call usr_special_diffcoef(w, wCT, x, ixI^L, ixO^L)
   end subroutine afld_get_diffcoef_central

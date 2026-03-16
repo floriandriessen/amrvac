@@ -1,5 +1,5 @@
 module mod_usr
-  use mod_rmhd
+  use mod_mhd
   implicit none
 
 contains
@@ -16,11 +16,11 @@ contains
     unit_temperature   = 1.1d3  !1.d4   ! K
     unit_numberdensity = 1.001d10 !1.d9   ! cm^-3
     
-    call rmhd_activate()
+    call mhd_activate()
   end subroutine usr_init
 
   subroutine initglobaldata_usr
-     rmhd_gamma = 5.0d0/3.0d0
+     mhd_gamma = 5.0d0/3.0d0
   end subroutine initglobaldata_usr
 
   subroutine initonegrid_usr(ixG^L,ix^L,w,x)
@@ -78,7 +78,7 @@ contains
        w(ix^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
     endwhere
 
-    call rmhd_to_conserved(ixG^L,ix^L,w,x)
+    call mhd_to_conserved(ixG^L,ix^L,w,x)
   end subroutine initonegrid_usr
 
   subroutine specialvar_output(ixI^L,ixO^L,w,x,normconv)

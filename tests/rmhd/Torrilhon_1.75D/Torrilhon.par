@@ -46,16 +46,13 @@
         slowsteps=20000
  /
 
- &rmhd_list
+ &mhd_list
      typedivbfix='none'
      He_abundance = 0.0d0
-     rmhd_energy = .true.
-     rmhd_gamma = 1.6666667d0
-     rmhd_radiation_formalism = 'fld'
-     rmhd_radiation_force = .true.
-     rmhd_energy_interact = .true.
-     rmhd_radiation_diffusion = .true.
-     rmhd_radiation_advection = .true.
+     mhd_energy = .true.
+     mhd_gamma = 1.6666667d0
+     mhd_radiation_fld_formalism = 'fld'
+     mhd_radiation_fld = .true.
  /
 
  &fld_list

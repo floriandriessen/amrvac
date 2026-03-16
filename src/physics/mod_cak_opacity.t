@@ -128,11 +128,11 @@ contains
     ! Local variables
     integer :: low_D_index, up_D_index, low_T_index, up_T_index
 
-    if (D > maxval(logD_list)) then
+    if (D .ge. maxval(logD_list)) then
       ! print*, 'Extrapolating in logR'
       low_D_index = iDmax-1
       up_D_index = iDmax
-    elseif (D < minval(logD_list)) then
+    elseif (D .le. minval(logD_list)) then
       ! print*, 'Extrapolating in logR'
       low_D_index = iDmin
       up_D_index = iDmin+1
@@ -140,11 +140,11 @@ contains
       call get_low_up_index(D, logD_list, iDmin, iDmax, low_D_index, up_D_index)
     endif
 
-    if (T > maxval(logT_list)) then
+    if (T .ge. maxval(logT_list)) then
       ! print*, 'Extrapolating in logT'
       low_T_index = iTmax-1
       up_T_index = iTmax
-    elseif (T < minval(logT_list)) then
+    elseif (T .le. minval(logT_list)) then
       ! print*, 'Extrapolating in logT'
       low_T_index = iTmin
       up_T_index = iTmin+1

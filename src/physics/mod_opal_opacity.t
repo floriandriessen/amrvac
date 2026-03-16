@@ -143,20 +143,20 @@ contains
 
     !print *,'enter with R and T=',R,T
     !print *,'check max-min(logR_list)=',maxval(logR_list),minval(logR_list)
-    if (R > maxval(logR_list)) then
+    if (R .ge. maxval(logR_list)) then
       low_R_index = iRmax-1
       up_R_index = iRmax
-    elseif (R < minval(logR_list)) then
+    elseif (R .le. minval(logR_list)) then
       low_R_index = iRmin
       up_R_index = iRmin+1
     else
       call get_low_up_index(R, logR_list, iRmin, iRmax, low_R_index, up_R_index)
     endif
 
-    if (T > maxval(logT_list)) then
+    if (T .ge. maxval(logT_list)) then
       low_T_index = iTmax-1
       up_T_index = iTmax
-    elseif (T < minval(logT_list)) then
+    elseif (T .le. minval(logT_list)) then
       low_T_index = iTmin
       up_T_index = iTmin+1
     else
