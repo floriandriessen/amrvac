@@ -135,7 +135,7 @@ module mod_hd_phys
   ! Begin: following relevant for radiative hydro using FLD
   ! first three are local and of interest for mod_usr applications
   public :: hd_get_pradiation
-  public :: hd_get_ptot
+  public :: hd_get_pthermal_plus_pradiation
   public :: hd_get_trad
   ! the following used in FLD modules
   !    as pointer phys_get_tgas
@@ -1170,7 +1170,6 @@ contains
     use mod_global_parameters
     use mod_fld
     use mod_afld
-
     integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
@@ -1187,28 +1186,24 @@ contains
   end subroutine hd_get_pradiation
 
   !> calculates the sum of the gas pressure and max Prad tensor element
-  subroutine hd_get_ptot(w, x, ixI^L, ixO^L, ptot)
+  subroutine hd_get_pthermal_plus_pradiation(w, x, ixI^L, ixO^L, pth_plus_prad)
     use mod_global_parameters
-
     integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision             :: pth(ixI^S)
     double precision             :: prad_tensor(ixO^S, 1:ndim, 1:ndim)
     double precision             :: prad_max(ixO^S)
-    double precision, intent(out):: ptot(ixI^S)
+    double precision, intent(out):: pth_plus_prad(ixI^S)
     integer :: ix^D
 
     call hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
     call hd_get_pradiation(w, x, ixI^L, ixO^L, prad_tensor)
-
     {do ix^D = ixOmin^D,ixOmax^D\}
       prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
     {enddo\}
-
-    ptot(ixO^S) = pth(ixO^S) + prad_max(ixO^S)
-
-  end subroutine hd_get_ptot
+    pth_plus_prad(ixO^S) = pth(ixO^S) + prad_max(ixO^S)
+  end subroutine hd_get_pthermal_plus_pradiation
 
   !> Calculates radiation temperature
   ! note: const_rad_a is assuming cgs units
@@ -1504,7 +1499,7 @@ contains
 
     ! This is where the radiation force and heating/cooling are added
     if (hd_radiation_fld) then
-       call hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
+       call hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     endif
 
     if(hd_partial_ionization) then
@@ -1516,7 +1511,7 @@ contains
 
   end subroutine hd_add_source
 
-  subroutine hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
+  subroutine hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     use mod_constants
     use mod_global_parameters
     use mod_usr_methods
@@ -1525,7 +1520,7 @@ contains
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
-    double precision, intent(in)    :: wCT(ixI^S,1:nw)
+    double precision, intent(in)    :: wCT(ixI^S,1:nw),wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     logical, intent(in) :: qsourcesplit
     logical, intent(inout) :: active
@@ -1535,13 +1530,13 @@ contains
     case('fld')
       call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       ! radiation force
-      call get_fld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
+      call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
         hd_energy,qsourcesplit,active)
       call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_add_radiation')
     case('afld')
       call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       ! radiation force
-      call get_afld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
+      call add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
         hd_energy,qsourcesplit,active)
       call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'afld_add_radiation')
       ! photon tiring, heating and cooling

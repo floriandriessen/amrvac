@@ -1576,6 +1576,10 @@ contains
       end if
     end if
 
+    !> Units for radiative flux and opacity, latter is used in FLD
+    unit_radflux = unit_velocity*unit_pressure
+    unit_opacity = one/(unit_density*unit_length)
+
   end subroutine mhd_physical_units
 
   subroutine mhd_check_w_semirelati(primitive,ixI^L,ixO^L,w,flag)
@@ -5014,7 +5018,7 @@ contains
 
     ! This is where the radiation force and heating/cooling are added
     if (mhd_radiation_fld) then
-       call mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
+       call mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     endif
 
     ! update temperature from new pressure, density, and old ionization degree
@@ -5027,7 +5031,7 @@ contains
 
   end subroutine mhd_add_source
 
-  subroutine mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
+  subroutine mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     use mod_constants
     use mod_global_parameters
     use mod_usr_methods
@@ -5036,7 +5040,7 @@ contains
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
-    double precision, intent(in)    :: wCT(ixI^S,1:nw)
+    double precision, intent(in)    :: wCT(ixI^S,1:nw),wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     logical, intent(in) :: qsourcesplit
     logical, intent(inout) :: active
@@ -5046,13 +5050,13 @@ contains
     case('fld')
       call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       ! radiation force
-      call get_fld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
+      call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
         mhd_energy,qsourcesplit,active)
       call mhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_add_radiation')
     case('afld')
       call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       ! radiation force
-      call get_afld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
+      call add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
         mhd_energy,qsourcesplit,active)
       call mhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'afld_add_radiation')
       ! photon tiring, heating and cooling

@@ -1,9 +1,10 @@
-!> Module for including anisotropic flux limited diffusion (AFLD)-approximation in Radiation-hydrodynamics simulations using mod_rhd
+!> Module for including anisotropic flux limited diffusion (AFLD)-approximation in Radiation-hydrodynamics simulations
 !> Based on Turner and stone 2001. See
 !> [1]Moens, N., Sundqvist, J. O., El Mellah, I., Poniatowski, L., Teunissen, J., and Keppens, R.,
 !> Radiation-hydrodynamics with MPI-AMRVAC . Flux-limited diffusion
 !> <i>Astronomy and Astrophysics</i>, vol. 657, 2022. doi:10.1051/0004-6361/202141023.
 !> For more information.
+!> with RK updates on 16/03/26
 
 module mod_afld
     use mod_comm_lib, only: mpistop
@@ -21,41 +22,34 @@ module mod_afld
     double precision, public :: fld_bisect_tol = 1.d-4
     !> Tolerance for adi method for radiative Energy diffusion
     double precision, public :: fld_diff_tol = 1.d-4
-    !> Number for splitting the diffusion module
-    double precision, public :: diff_crit
-    !> Use constant Opacity?
+    !> opacity switches 
     character(len=8), allocatable :: fld_opacity_law(:)
     character(len=50) :: fld_opal_table = 'Y09800'
-    !> Diffusion limit lambda = 0.33
+    !> flux limiter switch
     character(len=16) :: fld_fluxlimiter = 'Pomraning'
-    ! !> diffusion coefficient for multigrid method
+    !> diffusion coefficient for multigrid method
     integer, allocatable :: i_diff_mg(:)
     !> Which method to find the root for the energy interaction polynomial
     character(len=8) :: fld_interaction_method = 'Halley'
     !> Set Diffusion coefficient to unity
     logical :: fld_diff_testcase = .false.
-    !> Take running average for Diffusion coefficient
-    logical :: diff_coef_filter = .false.
-    integer :: size_D_filter = 1
-    !> Take a running average over the fluxlimiter
-    logical :: flux_lim_filter = .false.
-    integer :: size_L_filter = 1
     !> Use or dont use lineforce opacities
     logical :: Lineforce_opacities = .false.
     !> Resume run when multigrid returns error
     logical :: diffcrash_resume = .true.
-    !> A copy of rhd_Gamma
+    !> A copy of (m)hd_Gamma
     double precision, private, protected :: afld_gamma
     !> running timestep for diffusion solver, initialised as zero
     double precision :: dt_diff = 0.d0
     !> public methods
-    !> these are called in mod_rhd_phys
-    public :: get_afld_rad_force
+    !> these are called in mod_hd_phys or mod_mhd_phys
+    public :: afld_init
+    public :: afld_get_radpress
+    public :: add_afld_rad_force
     public :: get_afld_energy_interact
     public :: afld_radforce_get_dt
-    public :: afld_init
+    ! these are made public for mod_usr purposes and diagnostics
     public :: afld_get_radflux
-    public :: afld_get_radpress
     public :: afld_get_fluxlimiter
     public :: afld_get_opacity
   contains
@@ -70,7 +64,6 @@ module mod_afld
     namelist /fld_list/ fld_kappa0, fld_Eint_split, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_testcase, fld_diff_tol, fld_opal_table, &
     fld_opacity_law, fld_fluxlimiter, fld_interaction_method, &
-    diff_coef_filter, size_D_filter, flux_lim_filter, size_L_filter, &
     lineforce_opacities, diffcrash_resume
 
     do n = 1, size(files)
@@ -125,7 +118,7 @@ module mod_afld
 
   !> w[iw]=w[iw]+qdt*S[wCT,qtC,x] where S is the source based on wCT within ixO
   !> This subroutine handles the radiation force
-  subroutine get_afld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
+  subroutine add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
        energy,qsourcesplit,active)
     use mod_constants
     use mod_global_parameters
@@ -133,7 +126,7 @@ module mod_afld
     use mod_geometry
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
-    double precision, intent(in)    :: wCT(ixI^S,1:nw)
+    double precision, intent(in)    :: wCT(ixI^S,1:nw),wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     logical, intent(in) :: energy,qsourcesplit
     logical, intent(inout) :: active
@@ -161,20 +154,20 @@ module mod_afld
             + qdt*radiation_forceCT(ixO^S,idir)
         !> Energy equation source term (kinetic energy)
         w(ixO^S,iw_e) = w(ixO^S,iw_e) &
-            + qdt*wCT(ixO^S,iw_mom(idir))/wCT(ixO^S,iw_rho)*radiation_forceCT(ixO^S,idir)
+            + qdt*wCTprim(ixO^S,iw_mom(idir))*radiation_forceCT(ixO^S,idir)
       enddo
       !> Photon tiring
       !> calculate tensor div_v
       !> !$OMP PARALLEL DO
       do idir = 1,ndim
         do jdir = 1,ndim
-          vel(ixI^S) = wCT(ixI^S,iw_mom(jdir))/wCT(ixI^S,iw_rho)
+          vel(ixI^S) = wCTprim(ixI^S,iw_mom(jdir))
           call gradient(vel,ixI^L,ixO^L,idir,grad_v)
           div_v(ixO^S,idir,jdir) = grad_v(ixO^S)
         enddo
       enddo
       !> !$OMP END PARALLEL DO
-      call afld_get_eddington(wCt, x, ixI^L, ixO^L, edd, nghostcells)
+      call afld_get_eddington(wCT, x, ixI^L, ixO^L, edd, nghostcells)
       !> VARIABLE NAMES DIV ARE ACTUALLY GRADIENTS
       {^IFONED
       nabla_vP(ixO^S) = div_v(ixO^S,1,1)*edd(ixO^S,1,1) 
@@ -200,7 +193,7 @@ module mod_afld
       w(ixO^S,iw_r_e) = w(ixO^S,iw_r_e) &
           - qdt * nabla_vP(ixO^S)*wCT(ixO^S,iw_r_e)
     end if
-  end subroutine get_afld_rad_force
+  end subroutine add_afld_rad_force
 
   subroutine afld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
@@ -220,9 +213,9 @@ module mod_afld
     do idir = 1, ndim
       call gradient(w(ixI^S,iw_r_e),ixI^L,ixO^L,idir,grad_E,nghostcells)
       radiation_force(ixO^S,idir) = -lambda(ixO^S,idir)*grad_E(ixO^S)
-      max_grad = maxval(abs(radiation_force(ixO^S,idir)))
+      max_grad = maxval(dabs(radiation_force(ixO^S,idir)))
       max_grad = max(max_grad, epsilon(1.0d0))
-      dtnew = min(dtnew, courantpar/sqrt(max_grad*dxinv(idir)))
+      dtnew = min(dtnew, courantpar/dsqrt(max_grad*dxinv(idir)))
     end do
   end subroutine afld_radforce_get_dt
 
@@ -400,27 +393,6 @@ module mod_afld
       call mpistop('Fluxlimiter unknown')
     end select
 
-    if(flux_lim_filter) then
-      if(size_L_filter .lt. 1) call mpistop("D filter of size < 1 makes no sense")
-      if(size_L_filter .gt. nghostcells) call mpistop("D filter of size > nghostcells makes no sense")
-      do idir=1,ndim
-        tmp_L(ixO^S) = fld_lambda(ixO^S,idir)
-        filtered_L(ixO^S) = zero
-        do filter = 1,size_L_filter
-          {do ix^D = ixOmin^D+size_D_filter,ixOmax^D-size_L_filter\}
-            do idim = 1,ndim
-              filtered_L(ix^D) = filtered_L(ix^D) &
-                               + tmp_L(ix^D+filter*kr(idim,^D)) &
-                               + tmp_L(ix^D-filter*kr(idim,^D))
-            enddo
-          {enddo\}
-        enddo
-        {do ix^D = ixOmin^D+size_D_filter,ixOmax^D-size_D_filter\}
-          tmp_L(ix^D) = (tmp_L(ix^D)+filtered_L(ix^D))/(1+2*size_L_filter*ndim)
-        {enddo\}
-      enddo
-      fld_lambda(ixO^S,idir) = tmp_L(ixO^S)
-    endif
   end subroutine afld_get_fluxlimiter
 
   !> Calculate Radiation Flux
@@ -695,9 +667,6 @@ module mod_afld
         where(w(ixO^S,i_diff_mg(idir)) .lt. 0.d0)
           w(ixO^S,i_diff_mg(idir)) = smalldouble
         end where
-        if(diff_coef_filter) then
-          call afld_smooth_diffcoef(w,ixI^L,ixO^L,idir)
-        endif
       enddo
     endif
     if(associated(usr_special_diffcoef)) &
@@ -718,33 +687,6 @@ module mod_afld
     end do
     !$OMP END PARALLEL DO
   end subroutine update_diffcoeff
-
-  !> Use running average on Diffusion coefficient
-  subroutine afld_smooth_diffcoef(w, ixI^L, ixO^L,idir)
-    use mod_global_parameters
-    integer, intent(in) :: ixI^L, ixO^L, idir
-    double precision, intent(inout) :: w(ixI^S, 1:nw)
-    double precision :: tmp_D(ixI^S), filtered_D(ixI^S)
-    integer :: ix^D, filter, idim
-
-    if(size_D_filter .lt. 1) call mpistop("D filter of size < 1 makes no sense")
-    if(size_D_filter .gt. nghostcells) call mpistop("D filter of size > nghostcells makes no sense")
-    tmp_D(ixO^S) = w(ixO^S,i_diff_mg(idir))
-    filtered_D(ixO^S) = zero
-    do filter = 1,size_D_filter
-      {do ix^D = ixOmin^D+size_D_filter,ixOmax^D-size_D_filter\}
-        do idim = 1,ndim
-          filtered_D(ix^D) = filtered_D(ix^D) &
-                           + tmp_D(ix^D+filter*kr(idim,^D)) &
-                           + tmp_D(ix^D-filter*kr(idim,^D))
-        enddo
-      {enddo\}
-    enddo
-    {do ix^D = ixOmin^D+size_D_filter,ixOmax^D-size_D_filter\}
-      tmp_D(ix^D) = (tmp_D(ix^D)+filtered_D(ix^D))/(1+2*size_D_filter*ndim)
-    {enddo\}
-    w(ixO^S,i_diff_mg(idir)) = tmp_D(ixO^S)
-  end subroutine afld_smooth_diffcoef
 
   !> This subroutine calculates the radiation heating, radiation cooling
   !> and photon tiring using an implicit scheme.

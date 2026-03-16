@@ -2560,7 +2560,7 @@ contains
       call cak_add_source(qdt,ixI^L,ixO^L,wCT,w,x,rmhd_energy,qsourcesplit,active)
     end if
     !> This is where the radiation force and heating/cooling are added
-    call rmhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
+    call rmhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     ! update temperature from new pressure, density, and old ionization degree
     if(rmhd_partial_ionization) then
       if(.not.qsourcesplit) then
@@ -2570,7 +2570,7 @@ contains
     end if
   end subroutine rmhd_add_source
 
-  subroutine rmhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
+  subroutine rmhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     use mod_constants
     use mod_global_parameters
     use mod_usr_methods
@@ -2578,7 +2578,7 @@ contains
     use mod_afld
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
-    double precision, intent(in)    :: wCT(ixI^S,1:nw)
+    double precision, intent(in)    :: wCT(ixI^S,1:nw),wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     logical, intent(in) :: qsourcesplit
     logical, intent(inout) :: active
@@ -2588,12 +2588,12 @@ contains
     case('fld')
       call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       !> radiation force
-      if(rmhd_radiation_force) call get_fld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,rmhd_energy,qsourcesplit,active)
+      if(rmhd_radiation_force) call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,rmhd_energy,qsourcesplit,active)
       call rmhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
     case('afld')
       call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
       !> radiation force
-      if(rmhd_radiation_force) call get_afld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,rmhd_energy,qsourcesplit,active)
+      if(rmhd_radiation_force) call add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,rmhd_energy,qsourcesplit,active)
       call rmhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
       !> photon tiring, heating and cooling
       if(rmhd_energy) then

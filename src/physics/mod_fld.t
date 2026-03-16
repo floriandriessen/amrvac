@@ -1,5 +1,5 @@
-!> Nicolas Moens
-!> Module for including flux limited diffusion (FLD)-approximation in Radiation-hydrodynamics simulations using mod_rhd
+!> Nicolas Moens with updates by RK (16/03/2026)
+!> Module for including flux limited diffusion (FLD)-approximation in Radiation-hydrodynamics simulations
 !> Based on Turner and stone 2001. See
 !> [1]Moens, N., Sundqvist, J. O., El Mellah, I., Poniatowski, L., Teunissen, J., and Keppens, R.,
 !> Radiation-hydrodynamics with MPI-AMRVAC . Flux-limited diffusion
@@ -22,40 +22,34 @@ module mod_fld
     double precision, public :: fld_bisect_tol = 1.d-4
     !> Tolerance for adi method for radiative Energy diffusion
     double precision, public :: fld_diff_tol = 1.d-4
-    !> Number for splitting the diffusion module
-    double precision, public :: diff_crit
-    !> Use constant Opacity?
+    !> switches for opacity
     character(len=8)  :: fld_opacity_law = 'const'
-    character(len=50) :: fld_opal_table = 'Y09800' !>'xxxxxx'
-    !> Diffusion limit lambda = 0.33
+    character(len=50) :: fld_opal_table = 'Y09800' 
+    !> flux limiter choice
     character(len=16) :: fld_fluxlimiter = 'Pomraning'
     !> diffusion coefficient for multigrid method
     integer :: i_diff_mg
     !> Which method to find the root for the energy interaction polynomial
     character(len=8) :: fld_interaction_method = 'Halley'
-    !> Take running average for Diffusion coefficient
-    logical :: diff_coef_filter = .false.
-    integer :: size_D_filter = 1
-    !> Take a running average over the fluxlimiter
-    logical :: flux_lim_filter = .false.
-    integer :: size_L_filter = 1
     !> Use or dont use lineforce opacities
     logical :: Lineforce_opacities = .false.
     !> Resume run when multigrid returns error
     logical :: diffcrash_resume = .true.
     !> Index for Flux weighted opacities
     integer, allocatable, public :: i_opf(:)
-    !> A copy of rhd_Gamma
+    !> A copy of (m)hd_Gamma
     double precision, private, protected :: fld_gamma
     !> running timestep for diffusion solver, initialised as zero
     double precision :: dt_diff = 0.d0
     !> public methods
-    !> these are called in mod_rhd_phys
-    public :: get_fld_rad_force
-    public :: fld_radforce_get_dt
+    !> these are called in mod_hd_phys or mod_mhd_phys
     public :: fld_init
-    public :: fld_get_radflux
     public :: fld_get_radpress
+    public :: fld_get_diffcoef_central
+    public :: add_fld_rad_force
+    public :: fld_radforce_get_dt
+    ! these are made public for mod_usr purposes and diagnostics
+    public :: fld_get_radflux
     public :: fld_get_fluxlimiter
     public :: fld_get_opacity
   contains
@@ -70,7 +64,6 @@ module mod_fld
     namelist /fld_list/ fld_kappa0, fld_Eint_split, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_tol,&
     fld_opacity_law, fld_fluxlimiter, fld_interaction_method, &
-    diff_coef_filter, size_D_filter, flux_lim_filter, size_L_filter, &
     lineforce_opacities, diffcrash_resume, fld_opal_table
 
     do n = 1, size(files)
@@ -133,7 +126,7 @@ module mod_fld
 
   !> w[iw]=w[iw]+qdt*S[wCT,qtC,x] where S is the source based on wCT within ixO
   !> This subroutine handles the radiation force
-  subroutine get_fld_rad_force(qdt,ixI^L,ixO^L,wCT,w,x,&
+  subroutine add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
        energy,qsourcesplit,active)
     use mod_constants
     use mod_global_parameters
@@ -141,7 +134,7 @@ module mod_fld
     use mod_geometry
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
-    double precision, intent(in)    :: wCT(ixI^S,1:nw)
+    double precision, intent(in)    :: wCT(ixI^S,1:nw),wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     logical, intent(in) :: energy,qsourcesplit
     logical, intent(inout) :: active
@@ -164,10 +157,10 @@ module mod_fld
             + qdt*radiation_forceCT(ixO^S,idir)
         !> Energy equation source term 
         w(ixO^S,iw_e) = w(ixO^S,iw_e) &
-            + qdt*wCT(ixO^S,iw_mom(idir))/wCT(ixO^S,iw_rho)*radiation_forceCT(ixO^S,idir)
+            + qdt*wCTprim(ixO^S,iw_mom(idir))*radiation_forceCT(ixO^S,idir)
       enddo
     end if
-  end subroutine get_fld_rad_force
+  end subroutine add_fld_rad_force
 
   subroutine fld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
@@ -186,9 +179,9 @@ module mod_fld
     do idir = 1, ndim
       call gradient(w(ixI^S,iw_r_e),ixI^L,ixO^L,idir,grad_E,nghostcells)
       radiation_force(ixO^S,idir) = -lambda(ixO^S)*grad_E(ixO^S)
-      max_grad = maxval(abs(radiation_force(ixO^S,idir)))
+      max_grad = maxval(dabs(radiation_force(ixO^S,idir)))
       max_grad = max(max_grad, epsilon(1.0d0))
-      dtnew = min(dtnew, courantpar / sqrt(max_grad * dxinv(idir)))
+      dtnew = min(dtnew, courantpar / dsqrt(max_grad * dxinv(idir)))
     end do
   end subroutine fld_radforce_get_dt
 
@@ -207,7 +200,6 @@ module mod_fld
     double precision :: Temp(ixI^S), pth(ixI^S), a2(ixO^S)
     double precision :: rho0,Temp0,n,sigma_b
     double precision :: akram, bkram
-    double precision :: vth(ixO^S), gradv(ixI^S), eta(ixO^S), t(ixO^S)
     integer :: i,j,ix^D, idir
     select case (fld_opacity_law)
       case('const')
@@ -343,25 +335,6 @@ module mod_fld
       call mpistop('Fluxlimiter unknown')
     end select
 
-    if(flux_lim_filter) then
-      if(size_L_filter .lt. 1) call mpistop("D filter of size < 1 makes no sense")
-      if(size_L_filter .gt. nghostcells) call mpistop("D filter of size > nghostcells makes no sense")
-      tmp_L(ixO^S) = fld_lambda(ixO^S)
-      filtered_L(ixO^S) = zero
-      do filter = 1,size_L_filter
-        {do ix^D = ixOmin^D+size_D_filter,ixOmax^D-size_L_filter\}
-          do idir = 1,ndim
-            filtered_L(ix^D) = filtered_L(ix^D) &
-                             + tmp_L(ix^D+filter*kr(idir,^D)) &
-                             + tmp_L(ix^D-filter*kr(idir,^D))
-          enddo
-        {enddo\}
-      enddo
-      {do ix^D = ixOmin^D+size_D_filter,ixOmax^D-size_D_filter\}
-        tmp_L(ix^D) = (tmp_L(ix^D)+filtered_L(ix^D))/(1+2*size_L_filter*ndim)
-      {enddo\}
-      fld_lambda(ixO^S) = tmp_L(ixO^S)
-    endif
   end subroutine fld_get_fluxlimiter
 
   !> Calculate Radiation Flux
@@ -392,7 +365,6 @@ module mod_fld
   end subroutine fld_get_radflux
 
   !> Calculate Eddington-tensor
-  !> Stores Eddington-tensor in w-array
   subroutine fld_get_eddington(w, x, ixI^L, ixO^L, eddington_tensor, nth)
     use mod_global_parameters
     use mod_geometry
@@ -729,9 +701,6 @@ module mod_fld
     w(ixO^S,i_diff_mg) = cc*lambda(ixO^S)/(kappa(ixO^S)*wCT(ixO^S,iw_rho))
     where(w(ixO^S,i_diff_mg) .lt. 0.d0) &
       w(ixO^S,i_diff_mg) = smalldouble
-    if(diff_coef_filter) then
-      call fld_smooth_diffcoef(w, ixI^L, ixO^L)
-    endif
     if(associated(usr_special_diffcoef)) &
       call usr_special_diffcoef(w, wCT, x, ixI^L, ixO^L)
   end subroutine fld_get_diffcoef_central
@@ -750,33 +719,6 @@ module mod_fld
     end do
     !$OMP END PARALLEL DO
   end subroutine update_diffcoeff
-
-  !> Use running average on Diffusion coefficient
-  subroutine fld_smooth_diffcoef(w, ixI^L, ixO^L)
-    use mod_global_parameters
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(inout) :: w(ixI^S, 1:nw)
-    double precision :: tmp_D(ixI^S), filtered_D(ixI^S)
-    integer :: ix^D, filter, idir
-
-    if(size_D_filter .lt. 1) call mpistop("D filter of size < 1 makes no sense")
-    if(size_D_filter .gt. nghostcells) call mpistop("D filter of size > nghostcells makes no sense")
-    tmp_D(ixO^S) = w(ixO^S,i_diff_mg)
-    filtered_D(ixO^S) = zero
-    do filter = 1,size_D_filter
-      {do ix^D = ixOmin^D+size_D_filter,ixOmax^D-size_D_filter\}
-        do idir = 1,ndim
-          filtered_D(ix^D) = filtered_D(ix^D) &
-                           + tmp_D(ix^D+filter*kr(idir,^D)) &
-                           + tmp_D(ix^D-filter*kr(idir,^D))
-        enddo
-      {enddo\}
-    enddo
-    {do ix^D = ixOmin^D+size_D_filter,ixOmax^D-size_D_filter\}
-      tmp_D(ix^D) = (tmp_D(ix^D)+filtered_D(ix^D))/(1+2*size_D_filter*ndim)
-    {enddo\}
-    w(ixO^S,i_diff_mg) = tmp_D(ixO^S)
-  end subroutine fld_smooth_diffcoef
 
   !> Find the root of the 4th degree polynomial using the bisection method
   subroutine Bisection_method(e_gas, E_rad, c0, c1)
