@@ -93,6 +93,9 @@ module mod_hd_phys
   integer, public, protected              :: hd_trac_nzones = 1
   double precision, public, protected     :: hd_trac_zone_splits(10) = -1.d0
 
+  !> Whether well-balanced reconstruction is used (Kaeppeli & Mishra style)
+  logical, public, protected              :: hd_well_balanced = .false.
+
   !> Helium abundance over Hydrogen
   double precision, public, protected  :: He_abundance=0.1d0
   !> Ionization fraction of H
@@ -137,7 +140,8 @@ contains
     hd_dust, hd_thermal_conduction, hd_radiative_cooling, hd_viscosity, &
     hd_gravity, He_abundance,H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
-    hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_cak_force, hd_partial_ionization
+    hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_cak_force, &
+    hd_partial_ionization, hd_well_balanced
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -384,6 +388,18 @@ contains
 
     ! Initialize gravity module
     if (hd_gravity) call gravity_init()
+
+    ! Well-balanced reconstruction: only meaningful with gravity
+    if (hd_well_balanced) then
+      if (.not. hd_gravity) then
+        hd_well_balanced = .false.
+        if(mype==0) write(*,*) 'WARNING: set hd_well_balanced=F (requires hd_gravity=T)'
+      else
+        phys_wb_transform => hd_wb_transform
+        phys_wb_inverse   => hd_wb_inverse
+        if(mype==0) write(*,*) 'Well-balanced reconstruction enabled'
+      end if
+    end if
 
     ! Initialize rotating_frame module
     if (hd_rotating_frame) call rotating_frame_init()
@@ -1761,5 +1777,116 @@ contains
       end select
     end if
   end subroutine hd_handle_small_values
+
+  !> Well-balanced transform: add cumulative hydrostatic integral to pressure
+  !> before reconstruction. In HSE, p + Phi = const, so the limiter sees a flat
+  !> field and produces zero slopes => exact balance with gravity source term.
+  subroutine hd_wb_transform(ixI^L, ixO^L, idims, w, x, wb_phi, wb_phi_face)
+    use mod_global_parameters
+    use mod_usr_methods, only: usr_gravity
+
+    integer, intent(in)              :: ixI^L, ixO^L, idims
+    double precision, intent(inout)  :: w(ixI^S, 1:nw)
+    double precision, intent(in)     :: x(ixI^S, 1:ndim)
+    double precision, intent(out)    :: wb_phi(ixI^S)
+    double precision, intent(out)    :: wb_phi_face(ixI^S)
+
+    double precision :: gravity_field(ixI^S, 1:ndim)
+    double precision :: dx_idims
+    integer :: ix^D
+
+    ! Get gravity acceleration at all cell centers
+    call usr_gravity(ixI^L, ixI^L, w, x, gravity_field)
+
+    ! Block-uniform grid spacing in the idims direction
+    dx_idims = dxlevel(idims)
+
+    ! Cumulative trapezoidal integral of rho*g along idims
+    ! Phi(i) = Phi(i-1) + 0.5*(rho_{i-1}*g_{i-1} + rho_i*g_i)*dx
+    ! Reference: Phi = 0 at first cell in each line along idims
+    wb_phi(ixI^S) = 0.0d0
+
+    select case(idims)
+    case(1)
+      {^NOONED
+      do ix2 = ixImin2, ixImax2}
+      {^IFTHREED
+      do ix3 = ixImin3, ixImax3}
+      do ix1 = ixImin1+1, ixImax1
+        wb_phi(ix1{^NOONED, ix2}{^IFTHREED, ix3}) = &
+          wb_phi(ix1-1{^NOONED, ix2}{^IFTHREED, ix3}) + 0.5d0 * dx_idims * ( &
+          w(ix1-1{^NOONED, ix2}{^IFTHREED, ix3}, rho_) * &
+          gravity_field(ix1-1{^NOONED, ix2}{^IFTHREED, ix3}, 1) + &
+          w(ix1{^NOONED, ix2}{^IFTHREED, ix3}, rho_) * &
+          gravity_field(ix1{^NOONED, ix2}{^IFTHREED, ix3}, 1))
+      end do
+      {^IFTHREED
+      end do}
+      {^NOONED
+      end do}
+    {^NOONED
+    case(2)
+      do ix1 = ixImin1, ixImax1
+      {^IFTHREED
+      do ix3 = ixImin3, ixImax3}
+      do ix2 = ixImin2+1, ixImax2
+        wb_phi(ix1, ix2{^IFTHREED, ix3}) = &
+          wb_phi(ix1, ix2-1{^IFTHREED, ix3}) + 0.5d0 * dx_idims * ( &
+          w(ix1, ix2-1{^IFTHREED, ix3}, rho_) * &
+          gravity_field(ix1, ix2-1{^IFTHREED, ix3}, 2) + &
+          w(ix1, ix2{^IFTHREED, ix3}, rho_) * &
+          gravity_field(ix1, ix2{^IFTHREED, ix3}, 2))
+      end do
+      {^IFTHREED
+      end do}
+      end do
+    }
+    {^IFTHREED
+    case(3)
+      do ix1 = ixImin1, ixImax1
+      do ix2 = ixImin2, ixImax2
+      do ix3 = ixImin3+1, ixImax3
+        wb_phi(ix1, ix2, ix3) = &
+          wb_phi(ix1, ix2, ix3-1) + 0.5d0 * dx_idims * ( &
+          w(ix1, ix2, ix3-1, rho_) * gravity_field(ix1, ix2, ix3-1, 3) + &
+          w(ix1, ix2, ix3, rho_) * gravity_field(ix1, ix2, ix3, 3))
+      end do
+      end do
+      end do
+    }
+    end select
+
+    ! Phi at right face of each cell (face i+1/2 in idims direction)
+    ! Phi_face(i) = Phi_cell(i) + 0.5 * rho_i * g_i * dx
+    wb_phi_face(ixI^S) = wb_phi(ixI^S) + 0.5d0 * dx_idims * &
+      w(ixI^S, rho_) * gravity_field(ixI^S, idims)
+
+    ! Transform: add Phi to cell-center pressure
+    w(ixI^S, p_) = w(ixI^S, p_) + wb_phi(ixI^S)
+
+  end subroutine hd_wb_transform
+
+  !> Well-balanced inverse: subtract cumulative integral at face positions
+  !> from reconstructed L/R pressures, restore original cell-center pressure.
+  subroutine hd_wb_inverse(ixI^L, ixL^L, ixR^L, idims, wLp, wRp, w, &
+       wb_phi, wb_phi_face)
+    use mod_global_parameters
+
+    integer, intent(in)              :: ixI^L, ixL^L, ixR^L, idims
+    double precision, intent(inout)  :: wLp(ixI^S, 1:nw), wRp(ixI^S, 1:nw)
+    double precision, intent(inout)  :: w(ixI^S, 1:nw)
+    double precision, intent(in)     :: wb_phi(ixI^S), wb_phi_face(ixI^S)
+
+    ! Subtract Phi_face from reconstructed interface pressures.
+    ! wb_phi_face(i) = Phi at face i+1/2 in the idims direction.
+    ! wLp(i) = left state at face i+1/2  (from cell i, extrapolated right)
+    ! wRp(i) = right state at face i+1/2 (from cell i+1, extrapolated left)
+    wLp(ixL^S, p_) = wLp(ixL^S, p_) - wb_phi_face(ixL^S)
+    wRp(ixR^S, p_) = wRp(ixR^S, p_) - wb_phi_face(ixR^S)
+
+    ! Restore original cell-center pressure
+    w(ixI^S, p_) = w(ixI^S, p_) - wb_phi(ixI^S)
+
+  end subroutine hd_wb_inverse
 
 end module mod_hd_phys

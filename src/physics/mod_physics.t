@@ -57,6 +57,8 @@ module mod_physics
   procedure(sub_convert), pointer         :: phys_to_primitive           => null()
   procedure(sub_check_params), pointer    :: phys_bind_eos_to_source     => null()
   procedure(sub_modify_wLR), pointer      :: phys_modify_wLR             => null()
+  procedure(sub_wb_transform), pointer   :: phys_wb_transform           => null()
+  procedure(sub_wb_inverse), pointer     :: phys_wb_inverse             => null()
   procedure(sub_get_cmax), pointer        :: phys_get_cmax               => null()
   procedure(sub_get_a2max), pointer       :: phys_get_a2max              => null()
   procedure(sub_get_tcutoff), pointer     :: phys_get_tcutoff            => null()
@@ -127,6 +129,24 @@ module mod_physics
        double precision, intent(inout) :: wLp(ixI^S,1:nw), wRp(ixI^S,1:nw)
        type(state)                     :: s
      end subroutine sub_modify_wLR
+
+     subroutine sub_wb_transform(ixI^L, ixO^L, idims, w, x, wb_phi, wb_phi_face)
+       use mod_global_parameters
+       integer, intent(in)              :: ixI^L, ixO^L, idims
+       double precision, intent(inout)  :: w(ixI^S, 1:nw)
+       double precision, intent(in)     :: x(ixI^S, 1:ndim)
+       double precision, intent(out)    :: wb_phi(ixI^S)
+       double precision, intent(out)    :: wb_phi_face(ixI^S)
+     end subroutine sub_wb_transform
+
+     subroutine sub_wb_inverse(ixI^L, ixL^L, ixR^L, idims, wLp, wRp, w, &
+          wb_phi, wb_phi_face)
+       use mod_global_parameters
+       integer, intent(in)              :: ixI^L, ixL^L, ixR^L, idims
+       double precision, intent(inout)  :: wLp(ixI^S, 1:nw), wRp(ixI^S, 1:nw)
+       double precision, intent(inout)  :: w(ixI^S, 1:nw)
+       double precision, intent(in)     :: wb_phi(ixI^S), wb_phi_face(ixI^S)
+     end subroutine sub_wb_inverse
 
      subroutine sub_get_cmax(w, x, ixI^L, ixO^L, idim, cmax)
        use mod_global_parameters
