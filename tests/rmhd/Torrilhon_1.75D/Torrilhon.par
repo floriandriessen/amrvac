@@ -51,8 +51,9 @@
      He_abundance = 0.0d0
      mhd_energy = .true.
      mhd_gamma = 1.6666667d0
-     mhd_radiation_fld_formalism = 'fld'
      mhd_radiation_fld = .true.
+     mhd_radiation_fld_formalism = 'fld'
+     mhd_radiation_use_csrad = .true.
  /
 
  &fld_list
