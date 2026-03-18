@@ -187,7 +187,7 @@ LOG10_ENERGY_SI_TO_CGS = 7.0
 NH_BOUNDS = [11, 25]  # log10(nH / m^-3)
 EINT_NH_BOUNDS = [-19.8, -16]  # log10(eint_per_nH / J)
 PRES_NH_BOUNDS = [-20.2, -16.4]  # log10(pres_per_nH / Pa m^3)
-N_GRID = 128
+N_GRID = 256
 
 # FI blending: smooth table convergence to fully-ionised ideal gas above T_blend.
 # Eliminates the discontinuity at the bypass threshold in AMRVAC.
@@ -597,8 +597,13 @@ def generate_eint_tables(n_grid, nh_grid, eint_nh_grid, H_only=False, blend=True
     return y_table, T_table
 
 
-def generate_pres_table(n_grid, nh_grid, pres_nh_grid, H_only=False, blend=True):
-    """Generate eint/p table on the (nH, p/nH) grid.
+def generate_pres_table_independent(n_grid, nh_grid, pres_nh_grid,
+                                    H_only=False, blend=True):
+    """Generate eint/p table by independently solving Saha on the (nH, p/nH) grid.
+
+    This is the LEGACY method. The round-trip e->p->e is not exact because the
+    Saha solver produces slightly different (T, y) values than the forward tables,
+    and the tables sample different grids with independent interpolation errors.
 
     If blend=True, smoothly blend toward FI eint/p = 1.5 + eion/p above T_blend.
     """
@@ -626,6 +631,89 @@ def generate_pres_table(n_grid, nh_grid, pres_nh_grid, H_only=False, blend=True)
     eint_pres_table[np.isnan(eint_pres_table)] = 1.5
     if do_blend:
         print(f"  FI blend (pres): {n_blended}/{n_grid*n_grid} grid points")
+    return eint_pres_table
+
+
+def generate_pres_table(y_table, T_table, n_grid, nh_grid, eint_nh_grid,
+                        pres_nh_grid, H_only=False, blend=True):
+    """Derive eint/p table from the forward (T, neOnH) tables.
+
+    Instead of independently solving Saha on the pressure grid, numerically
+    invert the forward tables using PCHIP interpolation. This ensures the
+    round-trip e->p->e is exact at forward grid nodes and O(h^4) between them.
+
+    The forward tables already have FI blending applied, so the derived p
+    values automatically incorporate the blend — no separate blend step needed.
+
+    Falls back to solve_pres() for pressure values outside the range of the
+    forward table's pressure coverage (typically only a few deep-chromosphere
+    points at the cold end).
+    """
+    from scipy.interpolate import PchipInterpolator
+
+    A_He = 0.0 if H_only else 0.1
+    eint_pres_table = np.zeros((n_grid, n_grid))
+    log_eint_nh = np.log10(eint_nh_grid)
+    log_pres_nh = np.log10(pres_nh_grid)
+    n_fallback = 0
+    n_monotone_fix = 0
+
+    for i in tqdm(range(n_grid), desc=f"p2eint ({'H' if H_only else 'HHe'})"):
+        # Compute p/nH at each forward grid node from the stored T and y.
+        # This is EXACTLY the same computation as the P table (line 799),
+        # so the values are guaranteed consistent with the forward tables.
+        p_over_nH = (1.0 + A_He + y_table[i, :]) * kB * T_table[i, :]
+        log_p_nH = np.log10(np.maximum(p_over_nH, 1e-100))
+
+        # Check and enforce monotonicity (physics guarantees p increases with
+        # eint at fixed nH, but numerical noise in the Saha solver can create
+        # tiny non-monotonic blips)
+        diffs = np.diff(log_p_nH)
+        if np.any(diffs <= 0):
+            n_bad = np.sum(diffs <= 0)
+            n_monotone_fix += n_bad
+            # Forward accumulate: ensure strictly increasing
+            for j in range(1, len(log_p_nH)):
+                if log_p_nH[j] <= log_p_nH[j-1]:
+                    log_p_nH[j] = log_p_nH[j-1] + 1e-12
+
+        # Build inverse mapping: log(p/nH) -> log(eint/nH) via PCHIP
+        inv_interp = PchipInterpolator(log_p_nH, log_eint_nh)
+
+        # Range covered by forward table for this nH slice
+        p_min, p_max = log_p_nH[0], log_p_nH[-1]
+
+        for k in range(n_grid):
+            if p_min <= log_pres_nh[k] <= p_max:
+                # In range: use PCHIP inversion of forward table
+                log_eint_k = float(inv_interp(log_pres_nh[k]))
+                eint_pres_table[i, k] = 10.0**log_eint_k / pres_nh_grid[k]
+            else:
+                # Out of range: fall back to independent Saha solve
+                ratio = solve_pres(nh_grid[i], pres_nh_grid[k] * nh_grid[i],
+                                   H_only=H_only)
+                ratio_val = float(ratio) if np.ndim(ratio) == 0 \
+                            else float(ratio[0])
+                # Apply FI blend if the fallback point is in the hot regime
+                if blend and INCLUDE_ION_E:
+                    _, _, eion_per_nH = fi_reference_values(A_He)
+                    n_per_nH_FI = 2.3 if A_He > 0 else 2.0
+                    T_approx = pres_nh_grid[k] / (n_per_nH_FI * kB)
+                    f = fi_blend_fraction(T_approx)
+                    if f > 0:
+                        ratio_FI = 1.5 + eion_per_nH / pres_nh_grid[k]
+                        ratio_val = (1.0 - f) * ratio_val + f * ratio_FI
+                eint_pres_table[i, k] = ratio_val
+                n_fallback += 1
+
+    eint_pres_table[np.isnan(eint_pres_table)] = 1.5
+
+    print(f"  p2eint derived from forward tables (round-trip consistent)")
+    if n_fallback > 0:
+        print(f"  Saha fallback: {n_fallback}/{n_grid*n_grid} points "
+              f"({100*n_fallback/(n_grid*n_grid):.1f}%)")
+    if n_monotone_fix > 0:
+        print(f"  Monotonicity fixes: {n_monotone_fix} intervals")
     return eint_pres_table
 
 
@@ -686,9 +774,13 @@ def compute_gamma1(y_table, T_table, nh_grid, eint_nh_grid, A_He, H_only,
     return gamma1_table
 
 
-def generate_eint_from_T_table(n_grid, nh_grid, T_table, A_He, include_ion_e,
-                               blend=True):
-    """Generate eint/nH(nH, T) table using forward Saha solve.
+def generate_eint_from_T_table_independent(n_grid, nh_grid, T_table, A_He,
+                                            include_ion_e, blend=True):
+    """Generate eint/nH(nH, T) table using independent forward Saha solve.
+
+    Legacy method: solves Saha independently at each (nH, T) grid point.
+    Not round-trip consistent with the forward T(nH, eint/nH) table because
+    the forward and inverse tables are computed independently.
 
     Returns (table, T_grid) where:
       - table: log10(eint/nH) in SI (J), shape (n_nH, n_T)
@@ -705,7 +797,7 @@ def generate_eint_from_T_table(n_grid, nh_grid, T_table, A_He, include_ion_e,
     T_grid = np.logspace(np.log10(T_min), np.log10(T_max), n_grid)
     eint_from_T = np.zeros((len(nh_grid), n_grid))
 
-    for i, nH in enumerate(tqdm(nh_grid, desc="eint_from_T")):
+    for i, nH in enumerate(tqdm(nh_grid, desc="eint_from_T (independent)")):
         for j, T in enumerate(T_grid):
             eint_saha = solve_at_T(nH, T, A_He, include_ion_e)
 
@@ -721,8 +813,76 @@ def generate_eint_from_T_table(n_grid, nh_grid, T_table, A_He, include_ion_e,
             else:
                 eint_from_T[i, j] = np.log10(max(eint_saha, 1e-100))
 
+    print(f"  eint_from_T via independent Saha solve")
     print(f"  log10(T/K) range: [{np.log10(T_min):.4f}, {np.log10(T_max):.4f}]")
     print(f"  log10(eint/nH) range: [{np.min(eint_from_T):.4f}, {np.max(eint_from_T):.4f}]")
+    return eint_from_T, T_grid
+
+
+def generate_eint_from_T_table(n_grid, nh_grid, T_table, eint_nh_grid,
+                                blend=True):
+    """Generate eint/nH(nH, T) table by PCHIP inversion of the forward T table.
+
+    Numerically inverts the forward T(nH, eint/nH) table per nH slice using
+    PCHIP interpolation.  This ensures the round-trip eint -> T -> eint is
+    exact at forward grid nodes and O(h^4) between them.
+
+    The forward T table already has FI blending applied, so the derived
+    eint_from_T values automatically inherit the blend.
+
+    Returns (table, T_grid) where:
+      - table: log10(eint/nH) in SI (J), shape (n_nH, n_T)
+      - T_grid: temperature grid in Kelvin
+    """
+    from scipy.interpolate import PchipInterpolator
+
+    log_eint_nh = np.log10(eint_nh_grid)
+
+    # Global T range from the forward table
+    T_min = np.min(T_table)
+    T_max = np.max(T_table)
+    T_grid = np.logspace(np.log10(T_min), np.log10(T_max), n_grid)
+    log_T_grid = np.log10(T_grid)
+
+    eint_from_T = np.zeros((len(nh_grid), n_grid))
+    n_monotone_fix = 0
+    n_clamp = 0
+
+    for i in tqdm(range(len(nh_grid)), desc="eint_from_T (derived)"):
+        # Forward T column: log10(T) at each eint/nH grid point for this nH
+        log_T_fwd = np.log10(np.maximum(T_table[i, :], 1e-100))
+
+        # Ensure strict monotonicity (T must increase with eint/nH)
+        for j in range(1, len(log_T_fwd)):
+            if log_T_fwd[j] <= log_T_fwd[j - 1]:
+                log_T_fwd[j] = log_T_fwd[j - 1] + 1e-12
+                n_monotone_fix += 1
+
+        # Build inverse: log10(T) -> log10(eint/nH) via PCHIP
+        inv_interp = PchipInterpolator(log_T_fwd, log_eint_nh)
+
+        # T range covered by the forward table for this nH slice
+        T_lo, T_hi = log_T_fwd[0], log_T_fwd[-1]
+
+        for j in range(n_grid):
+            if T_lo <= log_T_grid[j] <= T_hi:
+                eint_from_T[i, j] = float(inv_interp(log_T_grid[j]))
+            elif log_T_grid[j] < T_lo:
+                eint_from_T[i, j] = log_eint_nh[0]
+                n_clamp += 1
+            else:
+                eint_from_T[i, j] = log_eint_nh[-1]
+                n_clamp += 1
+
+    print(f"  eint_from_T derived from forward T table (round-trip consistent)")
+    print(f"  log10(T/K) range: [{np.log10(T_min):.4f}, {np.log10(T_max):.4f}]")
+    print(f"  log10(eint/nH) range: [{np.min(eint_from_T):.4f}, "
+          f"{np.max(eint_from_T):.4f}]")
+    if n_monotone_fix > 0:
+        print(f"  Monotonicity fixes: {n_monotone_fix} intervals")
+    if n_clamp > 0:
+        print(f"  Clamped: {n_clamp}/{len(nh_grid) * n_grid} points "
+              f"({100 * n_clamp / (len(nh_grid) * n_grid):.1f}%)")
     return eint_from_T, T_grid
 
 
@@ -828,6 +988,174 @@ def save_tables_bin(outdir, comp_str, y_table, T_table, eint_pres_table,
         path = f"{prefix}eint_from_T_{comp_str}.bin"
         write_bin_table(path, eint_from_T_out, nH_bounds, T_bounds)
         print(f"  -> {path}")
+
+
+def verify_round_trip(y_table, T_table, eint_pres_table, nh_grid,
+                      eint_nh_grid, pres_nh_grid, A_He, name):
+    """Verify round-trip consistency: eint -> p -> eint' and report max error.
+
+    Simulates the AMRVAC round-trip:
+      Forward: eint -> (T, y) via PCHIP on forward tables -> p = nH*(1+He+y)*kB*T
+      Backward: p -> eint' = p * p2eint via PCHIP on p2eint table
+
+    Reports the relative error |eint' - eint| / eint at random test points.
+    """
+    from scipy.interpolate import PchipInterpolator
+
+    n_test = 500  # test points per nH slice (total = n_nH * n_test)
+    n_nH = len(nh_grid)
+    log_eint_nh = np.log10(eint_nh_grid)
+    log_pres_nh = np.log10(pres_nh_grid)
+    n_pres = len(pres_nh_grid)
+
+    all_errors = []
+    all_T = []
+
+    rng = np.random.default_rng(42)
+
+    for i in range(n_nH):
+        nH = nh_grid[i]
+        log_nH = np.log10(nH)
+
+        # Forward table data for this nH slice
+        T_row = T_table[i, :]      # T(eint/nH)
+        y_row = y_table[i, :]      # ne/nH(eint/nH)
+
+        # Build PCHIP interpolators for forward direction (mimics Fortran)
+        T_interp = PchipInterpolator(log_eint_nh, np.log10(T_row))
+        y_interp = PchipInterpolator(log_eint_nh, np.log10(y_row))
+
+        # p2eint table data for this nH slice
+        p2eint_row = eint_pres_table[i, :]
+
+        # Build PCHIP interpolator for backward direction
+        p2eint_interp = PchipInterpolator(log_pres_nh, p2eint_row)
+
+        # Random test points in the eint/nH range
+        log_eint_test = rng.uniform(log_eint_nh[1], log_eint_nh[-2], n_test)
+
+        for log_e in log_eint_test:
+            eint_nH = 10.0**log_e
+
+            # Forward: eint -> T, y -> p
+            log_T = float(T_interp(log_e))
+            log_y = float(y_interp(log_e))
+            T_val = 10.0**log_T
+            y_val = 10.0**log_y
+            p_nH = (1.0 + A_He + y_val) * kB * T_val
+            log_p_nH = np.log10(p_nH)
+
+            # Check p/nH is within the p2eint table range
+            if log_p_nH < log_pres_nh[0] or log_p_nH > log_pres_nh[-1]:
+                continue
+
+            # Backward: p -> eint' = p * p2eint
+            p2eint_val = float(p2eint_interp(log_p_nH))
+            eint_nH_prime = p_nH * p2eint_val
+
+            # Relative error
+            rel_err = (eint_nH_prime - eint_nH) / eint_nH
+            all_errors.append(rel_err)
+            all_T.append(T_val)
+
+    errors = np.array(all_errors)
+    T_arr = np.array(all_T)
+
+    print(f"\n  Round-trip verification ({name}):")
+    print(f"    {len(errors)} test points")
+    print(f"    max |error|:    {np.max(np.abs(errors)):.3e}")
+    print(f"    mean error:     {np.mean(errors):+.3e}")
+    print(f"    median |error|: {np.median(np.abs(errors)):.3e}")
+    print(f"    95th pct:       {np.percentile(np.abs(errors), 95):.3e}")
+    print(f"    99th pct:       {np.percentile(np.abs(errors), 99):.3e}")
+
+    # Breakdown by temperature range
+    T_bins = [(6e3, 50e3, "ionisation zone (6-50 kK)"),
+              (50e3, 200e3, "TR (50-200 kK)"),
+              (200e3, 1e7, "corona (>200 kK)")]
+    for T_lo, T_hi, label in T_bins:
+        mask = (T_arr >= T_lo) & (T_arr < T_hi)
+        if np.any(mask):
+            print(f"    {label}: max |e|={np.max(np.abs(errors[mask])):.3e}, "
+                  f"mean={np.mean(errors[mask]):+.3e} ({np.sum(mask)} pts)")
+
+
+def verify_T_round_trip(T_table, eint_from_T_table, nh_grid, eint_nh_grid,
+                        T_grid, name):
+    """Verify round-trip consistency: eint -> T -> eint' and report max error.
+
+    Simulates the AMRVAC T-based prolongation round-trip:
+      Forward: eint -> T via PCHIP on forward T table
+      Backward: T -> eint' via PCHIP on eint_from_T table
+
+    Reports the relative error |eint' - eint| / eint at random test points.
+    """
+    from scipy.interpolate import PchipInterpolator
+
+    n_test = 500
+    n_nH = len(nh_grid)
+    log_eint_nh = np.log10(eint_nh_grid)
+    log_T_grid = np.log10(T_grid)
+
+    all_errors = []
+    all_T = []
+
+    rng = np.random.default_rng(42)
+
+    for i in range(n_nH):
+        # Forward table: T(eint/nH) for this nH slice
+        log_T_fwd = np.log10(np.maximum(T_table[i, :], 1e-100))
+
+        # Build PCHIP: log10(eint/nH) -> log10(T) (forward)
+        T_interp = PchipInterpolator(log_eint_nh, log_T_fwd)
+
+        # Inverse table: eint/nH(T) for this nH slice
+        eint_row = eint_from_T_table[i, :]  # log10(eint/nH) in SI
+
+        # Build PCHIP: log10(T) -> log10(eint/nH) (backward)
+        inv_interp = PchipInterpolator(log_T_grid, eint_row)
+
+        # Random test points in the eint/nH range
+        log_eint_test = rng.uniform(log_eint_nh[1], log_eint_nh[-2], n_test)
+
+        for log_e in log_eint_test:
+            eint_nH = 10.0**log_e
+
+            # Forward: eint -> T
+            log_T = float(T_interp(log_e))
+            T_val = 10.0**log_T
+
+            # Check T is within the inverse table range
+            if log_T < log_T_grid[0] or log_T > log_T_grid[-1]:
+                continue
+
+            # Backward: T -> eint'
+            log_eint_prime = float(inv_interp(log_T))
+            eint_nH_prime = 10.0**log_eint_prime
+
+            rel_err = (eint_nH_prime - eint_nH) / eint_nH
+            all_errors.append(rel_err)
+            all_T.append(T_val)
+
+    errors = np.array(all_errors)
+    T_arr = np.array(all_T)
+
+    print(f"\n  T-pathway round-trip verification ({name}):")
+    print(f"    {len(errors)} test points")
+    print(f"    max |error|:    {np.max(np.abs(errors)):.3e}")
+    print(f"    mean error:     {np.mean(errors):+.3e}")
+    print(f"    median |error|: {np.median(np.abs(errors)):.3e}")
+    print(f"    95th pct:       {np.percentile(np.abs(errors), 95):.3e}")
+    print(f"    99th pct:       {np.percentile(np.abs(errors), 99):.3e}")
+
+    T_bins = [(6e3, 50e3, "ionisation zone (6-50 kK)"),
+              (50e3, 200e3, "TR (50-200 kK)"),
+              (200e3, 1e7, "corona (>200 kK)")]
+    for T_lo, T_hi, label in T_bins:
+        mask = (T_arr >= T_lo) & (T_arr < T_hi)
+        if np.any(mask):
+            print(f"    {label}: max |e|={np.max(np.abs(errors[mask])):.3e}, "
+                  f"mean={np.mean(errors[mask]):+.3e} ({np.sum(mask)} pts)")
 
 
 def plot_summary(results, units, outdir, filename="lte_eos_tables_summary.png"):
@@ -987,6 +1315,22 @@ def main():
         "--no-blend", action="store_true",
         help="Disable FI blending at hot end (pure Saha tables)",
     )
+    parser.add_argument(
+        "--p2eint-method",
+        choices=["derived", "independent"],
+        default="derived",
+        help="p2eint table method: 'derived' (default) inverts forward tables "
+             "for round-trip consistency; 'independent' solves Saha on pressure "
+             "grid separately (legacy, has ~0.9%% round-trip error in ionisation zone)",
+    )
+    parser.add_argument(
+        "--eint-from-T-method",
+        choices=["derived", "independent"],
+        default="derived",
+        help="eint_from_T table method: 'derived' (default) inverts forward T "
+             "table via PCHIP for round-trip consistency; 'independent' solves "
+             "Saha independently on the T grid (legacy)",
+    )
     args = parser.parse_args()
 
     if "all" in args.tables:
@@ -1030,17 +1374,39 @@ def main():
         T_grid_tab = None
 
         if has_IonE:
-            eint_pres_tab = generate_pres_table(n, nh_grid, pres_nh_grid,
-                                                 H_only=H_only, blend=do_blend)
+            if args.p2eint_method == "derived":
+                eint_pres_tab = generate_pres_table(
+                    y_tab, T_tab, n, nh_grid, eint_nh_grid, pres_nh_grid,
+                    H_only=H_only, blend=do_blend)
+            else:
+                eint_pres_tab = generate_pres_table_independent(
+                    n, nh_grid, pres_nh_grid,
+                    H_only=H_only, blend=do_blend)
 
             # Gamma1 via JAX autodiff (exact derivatives via IFT)
             gamma1_tab = compute_gamma1(
                 y_tab, T_tab, nh_grid, eint_nh_grid, A_He, H_only,
                 blend=do_blend)
 
-            # eint_from_T via forward Saha solve (no inversion needed)
-            eint_from_T_tab, T_grid_tab = generate_eint_from_T_table(
-                n, nh_grid, T_tab, A_He, has_IonE, blend=do_blend)
+            # eint_from_T: PCHIP inversion of forward T table (default) or
+            # independent Saha solve (legacy)
+            if args.eint_from_T_method == "derived":
+                eint_from_T_tab, T_grid_tab = generate_eint_from_T_table(
+                    n, nh_grid, T_tab, eint_nh_grid, blend=do_blend)
+            else:
+                eint_from_T_tab, T_grid_tab = \
+                    generate_eint_from_T_table_independent(
+                        n, nh_grid, T_tab, A_He, has_IonE, blend=do_blend)
+
+        # Round-trip verification for IonE tables
+        if has_IonE and eint_pres_tab is not None:
+            verify_round_trip(y_tab, T_tab, eint_pres_tab, nh_grid,
+                              eint_nh_grid, pres_nh_grid, A_He, table_name)
+
+        # T-pathway round-trip verification
+        if has_IonE and eint_from_T_tab is not None:
+            verify_T_round_trip(T_tab, eint_from_T_tab, nh_grid,
+                                eint_nh_grid, T_grid_tab, table_name)
 
         save_tables_bin(
             outdir, table_name, y_tab, T_tab, eint_pres_tab,
