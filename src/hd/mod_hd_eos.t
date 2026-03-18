@@ -171,39 +171,85 @@ module mod_hd_eos
         end subroutine hd_to_conserved_LTE
 
         subroutine p_to_e(ixI^L, ixO^L, w, x)
-            !> Needed to separate this for compatibility with hd_small_values_check
-            !> i.e., to avoid circular calls.
-            !> Includes FI bypass: for fully ionised cells, eint = p/(gamma-1) + eion*nH.
+            !> Convert pressure to internal energy.
+            !> When hd_well_balanced is active, uses bisection on the forward
+            !> T,y tables (same tables to_primitive uses) for exact round-trip.
+            !> Otherwise uses the p2eint table (fast but ~0.01% round-trip error).
             use mod_global_parameters
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-            integer :: ix^D
+            integer :: ix^D, iter
             double precision :: p_to_eint, p_over_rho
             double precision :: nH(ixI^S), nH_in(ixI^S), p_in(ixI^S)
+            double precision :: log_nH_val, log_p_target
+            double precision :: log_eint_lo, log_eint_hi, log_eint_mid
+            double precision :: T_val, y_val, log_p_eval, eint_total
 
             if (eos%ionE) then
                 call eos%get_nH(w, x, ixI^L, ixO^L, nH)
                 nH_in(ixO^S) = dlog10(nH(ixO^S))
-                p_in(ixO^S) = dlog10(w(ixO^S,p_)) - nH_in(ixO^S)
+                if (.not. hd_well_balanced) then
+                    p_in(ixO^S) = dlog10(w(ixO^S,p_)) - nH_in(ixO^S)
+                end if
             endif
 
-            p_to_eint = eos%inv_gamma_minus_1 !> default assumed conversion value
+            p_to_eint = eos%inv_gamma_minus_1
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                 if (hd_energy) then
                     if (eos%ionE) then
                         p_over_rho = w(ix^D,p_) / w(ix^D,rho_)
                         if (p_over_rho > eos%p_rho_FI_threshold) then
-                            !> Fully ionised: eint = p/(gamma-1) + eion*nH
+                            !> FI bypass: exact inverse of to_primitive
                             p_to_eint = eos%inv_gamma_minus_1 &
                                 + eos%eion_per_nH * nH(ix^D) / w(ix^D,p_)
+                            w(ix^D,e_) = w(ix^D,p_)*p_to_eint + &
+                                half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+                        else if (hd_well_balanced) then
+                            !> WB mode: bisect on forward T,y tables for exact
+                            !> round-trip with to_primitive_LTE.
+                            log_nH_val = nH_in(ix^D)
+                            log_p_target = dlog10(w(ix^D,p_)) - log_nH_val
+                            log_eint_lo = eos%T%var2_min
+                            log_eint_hi = eos%T%var2_max
+                            do iter = 1, 52
+                                log_eint_mid = 0.5d0*(log_eint_lo + log_eint_hi)
+                                T_val = interp_clamped_monotone_bicubic_table( &
+                                    log_nH_val, log_eint_mid, &
+                                    eos%T%table, eos%T%dim1, eos%T%dim2, &
+                                    eos%T%var1_min, eos%T%var1_max, &
+                                    eos%T%var2_min, eos%T%var2_max)
+                                y_val = interp_clamped_monotone_bicubic_table( &
+                                    log_nH_val, log_eint_mid, &
+                                    eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
+                                    eos%neOnH%var1_min, eos%neOnH%var1_max, &
+                                    eos%neOnH%var2_min, eos%neOnH%var2_max)
+                                log_p_eval = dlog10(10.0d0**T_val &
+                                    * (1.0d0 + eos%He_abundance + 10.0d0**y_val))
+                                if (log_p_eval < log_p_target) then
+                                    log_eint_lo = log_eint_mid
+                                else
+                                    log_eint_hi = log_eint_mid
+                                end if
+                                if (dabs(log_eint_hi - log_eint_lo) < 1.0d-14) exit
+                            end do
+                            eint_total = nH(ix^D) * 10.0d0**log_eint_mid
+                            ! Floor to table minimum for robustness
+                            eint_total = max(eint_total, &
+                                nH(ix^D) * 10.0d0**eos%T%var2_min)
+                            w(ix^D,e_) = eint_total + &
+                                half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                         else
+                            !> Standard: use p2eint table (fast)
                             p_to_eint = p2eint_from_nH_p(nH_in(ix^D), p_in(ix^D))
+                            w(ix^D,e_) = w(ix^D,p_)*p_to_eint + &
+                                half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                         end if
+                    else
+                        w(ix^D,e_) = w(ix^D,p_)*p_to_eint + &
+                            half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                     end if
-                    w(ix^D,e_)=w(ix^D,p_)*p_to_eint+&
-                        half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                 end if
             {end do\}
 
@@ -212,6 +258,7 @@ module mod_hd_eos
         subroutine hd_to_primitive_LTE(ixI^L, ixO^L, w, x)
             use mod_global_parameters
             use mod_dust, only: dust_to_primitive
+            use mod_eos, only: T_from_nH_eint, y_from_nH_eint
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -219,14 +266,14 @@ module mod_hd_eos
             double precision                :: inv_rho
             double precision                :: nH(ixI^S)
             double precision                :: log_nH(ixI^S)
-            double precision                :: eint_val, p_guess
+            double precision                :: eint_val, eint_in, T_loc, y_loc
             integer :: ix^D
 
-            timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+            timeeos0 = MPI_WTIME()
 
             call eos%get_nH(w, x, ixI^L, ixO^L, nH)
 
-            ! Cache log10(nH) for all cells (used by root-finder for IonE)
+            ! Cache log10(nH) for all cells (used by table lookups for IonE)
             if (eos%ionE) then
                 log_nH(ixO^S) = dlog10(nH(ixO^S))
             end if
@@ -238,13 +285,25 @@ module mod_hd_eos
                 ! Calculate pressure
                 if(hd_energy) then
                     if (eos%ionE) then
-                        ! OLD: use stored Ne/Te from previous update_eos (closure gap with p2eint table)
-                        w(ix^D,p_)=nH(ix^D) * (1.0d0 + eos%He_abundance + (w(ix^D,Ne_) / nH(ix^D))) * w(ix^D,Te_)
-                        ! ! NEW: Root-find p by inverting the same p2eint table used in p_to_e (exact closure)
-                        ! eint_val = w(ix^D,e_) - half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)
-                        ! ! Initial guess from stored Ne and Te (close to true p)
-                        ! p_guess = nH(ix^D) * (1.0d0 + eos%He_abundance + w(ix^D,Ne_)/nH(ix^D)) * w(ix^D,Te_)
-                        ! w(ix^D,p_) = p_from_eint_IonE(eint_val, nH(ix^D), log_nH(ix^D), p_guess)
+                        ! Energy-consistent pressure from actual eint via EoS tables.
+                        ! Cannot use stored Ne_/Te_ because they may be stale after
+                        ! AMR prolongation/coarsening (nonlinear EoS breaks averaging).
+                        eint_val = w(ix^D,e_) - half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)
+                        ! Floor eint to table minimum (prevents NaN from dlog10
+                        ! after strong rarefactions where KE > e_total numerically)
+                        eint_val = max(eint_val, nH(ix^D) * 10.0d0**eos%T%var2_min)
+                        if (eint_val * inv_rho > eos%eint_rho_FI_threshold) then
+                            ! FI bypass: p = (gamma-1)*(eint - eion*nH)
+                            w(ix^D,p_) = eos%gamma_minus_1 &
+                                * (eint_val - eos%eion_per_nH * nH(ix^D))
+                        else
+                            ! Ionisation zone: table lookup for T and y
+                            eint_in = dlog10(eint_val) - log_nH(ix^D)
+                            T_loc = T_from_nH_eint(log_nH(ix^D), eint_in)
+                            y_loc = y_from_nH_eint(log_nH(ix^D), eint_in)
+                            w(ix^D,p_) = nH(ix^D) &
+                                * (1.0d0 + eos%He_abundance + y_loc) * T_loc
+                        end if
                     else
                         w(ix^D,p_)=(eos%gamma_minus_1)*(w(ix^D,e_)&
                             -half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
