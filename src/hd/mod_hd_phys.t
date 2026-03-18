@@ -96,6 +96,13 @@ module mod_hd_phys
   !> Whether well-balanced reconstruction is used (Kaeppeli & Mishra style)
   logical, public, protected              :: hd_well_balanced = .false.
 
+  !> Equilibrium splitting variables (stubs for mod_usr.t compatibility)
+  logical, public :: hd_equi_rho0 = .false.
+  logical, public :: hd_equi_pe0 = .false.
+  integer, public :: equi_rho0_ = -1
+  integer, public :: equi_pe0_ = -1
+  integer, public :: equi_e0_ = -1
+
   !> Helium abundance over Hydrogen
   double precision, public, protected  :: He_abundance=0.1d0
   !> Ionization fraction of H
@@ -1778,10 +1785,16 @@ contains
     end if
   end subroutine hd_handle_small_values
 
-  !> Well-balanced transform: add cumulative hydrostatic integral to pressure
-  !> before reconstruction. In HSE, p + Phi = const, so the limiter sees a flat
-  !> field and produces zero slopes => exact balance with gravity source term.
-  subroutine hd_wb_transform(ixI^L, ixO^L, idims, w, x, wb_phi, wb_phi_face)
+  !> Well-balanced transform: (T, v, q) variable change.
+  !>
+  !> Replaces (ρ, v, p) with (T, v, q) where:
+  !>   T(i) = p(i) / ρ(i)         [temperature — smooth, locally computed]
+  !>   q(i) = p(i) / p_eq(i)      [pressure ratio — ≈1 in HSE]
+  !>
+  !> p_eq from multiplicative trapezoidal recurrence (always positive).
+  !> In HSE: q = 1, T varies smoothly → limiter sees flat q → exact balance.
+  subroutine hd_wb_transform(ixI^L, ixO^L, idims, w, x, wb_phi, &
+       wb_phi_face, wb_T)
     use mod_global_parameters
     use mod_usr_methods, only: usr_gravity
 
@@ -1790,102 +1803,90 @@ contains
     double precision, intent(in)     :: x(ixI^S, 1:ndim)
     double precision, intent(out)    :: wb_phi(ixI^S)
     double precision, intent(out)    :: wb_phi_face(ixI^S)
+    double precision, intent(out)    :: wb_T(ixI^S)
 
     double precision :: gravity_field(ixI^S, 1:ndim)
-    double precision :: dx_idims
-    integer :: ix^D
+    double precision :: dx_idims, alpha_prev, alpha_curr
+    {^IFONED
+    integer :: ix1
+    }
+
+    ! Save T = p/ρ at all cell centers
+    wb_T(ixI^S) = w(ixI^S, p_) / w(ixI^S, rho_)
 
     ! Get gravity acceleration at all cell centers
     call usr_gravity(ixI^L, ixI^L, w, x, gravity_field)
 
-    ! Block-uniform grid spacing in the idims direction
     dx_idims = dxlevel(idims)
 
-    ! Cumulative trapezoidal integral of rho*g along idims
-    ! Phi(i) = Phi(i-1) + 0.5*(rho_{i-1}*g_{i-1} + rho_i*g_i)*dx
-    ! Reference: Phi = 0 at first cell in each line along idims
-    wb_phi(ixI^S) = 0.0d0
-
-    select case(idims)
-    case(1)
-      {^NOONED
-      do ix2 = ixImin2, ixImax2}
-      {^IFTHREED
-      do ix3 = ixImin3, ixImax3}
-      do ix1 = ixImin1+1, ixImax1
-        wb_phi(ix1{^NOONED, ix2}{^IFTHREED, ix3}) = &
-          wb_phi(ix1-1{^NOONED, ix2}{^IFTHREED, ix3}) + 0.5d0 * dx_idims * ( &
-          w(ix1-1{^NOONED, ix2}{^IFTHREED, ix3}, rho_) * &
-          gravity_field(ix1-1{^NOONED, ix2}{^IFTHREED, ix3}, 1) + &
-          w(ix1{^NOONED, ix2}{^IFTHREED, ix3}, rho_) * &
-          gravity_field(ix1{^NOONED, ix2}{^IFTHREED, ix3}, 1))
-      end do
-      {^IFTHREED
-      end do}
-      {^NOONED
-      end do}
-    {^NOONED
-    case(2)
-      do ix1 = ixImin1, ixImax1
-      {^IFTHREED
-      do ix3 = ixImin3, ixImax3}
-      do ix2 = ixImin2+1, ixImax2
-        wb_phi(ix1, ix2{^IFTHREED, ix3}) = &
-          wb_phi(ix1, ix2-1{^IFTHREED, ix3}) + 0.5d0 * dx_idims * ( &
-          w(ix1, ix2-1{^IFTHREED, ix3}, rho_) * &
-          gravity_field(ix1, ix2-1{^IFTHREED, ix3}, 2) + &
-          w(ix1, ix2{^IFTHREED, ix3}, rho_) * &
-          gravity_field(ix1, ix2{^IFTHREED, ix3}, 2))
-      end do
-      {^IFTHREED
-      end do}
-      end do
+    ! Multiplicative trapezoidal recurrence for p_eq.
+    ! p_eq(i+1) = p_eq(i) · (1 + α(i)) / (1 - α(i+1))
+    ! Always positive for dx < 2H.
+    {^IFONED
+    wb_phi(ixImin1) = w(ixImin1, p_)
+    do ix1 = ixImin1 + 1, ixImax1
+      alpha_prev = 0.5d0 * dx_idims * gravity_field(ix1 - 1, idims) &
+                   / wb_T(ix1 - 1)
+      alpha_curr = 0.5d0 * dx_idims * gravity_field(ix1, idims) &
+                   / wb_T(ix1)
+      wb_phi(ix1) = wb_phi(ix1 - 1) * (1.0d0 + alpha_prev) &
+                    / (1.0d0 - alpha_curr)
+    end do
     }
-    {^IFTHREED
-    case(3)
-      do ix1 = ixImin1, ixImax1
-      do ix2 = ixImin2, ixImax2
-      do ix3 = ixImin3+1, ixImax3
-        wb_phi(ix1, ix2, ix3) = &
-          wb_phi(ix1, ix2, ix3-1) + 0.5d0 * dx_idims * ( &
-          w(ix1, ix2, ix3-1, rho_) * gravity_field(ix1, ix2, ix3-1, 3) + &
-          w(ix1, ix2, ix3, rho_) * gravity_field(ix1, ix2, ix3, 3))
-      end do
-      end do
-      end do
-    }
-    end select
 
-    ! Phi at right face of each cell (face i+1/2 in idims direction)
-    ! Phi_face(i) = Phi_cell(i) + 0.5 * rho_i * g_i * dx
-    wb_phi_face(ixI^S) = wb_phi(ixI^S) + 0.5d0 * dx_idims * &
-      w(ixI^S, rho_) * gravity_field(ixI^S, idims)
+    ! Face equilibrium pressure: isothermal half-step from cell center
+    wb_phi_face(ixI^S) = wb_phi(ixI^S) * (1.0d0 + 0.5d0 * dx_idims * &
+      gravity_field(ixI^S, idims) / wb_T(ixI^S))
 
-    ! Transform: add Phi to cell-center pressure
-    w(ixI^S, p_) = w(ixI^S, p_) + wb_phi(ixI^S)
+    ! Transform: w(rho_) = T, w(p_) = q = p/p_eq
+    w(ixI^S, rho_) = wb_T(ixI^S)
+    w(ixI^S, p_) = w(ixI^S, p_) / wb_phi(ixI^S)
 
   end subroutine hd_wb_transform
 
-  !> Well-balanced inverse: subtract cumulative integral at face positions
-  !> from reconstructed L/R pressures, restore original cell-center pressure.
+  !> Well-balanced inverse: restore physical (ρ, v, p) at interfaces.
+  !>
+  !> Pressure: p_face = q_face · p_eq_face   (multiplicative, well-balanced)
+  !> Density:  ρ_face = p_face / T_shared     (shared face T, well-balanced)
+  !>
+  !> T_shared = ½(T(i) + T(i+1)) is a SHARED face value, same for L and R.
+  !> In HSE: p_L = p_R = p_eq_face → ρ_L = ρ_R = p_eq_face / T_shared.
+  !> Zero HLL diffusion for both mass and momentum.
   subroutine hd_wb_inverse(ixI^L, ixL^L, ixR^L, idims, wLp, wRp, w, &
-       wb_phi, wb_phi_face)
+       wb_phi, wb_phi_face, wb_T)
     use mod_global_parameters
 
     integer, intent(in)              :: ixI^L, ixL^L, ixR^L, idims
     double precision, intent(inout)  :: wLp(ixI^S, 1:nw), wRp(ixI^S, 1:nw)
     double precision, intent(inout)  :: w(ixI^S, 1:nw)
     double precision, intent(in)     :: wb_phi(ixI^S), wb_phi_face(ixI^S)
+    double precision, intent(in)     :: wb_T(ixI^S)
 
-    ! Subtract Phi_face from reconstructed interface pressures.
-    ! wb_phi_face(i) = Phi at face i+1/2 in the idims direction.
-    ! wLp(i) = left state at face i+1/2  (from cell i, extrapolated right)
-    ! wRp(i) = right state at face i+1/2 (from cell i+1, extrapolated left)
-    wLp(ixL^S, p_) = wLp(ixL^S, p_) - wb_phi_face(ixL^S)
-    wRp(ixR^S, p_) = wRp(ixR^S, p_) - wb_phi_face(ixR^S)
+    double precision :: T_shared(ixI^S)
+    {^IFONED
+    integer :: ix1
+    }
 
-    ! Restore original cell-center pressure
-    w(ixI^S, p_) = w(ixI^S, p_) - wb_phi(ixI^S)
+    ! Shared face temperature: T_face(i) = ½(T(i) + T(i+1))
+    ! Used for BOTH L and R density recovery → ρ_L = ρ_R in HSE.
+    {^IFONED
+    do ix1 = ixImin1, ixImax1 - 1
+      T_shared(ix1) = 0.5d0 * (wb_T(ix1) + wb_T(ix1 + 1))
+    end do
+    T_shared(ixImax1) = wb_T(ixImax1)
+    }
+
+    ! Pressure inverse: p = q · p_eq_face (multiplicative)
+    wLp(ixL^S, p_) = wLp(ixL^S, p_) * wb_phi_face(ixL^S)
+    wRp(ixR^S, p_) = wRp(ixR^S, p_) * wb_phi_face(ixR^S)
+
+    ! Density inverse: ρ = p / T_shared (shared face T, always positive)
+    wLp(ixL^S, rho_) = wLp(ixL^S, p_) / T_shared(ixL^S)
+    wRp(ixR^S, rho_) = wRp(ixR^S, p_) / T_shared(ixR^S)
+
+    ! Restore cell-center values
+    w(ixI^S, p_) = w(ixI^S, p_) * wb_phi(ixI^S)
+    w(ixI^S, rho_) = w(ixI^S, p_) / wb_T(ixI^S)
 
   end subroutine hd_wb_inverse
 
