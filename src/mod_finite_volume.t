@@ -1126,11 +1126,12 @@ contains
     integer            :: jxR^L, ixC^L, jxC^L, ixO^L, iw
     double precision   :: ldw(ixI^S), rdw(ixI^S), dwC(ixI^S)
     double precision   :: a2max
-    double precision   :: wb_phi(ixI^S), wb_phi_face(ixI^S)
+    double precision   :: wb_phi(ixI^S), wb_phi_face(ixI^S), wb_T(ixI^S)
 
     ! Well-balanced transform: subtract local HSE from pressure before limiting
     if (associated(phys_wb_transform)) then
-      call phys_wb_transform(ixI^L, ixI^L, idims, w, x, wb_phi, wb_phi_face)
+      call phys_wb_transform(ixI^L, ixI^L, idims, w, x, wb_phi, &
+           wb_phi_face, wb_T)
     end if
 
     select case (type_limiter(block%level))
@@ -1225,7 +1226,7 @@ contains
     ! Well-balanced inverse: add back HSE at interface positions
     if (associated(phys_wb_inverse)) then
       call phys_wb_inverse(ixI^L, ixL^L, ixR^L, idims, wLp, wRp, w, &
-           wb_phi, wb_phi_face)
+           wb_phi, wb_phi_face, wb_T)
     end if
 
    wLC(ixL^S,1:nwflux)=wLp(ixL^S,1:nwflux)
