@@ -106,10 +106,15 @@ contains
     ! Interpolate T = p/rho and g from fine table at each grid cell centre,
     ! then build grid-aligned table via multiplicative HSE recurrence.
     !
-    ! Seed the first cell from the fine table interpolation.
+    ! Seed the first cell: interpolate p and T from fine table.
     x_g = wb_x_lo
     call interp_fine(x_g, x_min, gzone, ds, jmax, pa, ra, grav, T_lo, g_lo)
-    wb_pa(1) = ra(max(1, min(nint((x_g - (x_min - gzone))/ds) + 1, jmax))) * T_lo
+    ! Use same indexing for seed pressure
+    na = floor((x_g - (x_min - gzone)) / ds + 0.5d0)
+    na = max(1, min(na, jmax - 1))
+    res = (x_g - (x_min - gzone)) / ds - (dble(na) - 0.5d0)
+    res = max(0.0d0, min(1.0d0, res))
+    wb_pa(1) = pa(na) + res * (pa(na + 1) - pa(na))
     wb_ra(1) = wb_pa(1) / T_lo
 
     ! Forward recurrence
@@ -211,15 +216,18 @@ contains
     double precision, intent(out) :: T_out, g_out
 
     integer :: na
-    double precision :: frac, p_interp, r_interp
+    double precision :: frac
 
-    na = max(1, min(int((x_g - (x_min - gzone)) / ds) + 1, jmax - 1))
-    frac = (x_g - (x_min - gzone) - dble(na - 1) * ds) / ds
+    ! Cell-centred indexing matching inithdstatic convention:
+    ! na = floor((x + gzone)/ds + 0.5), res = remainder within cell
+    na = floor((x_g - (x_min - gzone)) / ds + 0.5d0)
+    na = max(1, min(na, jmax - 1))
+    frac = (x_g - (x_min - gzone)) / ds - (dble(na) - 0.5d0)
+    frac = frac / 1.0d0  ! already normalised to ds
     frac = max(0.0d0, min(1.0d0, frac))
 
-    p_interp = pa(na) + frac * (pa(na + 1) - pa(na))
-    r_interp = ra(na) + frac * (ra(na + 1) - ra(na))
-    T_out = p_interp / r_interp
+    ! Interpolate T = p/rho ratio directly (NOT p and rho separately).
+    T_out = pa(na)/ra(na) + frac * (pa(na+1)/ra(na+1) - pa(na)/ra(na))
 
     g_out = grav(na) + frac * (grav(na + 1) - grav(na))
 
