@@ -96,6 +96,7 @@ module mod_hd_phys
   !> Whether well-balanced reconstruction is used (Kaeppeli & Mishra style)
   logical, public, protected              :: hd_well_balanced = .false.
 
+
   !> Equilibrium splitting variables (stubs for mod_usr.t compatibility)
   logical, public :: hd_equi_rho0 = .false.
   logical, public :: hd_equi_pe0 = .false.
@@ -324,6 +325,7 @@ contains
     if (eos%eos_type == 'LTE' .and. eos%ionE .and. hd_thermal_conduction) then
         iw_log_nH = var_set_wextra()
     end if
+
 
     ! ! choose Rfactor in ideal gas law
     ! if(hd_partial_ionization) then

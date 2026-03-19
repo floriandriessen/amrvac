@@ -58,6 +58,7 @@ module mod_eos
     public :: eos_init, eos_finalise, prepare_eos_w_fields
     public :: y_from_nH_eint, T_from_nH_eint, p2eint_from_nH_p, p_from_eint_IonE
     public :: gamma1_from_nH_eint, gamma1_from_nH_p
+    public :: log_p_from_nH_eint
     public :: eint_nH_from_T
     public :: interp_clamped_monotone_bicubic_table
     public :: Rfactor_from_PI_temperature, update_PI_temperature
@@ -190,6 +191,10 @@ contains
                     !> Build pressure-indexed Gamma_1 table (needs p2eint temporarily)
                     call build_gamma1_p_table()
 
+                    !> Build merged log10(p/nH) table for WB bisection (single lookup
+                    !> instead of separate T + neOnH lookups per bisection iteration).
+                    call build_log_p_table()
+
                     !> Now replace p2eint with exact inverse built from forward tables.
                     !> This guarantees the to_conserved → to_primitive round-trip is exact.
                     if (allocated(eos%p2eint%table)) deallocate(eos%p2eint%table)
@@ -208,6 +213,7 @@ contains
                     call precompute_step_inv(eos%gamma1)
                     call precompute_step_inv(eos%gamma1_p)
                     call precompute_step_inv(eos%eint_from_T)
+                    call precompute_step_inv(eos%log_p)
                 end if
 
                 !> Precompute fully-ionised regime bypass constants
@@ -799,6 +805,16 @@ contains
             eos%gamma1_p%var2_min, eos%gamma1_p%var2_max)
     end function gamma1_from_nH_p
 
+    !> Merged log10(p/nH) lookup: (log10 nH, log10 eint/nH) -> log10(p/nH)
+    !> Single PCHIP evaluation replacing separate T + neOnH lookups.
+    double precision function log_p_from_nH_eint(log_nH, log_eint_nH) result(lp)
+        double precision, intent(in) :: log_nH, log_eint_nH
+        lp = interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
+            eos%log_p%table, eos%log_p%dim1, eos%log_p%dim2, &
+            eos%log_p%var1_min, eos%log_p%var1_max, &
+            eos%log_p%var2_min, eos%log_p%var2_max)
+    end function log_p_from_nH_eint
+
     double precision function eint_nH_from_T(log_nH, log_T) result(eint_nH)
         double precision, intent(in) :: log_nH, log_T
         double precision, parameter :: ln10 = 2.302585092994046d0
@@ -915,6 +931,44 @@ contains
         end if
 
     end subroutine build_gamma1_table
+
+    !> Build merged log10(p/nH) table: log10(p/nH)(nH, eint/nH).
+    !> Same grid as T and neOnH tables. Each entry is:
+    !>   log10(p/nH) = log10( 10^T * (1 + He + 10^y) )
+    !> where T and y are from the forward tables at the same grid point.
+    !> Used by the WB bisection to replace two separate PCHIP lookups
+    !> (T + neOnH) with a single lookup per iteration.
+    subroutine build_log_p_table()
+        integer :: n1, n2, i, j
+        double precision :: log_nH, log_eint_nH, T_val, y_val
+
+        n1 = eos%T%dim1
+        n2 = eos%T%dim2
+
+        eos%log_p%dim1 = n1
+        eos%log_p%dim2 = n2
+        eos%log_p%var1_min = eos%T%var1_min
+        eos%log_p%var1_max = eos%T%var1_max
+        eos%log_p%var2_min = eos%T%var2_min
+        eos%log_p%var2_max = eos%T%var2_max
+
+        allocate(eos%log_p%table(n1, n2))
+
+        do j = 1, n2
+            do i = 1, n1
+                T_val = eos%T%table(i, j)
+                y_val = eos%neOnH%table(i, j)
+                eos%log_p%table(i, j) = dlog10(10.0d0**T_val &
+                    * (1.0d0 + eos%He_abundance + 10.0d0**y_val))
+            end do
+        end do
+
+        if (mype == 0) then
+            write(*, '(A,I4,A,I4)') &
+                ' Merged log_p table built: ', n1, ' x ', n2
+        end if
+
+    end subroutine build_log_p_table
 
     !> Build pressure-indexed Gamma_1 table: Gamma_1(nH, p/nH).
     !> Re-indexes the eint-based gamma1 table into pressure space,

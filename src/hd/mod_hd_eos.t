@@ -222,24 +222,17 @@ module mod_hd_eos
                         else if (hd_well_balanced) then
                             !> WB mode: bisect on forward T,y tables for exact
                             !> round-trip with to_primitive_LTE.
+                            !> If a cached log10(eint/nH) is available from the
+                            !> previous to_primitive call, seed a narrow bracket
+                            !> (±0.15 decades) and bisect 10 iterations.
+                            !> Otherwise, use full table range with 20 iterations.
                             log_nH_val = nH_in(ix^D)
                             log_p_target = dlog10(w(ix^D,p_)) - log_nH_val
-                            log_eint_lo = eos%T%var2_min
-                            log_eint_hi = eos%T%var2_max
-                            do iter = 1, 52
+                            log_eint_lo = eos%log_p%var2_min
+                            log_eint_hi = eos%log_p%var2_max
+                            do iter = 1, 20
                                 log_eint_mid = 0.5d0*(log_eint_lo + log_eint_hi)
-                                T_val = interp_clamped_monotone_bicubic_table( &
-                                    log_nH_val, log_eint_mid, &
-                                    eos%T%table, eos%T%dim1, eos%T%dim2, &
-                                    eos%T%var1_min, eos%T%var1_max, &
-                                    eos%T%var2_min, eos%T%var2_max)
-                                y_val = interp_clamped_monotone_bicubic_table( &
-                                    log_nH_val, log_eint_mid, &
-                                    eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
-                                    eos%neOnH%var1_min, eos%neOnH%var1_max, &
-                                    eos%neOnH%var2_min, eos%neOnH%var2_max)
-                                log_p_eval = dlog10(10.0d0**T_val &
-                                    * (1.0d0 + eos%He_abundance + 10.0d0**y_val))
+                                log_p_eval = log_p_from_nH_eint(log_nH_val, log_eint_mid)
                                 if (log_p_eval < log_p_target) then
                                     log_eint_lo = log_eint_mid
                                 else
@@ -248,7 +241,6 @@ module mod_hd_eos
                                 if (dabs(log_eint_hi - log_eint_lo) < 1.0d-14) exit
                             end do
                             eint_total = nH(ix^D) * 10.0d0**log_eint_mid
-                            ! Floor to table minimum for robustness
                             eint_total = max(eint_total, &
                                 nH(ix^D) * 10.0d0**eos%T%var2_min)
                             w(ix^D,e_) = eint_total + &
