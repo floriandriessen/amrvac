@@ -79,7 +79,8 @@ contains
   
   !> do 2nd order prolongation
   subroutine prolong_2nd(sCo,ixCo^L,sFi,dxCo^D,xComin^D,dxFi^D,xFimin^D,igridCo,igridFi)
-    use mod_physics, only: phys_to_conserved, phys_handle_small_values
+    use mod_physics, only: phys_to_conserved, phys_to_primitive, &
+         phys_handle_small_values, phys_wb_prolong
     use mod_global_parameters
     use mod_amr_fct, only: already_fine, prolong_2nd_stg
   
@@ -161,7 +162,18 @@ contains
     end if
   
     if(fix_small_values) call phys_handle_small_values(prolongprimitive,wFi,sFi%x,ixG^LL,ixM^LL,'prolong_2nd')
-    if(prolongprimitive) call phys_to_conserved(ixG^LL,ixM^LL,wFi,sFi%x)
+
+    ! WB post-prolongation: rebuild p from HSE recurrence using interpolated T.
+    ! Needs primitive form; avoids redundant prim->cons->prim round-trip.
+    if(associated(phys_wb_prolong)) then
+      if(.not. prolongprimitive) then
+        call phys_to_primitive(ixG^LL,ixM^LL,wFi,sFi%x)
+      end if
+      call phys_wb_prolong(ixG^LL,ixM^LL,wFi,sFi%x)
+      call phys_to_conserved(ixG^LL,ixM^LL,wFi,sFi%x)
+    else
+      if(prolongprimitive) call phys_to_conserved(ixG^LL,ixM^LL,wFi,sFi%x)
+    end if
     end associate
   
   end subroutine prolong_2nd

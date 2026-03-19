@@ -404,6 +404,7 @@ contains
       else
         phys_wb_transform => hd_wb_transform
         phys_wb_inverse   => hd_wb_inverse
+        phys_wb_prolong   => hd_wb_prolong
         if(mype==0) write(*,*) 'Well-balanced reconstruction enabled'
       end if
     end if
@@ -1790,9 +1791,88 @@ contains
   !> Replaces (ρ, v, p) with (T, v, q) where:
   !>   T(i) = p(i) / ρ(i)         [temperature — smooth, locally computed]
   !>   q(i) = p(i) / p_eq(i)      [pressure ratio — ≈1 in HSE]
+  !> Well-balanced post-prolongation correction for AMR.
+  !>
+  !> After prolongation interpolates to a fine grid, the pressure does not
+  !> satisfy the discrete HSE recurrence at the fine resolution (linear
+  !> interpolation of an exponential profile introduces O(dx^2/H^2) error).
+  !>
+  !> This routine rebuilds p from the multiplicative HSE recurrence using the
+  !> interpolated T = p/rho (which IS smooth and well-interpolated). The
+  !> density is updated as rho = p_new / T for consistency.
+  !>
+  !> On entry:  w contains primitive (rho, v, p).
+  !> On exit:   w contains HSE-corrected primitive (rho_new, v, p_new).
+  !>
+  !> The recurrence is anchored at the block midpoint, where the parent
+  !> cell-centre value is exact (no interpolation error).
+  subroutine hd_wb_prolong(ixI^L, ixO^L, w, x)
+    use mod_global_parameters
+    use mod_usr_methods, only: usr_gravity
+
+    integer, intent(in)              :: ixI^L, ixO^L
+    double precision, intent(inout)  :: w(ixI^S, 1:nw)
+    double precision, intent(in)     :: x(ixI^S, 1:ndim)
+
+    double precision :: gravity_field(ixI^S, 1:ndim)
+    double precision :: wb_T(ixI^S), p_eq(ixI^S)
+    double precision :: dx_idims, alpha_prev, alpha_curr
+    {^IFONED
+    integer :: ix1, ix_mid
+    }
+
+    ! T = p/rho at all fine cells (smooth from interpolation)
+    wb_T(ixO^S) = w(ixO^S, p_) / w(ixO^S, rho_)
+
+    ! Get gravity at fine cell centres
+    call usr_gravity(ixI^L, ixO^L, w, x, gravity_field)
+
+    dx_idims = dxlevel(1)
+
+    {^IFONED
+    ! Anchor at block midpoint (least interpolation error)
+    ix_mid = (ixOmin1 + ixOmax1) / 2
+    p_eq(ix_mid) = w(ix_mid, p_)
+
+    ! Forward recurrence from midpoint to top
+    do ix1 = ix_mid + 1, ixOmax1
+      alpha_prev = 0.5d0 * dx_idims * gravity_field(ix1 - 1, 1) &
+                   / wb_T(ix1 - 1)
+      alpha_curr = 0.5d0 * dx_idims * gravity_field(ix1, 1) &
+                   / wb_T(ix1)
+      p_eq(ix1) = p_eq(ix1 - 1) * (1.0d0 + alpha_prev) &
+                  / (1.0d0 - alpha_curr)
+    end do
+
+    ! Backward recurrence from midpoint to bottom
+    do ix1 = ix_mid - 1, ixOmin1, -1
+      alpha_curr = 0.5d0 * dx_idims * gravity_field(ix1, 1) &
+                   / wb_T(ix1)
+      alpha_prev = 0.5d0 * dx_idims * gravity_field(ix1 + 1, 1) &
+                   / wb_T(ix1 + 1)
+      p_eq(ix1) = p_eq(ix1 + 1) * (1.0d0 - alpha_prev) &
+                  / (1.0d0 + alpha_curr)
+    end do
+
+    ! Replace interpolated p with recurrence-derived p, update rho = p/T
+    do ix1 = ixOmin1, ixOmax1
+      w(ix1, p_)   = p_eq(ix1)
+      w(ix1, rho_) = p_eq(ix1) / wb_T(ix1)
+    end do
+    }
+
+  end subroutine hd_wb_prolong
+
+  !> Well-balanced transform for reconstruction.
+  !>
+  !> On entry:  w contains primitive (rho, v, p).
+  !> On exit:   w(rho_) = T = p/rho, w(p_) = q = p/p_eq.
+  !>            wb_T returns the saved cell-centre temperature.
+  !>            wb_phi returns the cell-centre equilibrium pressure.
+  !>            wb_phi_face returns the face-centre equilibrium pressure.
   !>
   !> p_eq from multiplicative trapezoidal recurrence (always positive).
-  !> In HSE: q = 1, T varies smoothly → limiter sees flat q → exact balance.
+  !> In HSE: q = 1, T varies smoothly -> limiter sees flat q -> exact balance.
   subroutine hd_wb_transform(ixI^L, ixO^L, idims, w, x, wb_phi, &
        wb_phi_face, wb_T)
     use mod_global_parameters
