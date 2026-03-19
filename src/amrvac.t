@@ -177,8 +177,9 @@ program amrvac
   call timeintegration()
 
   if (mype==0) then
+     time0=MPI_WTIME()-time0
      print*,'-------------------------------------------------------------------------------'
-     write(*,'(a,f17.3,a)')' Finished AMRVAC in : ',MPI_WTIME()-time0,' sec'
+     write(*,'(a,f17.3,a,f17.3,a)')' Finished AMRVAC in : ',time0,' sec', dble(npe)*time0/3.6d3,' core hour'
      print*,'-------------------------------------------------------------------------------'
   end if
 
