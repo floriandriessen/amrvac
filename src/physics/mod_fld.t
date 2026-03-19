@@ -620,7 +620,7 @@ module mod_fld
     integer :: ixO^L
 
     call update_diffcoeff(psa)
-    ixO^L=ixG^LL^LSUB1;
+    ixO^L=ixM^LL^LADD1;
     !$OMP PARALLEL DO PRIVATE(igrid)
     do iigrid=1,igridstail; igrid=igrids(iigrid);
        ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
@@ -684,7 +684,7 @@ module mod_fld
     integer :: iigrid, igrid, level
     integer :: ixO^L
 
-    ixO^L=ixG^LL^LSUB1;
+    ixO^L=ixM^LL^LADD1;
     !$OMP PARALLEL DO PRIVATE(igrid)
     do iigrid=1,igridstail; igrid=igrids(iigrid);
        ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);

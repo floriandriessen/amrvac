@@ -4186,9 +4186,8 @@ contains
     end do
 
     if(mhd_hyperbolic_thermal_conduction) then
-     ! CHECK: poloidal versus total unit b vector
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4307,9 +4306,8 @@ contains
     end do
 
     if(mhd_hyperbolic_thermal_conduction) then
-     ! CHECK: poloidal versus total unit b vector
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4408,9 +4406,8 @@ contains
      {end do\}
     end do
     if(mhd_hyperbolic_thermal_conduction) then
-     ! CHECK: poloidal versus total unit b vector
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*btotal(ix^D,idim)/(dsqrt(^D&btotal({ix^D},^D)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*btotal(ix^D,idim)/(dsqrt(^C&btotal({ix^D},^C)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4498,9 +4495,8 @@ contains
      {end do\}
     end do
     if(mhd_hyperbolic_thermal_conduction) then
-     ! CHECK: poloidal versus total unit b vector
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -5226,7 +5222,7 @@ contains
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
     double precision :: R(ixI^S),Te(ixI^S),rho_loc(ixI^S),pth_loc(ixI^S)
-    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndim),bunitvec(ndim)
+    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndir),bunitvec(ndim)
     integer :: ix^D
 
     call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
@@ -5245,7 +5241,7 @@ contains
     {^IFONED
     ! assume magnetic field line is along the one dimension
     do ix1=ixOmin1,ixOmax1
-       if(mhd_trac) then
+      if(mhd_trac) then
         if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
           sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
           sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
@@ -5285,17 +5281,17 @@ contains
           sigma_T7=sigma_T5*Te(ix^D)
         end if
         if(B0field) then
-          ^D&bdir(^D)=wCT({ix^D},mag(^D))+block%B0({ix^D},^D,0)\
+          ^C&bdir(^C)=wCT({ix^D},mag(^C))+block%B0({ix^D},^C,0)\
         else
-          ^D&bdir(^D)=wCT({ix^D},mag(^D))\
+          ^C&bdir(^C)=wCT({ix^D},mag(^C))\
         end if
         if(Bdir(1)/=0.d0) then
-          bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(Bdir(2)/Bdir(1))**2)
+          bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(^CE&(Bdir(^CE)/Bdir(1))**2+))
         else
           bunitvec(1)=0.d0
         end if
         if(Bdir(2)/=0.d0) then
-          bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(Bdir(1)/Bdir(2))**2)
+          bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(^CF&(Bdir(^CF)/Bdir(2))**2+))
         else
           bunitvec(2)=0.d0
         end if
