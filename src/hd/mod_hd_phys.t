@@ -1924,14 +1924,23 @@ contains
 
   end subroutine hd_wb_transform
 
-  !> Well-balanced inverse: restore physical (ρ, v, p) at interfaces.
+  !> Well-balanced inverse: restore physical (rho, v, p) at interfaces.
   !>
-  !> Pressure: p_face = q_face · p_eq_face   (multiplicative, well-balanced)
-  !> Density:  ρ_face = p_face / T_shared     (shared face T, well-balanced)
+  !> On entry:
+  !>   wLp/wRp(rho_) = T (reconstructed), wLp/wRp(p_) = q (reconstructed)
+  !>   w(rho_) = T (cell-centre), w(p_) = q (cell-centre)
+  !>   wb_phi/wb_phi_face = cell/face equilibrium pressures from transform
+  !>   wb_T = saved cell-centre temperature from transform
   !>
-  !> T_shared = ½(T(i) + T(i+1)) is a SHARED face value, same for L and R.
-  !> In HSE: p_L = p_R = p_eq_face → ρ_L = ρ_R = p_eq_face / T_shared.
-  !> Zero HLL diffusion for both mass and momentum.
+  !> On exit:
+  !>   wLp/wRp(rho_) = rho_face, wLp/wRp(p_) = p_face (physical primitives)
+  !>   w(rho_) = rho_cell, w(p_) = p_cell (restored cell-centre primitives)
+  !>
+  !> Pressure: p_face = q_face * p_eq_face   (multiplicative, well-balanced)
+  !> Density:  rho_face = p_face / T_shared  (shared face T, well-balanced)
+  !>
+  !> T_shared = 0.5*(T(i) + T(i+1)) is the SAME for L and R states.
+  !> In HSE: p_L = p_R = p_eq_face, rho_L = rho_R -> zero HLL diffusion.
   subroutine hd_wb_inverse(ixI^L, ixL^L, ixR^L, idims, wLp, wRp, w, &
        wb_phi, wb_phi_face, wb_T)
     use mod_global_parameters

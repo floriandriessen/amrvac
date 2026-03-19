@@ -147,6 +147,10 @@ module mod_hd_eos
 
         end subroutine hd_to_primitive
 
+        !> LTE primitive -> conserved conversion.
+        !>
+        !> On entry: rho_ = density, m_ = velocity, p_ = pressure.
+        !> On exit:  rho_ = density (unchanged), m_ = momentum, e_ = total energy.
         subroutine hd_to_conserved_LTE(ixI^L, ixO^L, w, x)
             use mod_global_parameters
             use mod_dust, only: dust_to_conserved
@@ -154,9 +158,8 @@ module mod_hd_eos
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-            timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
+            timeeos0 = MPI_WTIME()
 
-            ! Calculate total energy from pressure and kinetic energy
             call p_to_e(ixI^L, ixO^L, w, x)
 
             ! Convert velocity to momentum
@@ -171,10 +174,20 @@ module mod_hd_eos
         end subroutine hd_to_conserved_LTE
 
         subroutine p_to_e(ixI^L, ixO^L, w, x)
-            !> Convert pressure to internal energy.
-            !> When hd_well_balanced is active, uses bisection on the forward
-            !> T,y tables (same tables to_primitive uses) for exact round-trip.
-            !> Otherwise uses the p2eint table (fast but ~0.01% round-trip error).
+            !> Convert pressure to total energy: E = eint(rho, p) + KE.
+            !>
+            !> On entry: w(rho_) = density, w(m_) = velocity, w(p_) = pressure.
+            !> On exit:  w(rho_) unchanged, w(m_) unchanged, w(e_) = total energy.
+            !>
+            !> Three paths for ionE (LTE with ionisation):
+            !>   1. FI bypass (p/rho > threshold): analytic eint = p/(gamma-1) + eion*nH
+            !>   2. WB mode (hd_well_balanced): 20-iter bisection on forward T,y PCHIP
+            !>      tables for exact round-trip with hd_to_primitive_LTE
+            !>   3. Standard: p2eint inverse table lookup (fast, ~0.01% round-trip error)
+            !>
+            !> The bisection in path 2 is essential for well-balanced schemes: any
+            !> round-trip error appears as q != 1 and generates spurious velocities.
+            !> Testing showed path 3 gives 29 km/s (1000x worse) vs path 2 at 27 m/s.
             use mod_global_parameters
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
@@ -255,6 +268,14 @@ module mod_hd_eos
 
         end subroutine p_to_e
 
+        !> LTE conserved -> primitive conversion.
+        !>
+        !> On entry: rho_ = density, m_ = momentum, e_ = total energy.
+        !> On exit:  rho_ = density (unchanged), m_ = velocity, p_ = pressure.
+        !>
+        !> Pressure is computed energy-consistently from actual eint via EoS
+        !> table lookups (T and ne/nH). Cannot use stored Ne_/Te_ because
+        !> they may be stale after AMR prolongation/coarsening.
         subroutine hd_to_primitive_LTE(ixI^L, ixO^L, w, x)
             use mod_global_parameters
             use mod_dust, only: dust_to_primitive
