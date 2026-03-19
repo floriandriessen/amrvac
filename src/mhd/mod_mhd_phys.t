@@ -3219,8 +3219,8 @@ contains
     select case (boundspeed)
     case (1)
       if(mhd_radiation_use_csrad)then
-        call mhd_get_csrad_cons(wLC,x,ixI^L,ixO^L,idim,csoundL)
-        call mhd_get_csrad_cons(wRC,x,ixI^L,ixO^L,idim,csoundR)
+        call mhd_get_csrad_cons(wLp,x,ixI^L,ixO^L,idim,csoundL)
+        call mhd_get_csrad_cons(wRp,x,ixI^L,ixO^L,idim,csoundR)
       else
         ! This implements formula (10.52) from "Riemann Solvers and Numerical
         ! Methods for Fluid Dynamics" by Toro.
@@ -3279,8 +3279,8 @@ contains
       end if
     case (3)
       if(mhd_radiation_use_csrad)then
-        call mhd_get_csrad_cons(wLC,x,ixI^L,ixO^L,idim,csoundL)
-        call mhd_get_csrad_cons(wRC,x,ixI^L,ixO^L,idim,csoundR)
+        call mhd_get_csrad_cons(wLp,x,ixI^L,ixO^L,idim,csoundL)
+        call mhd_get_csrad_cons(wRp,x,ixI^L,ixO^L,idim,csoundR)
       else
         ! Miyoshi 2005 JCP 208, 315 equation (67)
         call mhd_get_csound_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
