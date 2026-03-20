@@ -45,6 +45,7 @@ module mod_usr_methods
   procedure(source), pointer          :: usr_source           => null()
   procedure(get_dt), pointer          :: usr_get_dt           => null()
   procedure(phys_gravity), pointer    :: usr_gravity          => null()
+  procedure(sub_get_heating), pointer :: usr_get_heating      => null()
 
   ! Usr defined dust drag force
   procedure(phys_dust_get_dt), pointer :: usr_dust_get_dt     => null()
@@ -613,6 +614,14 @@ module mod_usr_methods
       !endif
 
     end subroutine set_field
+
+    !> Calculate volumetric heating rate for TRAC broadening
+    subroutine sub_get_heating(Qgrid,ixI^L,ixO^L,w,x)
+      use mod_global_parameters
+      integer, intent(in)          :: ixI^L, ixO^L
+      double precision, intent(in) :: x(ixI^S,1:ndim), w(ixI^S,1:nw)
+      double precision, intent(out):: Qgrid(ixI^S)
+    end subroutine sub_get_heating
 
   end interface
 

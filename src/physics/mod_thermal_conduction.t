@@ -88,6 +88,13 @@ module mod_thermal_conduction
 
     !> Consider thermal conduction saturation effect (.true.) or not (.false.)
     logical :: tc_saturate=.false.
+
+    !> Minimum temperature (code units) below which TRAC does not modify conductivity.
+    !> Below this T, the energy balance is dominated by optically thick radiation
+    !> and recombination, not optically thin cooling + Spitzer conduction, so TRAC's
+    !> broadening assumption does not apply. Read in Kelvin via tc_list (trac_T_floor),
+    !> converted to code units during init. Default 1e4 K.
+    double precision :: trac_T_floor=0.d0
     ! END the following are read from param file or set in tc_read_hd_params or tc_read_mhd_params
     procedure (get_var_subr), pointer, nopass :: get_rho => null()
     procedure (get_var_subr), pointer, nopass :: get_rho_equi => null()
@@ -538,7 +545,8 @@ contains
       ! conductivity at cell center
       if(phys_trac) then
        {do ix^DB=ixmin^DB,ixmax^DB\}
-          if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
+          if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_) .and. &
+             Te(ix^D) > fl%trac_T_floor) then
             qdd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
           else
             qdd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)
@@ -1145,7 +1153,8 @@ contains
     else
       if(phys_trac) then
        {do ix^DB=ixmin^DB,ixmax^DB\}
-          if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
+          if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_) .and. &
+             Te(ix^D) > fl%trac_T_floor) then
             qd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
           else
             qd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)

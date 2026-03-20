@@ -25,6 +25,7 @@ module mod_escape_probability
   double precision :: dx_aux = 0.0d0  !< Cell width at finest level
   integer :: iw_colmass_ = -1         !< Index into wextra for column mass
   logical :: escape_sym_ = .false.    !< Symmetric loop (apex at domain center)
+  double precision :: escape_height_ = 0.0d0  !< Max height from footpoint for colmass (code units); 0 = no limit
   logical :: arrays_allocated = .false. !< Deferred allocation flag
 
   ! Work arrays (allocated on first use, after mesh params are set)
@@ -38,13 +39,16 @@ contains
   !> Register escape probability parameters.
   !> Called during hd_phys_init (before mesh parameters are available).
   !> Grid-dependent allocation is deferred to the first compute call.
-  subroutine escape_prob_init(iw_colmass, escape_sym)
+  subroutine escape_prob_init(iw_colmass, escape_sym, escape_height)
     use mod_global_parameters
+    use mod_comm_lib, only: mpistop
     integer, intent(in) :: iw_colmass
     logical, intent(in) :: escape_sym
+    double precision, intent(in) :: escape_height
 
     iw_colmass_ = iw_colmass
     escape_sym_ = escape_sym
+    escape_height_ = escape_height
 
     {^NOONED
     call mpistop("escape probability currently only supports 1D")
@@ -70,9 +74,10 @@ contains
     arrays_allocated = .true.
 
     if (mype == 0) then
-      write(*, '(A,I8,A,ES10.3,A,L1)') &
+      write(*, '(A,I8,A,ES10.3,A,L1,A,ES10.3)') &
         ' Escape probability: n_aux=', n_aux, &
-        ' dx_aux=', dx_aux, ' symmetric=', escape_sym_
+        ' dx_aux=', dx_aux, ' symmetric=', escape_sym_, &
+        ' height=', escape_height_
     end if
 
   end subroutine escape_prob_setup_arrays
@@ -91,7 +96,8 @@ contains
     use mod_connectivity, only: igrids_active, igridstail_active
 
     integer :: iigrid, igrid, level, ratio
-    integer :: ix1, k, klo, khi, kk, k_apex
+    integer :: ix1, k, klo, khi, kk, k_apex, k_cutoff_left, k_cutoff_right
+    integer :: k_left, k_right
     double precision :: x_cell, rho_cell, running_sum
     double precision :: cm_value
 
@@ -141,14 +147,57 @@ contains
     ! 3b. Fill gaps left by AMR level transitions.
     !     At coarse/fine boundaries, the interior-cell gather can miss
     !     a few aux cells (ghost cell region between blocks at different
-    !     levels).  Forward-fill from the nearest populated neighbour.
-    do k = 2, n_aux
-      if (rho_dx_global(k) == 0.0d0) rho_dx_global(k) = rho_dx_global(k-1)
+    !     levels).  Use symmetric fill: average of nearest left and right
+    !     populated neighbours for interior gaps, boundary fill for edges.
+    do k = 1, n_aux
+      if (rho_dx_global(k) == 0.0d0) then
+        ! Find nearest populated neighbour to the left
+        k_left = 0
+        do kk = k - 1, 1, -1
+          if (rho_dx_global(kk) /= 0.0d0) then
+            k_left = kk
+            exit
+          end if
+        end do
+        ! Find nearest populated neighbour to the right
+        k_right = 0
+        do kk = k + 1, n_aux
+          if (rho_dx_global(kk) /= 0.0d0) then
+            k_right = kk
+            exit
+          end if
+        end do
+        ! Average of both neighbours (symmetric), or one-sided at edges
+        if (k_left > 0 .and. k_right > 0) then
+          rho_dx_global(k) = half * (rho_dx_global(k_left) &
+              + rho_dx_global(k_right))
+        else if (k_left > 0) then
+          rho_dx_global(k) = rho_dx_global(k_left)
+        else if (k_right > 0) then
+          rho_dx_global(k) = rho_dx_global(k_right)
+        end if
+      end if
     end do
-    ! Backward pass for any leading zeros (cells before the first block)
-    do k = n_aux - 1, 1, -1
-      if (rho_dx_global(k) == 0.0d0) rho_dx_global(k) = rho_dx_global(k+1)
-    end do
+
+    ! 3c. Zero rho_dx above escape_height from each footpoint.
+    !     This makes the column mass integration START at the cutoff height
+    !     rather than at the apex, so coronal condensations are excluded
+    !     from the chromospheric column mass.
+    if (escape_height_ > 0.0d0) then
+      k_cutoff_left = floor(escape_height_ / dx_aux) + 1
+      k_cutoff_left = min(k_cutoff_left, n_aux)
+      if (escape_sym_) then
+        k_cutoff_right = n_aux - k_cutoff_left + 1
+        k_cutoff_right = max(1, k_cutoff_right)
+        do k = k_cutoff_left + 1, k_cutoff_right - 1
+          rho_dx_global(k) = 0.0d0
+        end do
+      else
+        do k = k_cutoff_left + 1, n_aux
+          rho_dx_global(k) = 0.0d0
+        end do
+      end if
+    end if
 
     ! 4. Prefix sums for column mass from both boundaries
     ! Left: colmass_left(i) = integral of rho*dx from x=xprobmin to cell i
@@ -186,13 +235,16 @@ contains
         k = max(1, min(k, n_aux))
 
         if (escape_sym_) then
-          ! Symmetric loop: column mass from apex toward each footpoint
+          ! Symmetric loop: column mass from cell to midpoint face
+          ! The midpoint face lies between cells k_apex and k_apex+1.
+          ! Left half: sum(k+1 : k_apex), right half: sum(k_apex+1 : k-1)
+          ! This gives identical cell counts for mirror-symmetric pairs.
           if (k <= k_apex) then
-            ! Left half: cm = colmass from k to k_apex
+            ! Left half: cm = colmass from k to midpoint face
             cm_value = colmass_left(k_apex) - colmass_left(k)
           else
-            ! Right half: cm = colmass from k_apex to k
-            cm_value = colmass_right(k_apex) - colmass_right(k)
+            ! Right half: cm = colmass from midpoint face to k
+            cm_value = colmass_right(k_apex + 1) - colmass_right(k)
           end if
         else
           ! Non-symmetric: cm from top of domain downward = colmass_right

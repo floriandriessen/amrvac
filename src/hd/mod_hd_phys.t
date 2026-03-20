@@ -92,6 +92,12 @@ module mod_hd_phys
   integer, public, protected              :: hd_trac_type = 1
   integer, public, protected              :: hd_trac_nzones = 1
   double precision, public, protected     :: hd_trac_zone_splits(10) = -1.d0
+  !> Johnston 2021 resolution parameter delta (default 0.5)
+  double precision, public, protected     :: hd_trac_delta = 0.5d0
+  !> Johnston 2021 mass flux velocity threshold (fraction of local c_s).
+  !> Below this Mach number, enthalpy flux is ignored in the TRAC formula
+  !> to prevent feedback-driven asymmetry from subsonic sloshing.
+  double precision, public, protected     :: hd_trac_v_thresh = 0.01d0
 
   !> Whether well-balanced reconstruction is used (Kaeppeli & Mishra style)
   logical, public, protected              :: hd_well_balanced = .false.
@@ -148,7 +154,7 @@ contains
     hd_dust, hd_thermal_conduction, hd_radiative_cooling, hd_viscosity, &
     hd_gravity, He_abundance,H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
-    hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_cak_force, &
+    hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_trac_delta, hd_trac_v_thresh, hd_cak_force, &
     hd_partial_ionization, hd_well_balanced
 
     do n = 1, size(files)
@@ -191,7 +197,7 @@ contains
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_ionization_degree
-    use mod_usr_methods, only: usr_Rfactor
+    use mod_usr_methods, only: usr_Rfactor, usr_get_heating
     use mod_escape_probability, only: escape_prob_init
 
     integer :: itr, idir
@@ -208,9 +214,14 @@ contains
     phys_trac=hd_trac
     if(phys_trac) then
       if(ndim .eq. 1) then
-        if(hd_trac_type .gt. 2) then
+        if(hd_trac_type .gt. 2 .and. hd_trac_type .ne. 7) then
           hd_trac_type=1
           if(mype==0) write(*,*) 'WARNING: set hd_trac_type=1'
+        end if
+        if(hd_trac_type == 7) then
+          if(.not. associated(usr_get_heating)) then
+            call mpistop("hd_trac_type=7 requires usr_get_heating to be set in mod_usr.t")
+          end if
         end if
         phys_trac_type=hd_trac_type
         phys_trac_nzones=hd_trac_nzones
@@ -378,7 +389,7 @@ contains
         iw_colmass = var_set_wextra()
         rc_fl%iw_colmass_ = iw_colmass
         phys_escape_prob = .true.
-        call escape_prob_init(iw_colmass, rc_fl%rad_modify_sym)
+        call escape_prob_init(iw_colmass, rc_fl%rad_modify_sym, rc_fl%rad_escape_height)
       end if
     end if
     allocate(te_fl_hd)
@@ -522,13 +533,14 @@ contains
 
     ! fill in tc_fluid fields from namelist
     subroutine tc_params_read_hd(fl)
-      use mod_global_parameters, only: unitpar,par_files
+      use mod_global_parameters, only: unitpar,par_files,unit_temperature
       type(tc_fluid), intent(inout) :: fl
       integer                      :: n
       logical :: tc_saturate=.false.
       double precision :: tc_k_para=0d0
+      double precision :: trac_T_floor=1.d4
 
-      namelist /tc_list/ tc_saturate, tc_k_para
+      namelist /tc_list/ tc_saturate, tc_k_para, trac_T_floor
 
       do n = 1, size(par_files)
          open(unitpar, file=trim(par_files(n)), status="old")
@@ -537,6 +549,7 @@ contains
       end do
       fl%tc_saturate = tc_saturate
       fl%tc_k_para = tc_k_para
+      fl%trac_T_floor = trac_T_floor / unit_temperature
 
     end subroutine tc_params_read_hd
 
@@ -553,7 +566,7 @@ contains
 !!end th cond
 !!rad cool
     subroutine rc_params_read(fl)
-      use mod_global_parameters, only: unitpar,par_files,unit_temperature
+      use mod_global_parameters, only: unitpar,par_files,unit_temperature,unit_length
       use mod_constants, only: bigdouble
       use mod_basic_types, only: std_len
       type(rc_fluid), intent(inout) :: fl
@@ -604,12 +617,14 @@ contains
       character(len=10) :: rad_escape_type='slab'
       !> Exponential cutoff scale: E *= exp(-tau/tau_cutoff); 0 = disabled
       double precision :: rad_escape_tau_cutoff=0.0d0
+      !> Max height from footpoint for escape probability column mass (cm); 0 = no limit
+      double precision :: rad_escape_height=0.0d0
 
       namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, &
           rho_cap, rad_modify, rad_modify_sym, &
           rad_cut_hgt, rad_cut_dey, rad_taper_rho, rad_taper_dey, &
           rad_escape_prob, rad_kappa_eff, rad_kappa_Tcutoff, rad_kappa_alpha, &
-          rad_escape_type, rad_escape_tau_cutoff
+          rad_escape_type, rad_escape_tau_cutoff, rad_escape_height
 
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
@@ -637,6 +652,7 @@ contains
       fl%rad_kappa_alpha=rad_kappa_alpha
       fl%rad_escape_type=rad_escape_type
       fl%rad_escape_tau_cutoff=rad_escape_tau_cutoff
+      fl%rad_escape_height=rad_escape_height/unit_length
     end subroutine rc_params_read
 !! end rad cool
 
@@ -981,6 +997,8 @@ contains
   !> get adaptive cutoff temperature for TRAC (Johnston 2019 ApJL, 873, L22)
   subroutine hd_get_tcutoff(ixI^L,ixO^L,w,x,tco_local,Tmax_local)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_get_heating
+    use mod_radiative_cooling, only: findL
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: x(ixI^S,1:ndim)
     ! in primitive form
@@ -993,6 +1011,12 @@ contains
     integer :: jxO^L,hxO^L
     integer :: jxP^L,hxP^L,ixP^L
     logical :: lrlt(ixI^S)
+    ! Johnston 2021 type 7 variables
+    double precision :: dTdx, L_T, a_coeff, L1, cooling, net_cool
+    double precision :: kappa_par, disc, kappa_TRAC, kappa_eff, Tcoff_eff
+    double precision :: dx_over_delta, nH_loc, v_abs, v_thresh
+    double precision :: Q_heat(ixI^S), neOnH_corr(ixI^S)
+    integer :: ix1
 
     {^IFONED
     call eos%get_Rfactor(w,x,ixI^L,ixI^L,R)
@@ -1029,8 +1053,93 @@ contains
       jxP^L=ixP^L+1;
       lts(ixP^S)=0.5d0*abs(Te(jxP^S)-Te(hxP^S))/Te(ixP^S)
       lts(ixP^S)=max(one, (exp(lts(ixP^S))/ltrc)**ltrp)
+      ! Smoothed Tcoff for interior cells
       lts(ixO^S)=0.25d0*(lts(jxO^S)+two*lts(ixO^S)+lts(hxO^S))
       block%wextra(ixO^S,Tcoff_)=Te(ixO^S)*lts(ixO^S)**0.4d0
+      ! Fill one ghost cell on each side with unsmoothed Tcoff.
+      ! The thermal conduction routine reads Tcoff at ixO +/- 1;
+      ! wextra ghost cells are NOT halo-communicated, so without this
+      ! the conduction sees stale values and breaks symmetry.
+      block%wextra(ixOmin1-1,Tcoff_)=Te(ixOmin1-1)*lts(ixOmin1-1)**0.4d0
+      block%wextra(ixOmax1+1,Tcoff_)=Te(ixOmax1+1)*lts(ixOmax1+1)**0.4d0
+    case(7)
+      !> Johnston et al. 2021 local TRAC (A&A 654, A2)
+      !> Per-cell kappa_TRAC from steady-state energy balance
+
+      ! Get background heating Q (once per block)
+      call usr_get_heating(Q_heat, ixI^L, ixO^L, w, x)
+
+      ! Saha n_e/n_H correction for LTE cooling lookup
+      ! findL returns Lambda pre-scaled with neOnH_FI baked in.
+      ! For LTE partial ionisation, actual n_e/n_H < neOnH_FI.
+      ! Use w(Ne_) from EoS (already in primitive form).
+      if(eos%eos_type == 'LTE' .and. Ne_ > 0) then
+        do ix1=ixOmin1,ixOmax1
+          nH_loc = w(ix1,rho_) / eos%nH2rhoFactor
+          neOnH_corr(ix1) = (w(ix1,Ne_) / nH_loc) / eos%neOnH_FI
+        end do
+      else
+        neOnH_corr(ixO^S) = 1.0d0
+      end if
+
+      hxO^L=ixO^L-1;
+      jxO^L=ixO^L+1;
+      dx_over_delta = dxlevel(1) / hd_trac_delta
+
+      do ix1=ixOmin1,ixOmax1
+        ! Temperature gradient: L_T = T / abs(dT/dx)
+        dTdx = abs(Te(ix1+1) - Te(ix1-1)) / (2.d0 * dxlevel(1))
+        if(dTdx < smalldouble) then
+          ! Uniform temperature -- no broadening needed
+          block%wextra(ix1,Tcoff_) = Te(ix1)
+          cycle
+        end if
+        L_T = Te(ix1) / dTdx
+
+        ! Mass flux coefficient: a = (5/2)*p*v_eff/T  [exact for any ideal gas]
+        ! Threshold: ignore enthalpy flux for subsonic sloshing (v < v_thresh*cs)
+        ! to prevent feedback-driven Tcoff asymmetry from machine-precision seeds.
+        v_abs = abs(w(ix1,m1_))
+        v_thresh = hd_trac_v_thresh * dsqrt(hd_gamma * w(ix1,p_) / w(ix1,rho_))
+        a_coeff = 2.5d0 * w(ix1,p_) * max(v_abs - v_thresh, 0.d0) / Te(ix1)
+
+        ! Radiative cooling: rho**2 * Lambda(T) with Saha correction
+        call findL(Te(ix1), L1, rc_fl)
+        cooling = w(ix1,rho_)**2 * L1 * neOnH_corr(ix1)
+
+        ! Net cooling - heating
+        net_cool = abs(cooling - Q_heat(ix1))
+
+        ! Spitzer conductivity at this T
+        kappa_par = tc_fl%tc_k_para * Te(ix1)**2.5d0
+
+        ! Johnston Eq. 11 discriminant
+        disc = a_coeff**2 + 4.d0 * tc_fl%tc_k_para * Te(ix1)**1.5d0 * net_cool
+
+        if(L_T <= 2.d0 * dx_over_delta) then
+          ! Under-resolved: full TRAC formula (Eq. 11)
+          kappa_TRAC = (a_coeff + dsqrt(disc)) / (2.d0 / dx_over_delta)
+        else
+          ! Over-resolved: limiter only (Eq. 12, drops mass flux)
+          kappa_TRAC = dsqrt(4.d0 * tc_fl%tc_k_para * Te(ix1)**1.5d0 * net_cool) &
+                       / (2.d0 / dx_over_delta)
+        end if
+
+        ! kappa' = max(kappa_TRAC, kappa_par)
+        kappa_eff = max(kappa_TRAC, kappa_par)
+
+        ! Convert to effective Tcoff: Tcoff = (kappa'/kappa_0)**(2/5)
+        Tcoff_eff = (kappa_eff / tc_fl%tc_k_para)**0.4d0
+
+        ! Store max(Te, Tcoff_eff) -- Tcoff must be >= Te
+        block%wextra(ix1,Tcoff_) = max(Te(ix1), Tcoff_eff)
+      end do
+      ! Fill one ghost cell on each side with nearest interior Tcoff.
+      ! The thermal conduction routine reads Tcoff at ixO +/- 1;
+      ! wextra ghost cells are NOT halo-communicated, so without this
+      ! the conduction sees stale values and breaks symmetry.
+      block%wextra(ixOmin1-1,Tcoff_) = block%wextra(ixOmin1,Tcoff_)
+      block%wextra(ixOmax1+1,Tcoff_) = block%wextra(ixOmax1,Tcoff_)
     case default
       call mpistop("mhd_trac_type not allowed for 1D simulation")
     end select

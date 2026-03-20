@@ -136,6 +136,8 @@ module mod_radiative_cooling
     character(len=10) :: rad_escape_type = 'slab'
     !> Exponential cutoff scale: E *= exp(-tau/tau_cutoff); 0 = disabled
     double precision :: rad_escape_tau_cutoff = 0.0d0
+    !> Max height from footpoint for column mass integration (code units); 0 = no limit
+    double precision :: rad_escape_height = 0.0d0
     !> Index into wextra for column mass (set during init)
     integer :: iw_colmass_ = -1
 
