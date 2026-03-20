@@ -68,6 +68,7 @@ contains
   
       xFimin^D=rnode(rpxmin^D_,ichild)\
       dxFi^D=rnode(rpdx^D_,ichild)\
+      ^D&dxlevel(^D)=dxFi^D;
       call prolong_2nd(ps(igrid),ixCo^L,ps(ichild), &
            dxCo^D,xComin^D,dxFi^D,xFimin^D,igrid,ichild)
       !call prolong_1st(ps(igrid)%w,ixCo^L,ps(ichild)%w,ps(ichild)%x)
