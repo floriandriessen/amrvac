@@ -182,6 +182,7 @@ mod_errest.o: mod_forest.mod
 mod_errest.o: mod_global_parameters.mod
 mod_errest.o: mod_physics.mod
 mod_errest.o: mod_usr_methods.mod
+mod_escape_probability.o: mod_comm_lib.mod
 mod_escape_probability.o: mod_connectivity.mod
 mod_escape_probability.o: mod_global_parameters.mod
 mod_escape_probability.o: mod_variables.mod
@@ -199,6 +200,7 @@ mod_finite_volume.o: mod_global_parameters.mod
 mod_finite_volume.o: mod_limiter.mod
 mod_finite_volume.o: mod_physics.mod
 mod_finite_volume.o: mod_source.mod
+mod_finite_volume.o: mod_timing.mod
 mod_finite_volume.o: mod_tvd.mod
 mod_finite_volume.o: mod_usr_methods.mod
 mod_finite_volume.o: mod_variables.mod
@@ -504,6 +506,7 @@ mod_venk.o: mod_global_parameters.mod
 mod_viscosity.o: mod_comm_lib.mod
 mod_viscosity.o: mod_geometry.mod
 mod_viscosity.o: mod_global_parameters.mod
+mod_wb_atmosphere.o: mod_comm_lib.mod
 mod_wb_atmosphere.o: mod_global_parameters.mod
 mod_weno.o: mod_global_parameters.mod
 mod_weno.o: mod_physics.mod
