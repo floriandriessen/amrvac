@@ -1132,6 +1132,15 @@ contains
     if (associated(phys_wb_transform)) then
       call phys_wb_transform(ixI^L, ixI^L, idims, w, x, wb_phi, &
            wb_phi_face, wb_T)
+      ! Re-initialise wLp/wRp to transformed cell-centre values.
+      ! The caller set them from physical primitives, but phys_wb_transform
+      ! changed w in-place to (T, v, q).  Limiters that use wLp/wRp as base
+      ! values (TVD slope limiters) or as fallback (WENO/MP5 via fix_limiter)
+      ! need them to match the transformed w.
+      ! wLp(i) = w(i), wRp(i) = w(i+1) in the reconstruction direction.
+      jxR^L=ixR^L+kr(idims,^D);
+      wLp(ixL^S, 1:nwflux) = w(ixL^S, 1:nwflux)
+      wRp(ixR^S, 1:nwflux) = w(jxR^S, 1:nwflux)
     end if
 
     select case (type_limiter(block%level))
