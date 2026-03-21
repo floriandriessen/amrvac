@@ -193,12 +193,14 @@ module mod_hd_eos
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-            integer :: ix^D, iter
+            integer :: ix^D, iter, max_iter
             double precision :: p_to_eint, p_over_rho
             double precision :: nH(ixI^S), nH_in(ixI^S), p_in(ixI^S)
             double precision :: log_nH_val, log_p_target
             double precision :: log_eint_lo, log_eint_hi, log_eint_mid
             double precision :: T_val, y_val, log_p_eval, eint_total
+            double precision :: log_eint_guess, log_p_at_guess, margin
+            double precision :: p2eint_ratio, f_bracket
 
             if (eos%ionE) then
                 call eos%get_nH(w, x, ixI^L, ixO^L, nH)
@@ -220,19 +222,55 @@ module mod_hd_eos
                             w(ix^D,e_) = w(ix^D,p_)*p_to_eint + &
                                 half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                         else if (hd_well_balanced) then
-                            !> WB mode: bisect on forward T,y tables for exact
+                            !> WB mode: bisect on forward log_p table for exact
                             !> round-trip with to_primitive_LTE.
-                            !> If a cached log10(eint/nH) is available from the
-                            !> previous to_primitive call, seed a narrow bracket
-                            !> (±0.15 decades) and bisect 10 iterations.
-                            !> Otherwise, use full table range with 20 iterations.
+                            !> Use p2eint table as initial guess to seed a narrow
+                            !> bracket, then bisect ~8 iterations instead of 20.
+                            !> Falls back to full-range bisection if guess is poor.
                             log_nH_val = nH_in(ix^D)
                             log_p_target = dlog10(w(ix^D,p_)) - log_nH_val
-                            log_eint_lo = eos%log_p%var2_min
-                            log_eint_hi = eos%log_p%var2_max
-                            do iter = 1, 20
+
+                            !> Initial guess from p2eint inverse table
+                            p2eint_ratio = p2eint_from_nH_p(log_nH_val, log_p_target)
+                            log_eint_guess = dlog10(p2eint_ratio) + log_p_target
+
+                            !> Clamp guess to table range
+                            log_eint_guess = max(log_eint_guess, eos%log_p%var2_min)
+                            log_eint_guess = min(log_eint_guess, eos%log_p%var2_max)
+
+                            !> Evaluate log_p at guess to determine bracket side
+                            log_p_at_guess = log_p_from_nH_eint(log_nH_val, &
+                                log_eint_guess)
+
+                            !> Set narrow bracket (5e-4 decades ~ 0.1% in eint)
+                            margin = 5.0d-4
+                            if (log_p_at_guess < log_p_target) then
+                                log_eint_lo = log_eint_guess
+                                log_eint_hi = min(log_eint_guess + margin, &
+                                    eos%log_p%var2_max)
+                                f_bracket = log_p_from_nH_eint(log_nH_val, &
+                                    log_eint_hi) - log_p_target
+                            else
+                                log_eint_lo = max(log_eint_guess - margin, &
+                                    eos%log_p%var2_min)
+                                log_eint_hi = log_eint_guess
+                                f_bracket = -(log_p_from_nH_eint(log_nH_val, &
+                                    log_eint_lo) - log_p_target)
+                            end if
+
+                            if (f_bracket >= 0.0d0) then
+                                max_iter = 8
+                            else
+                                !> Guess was poor — fall back to full range
+                                log_eint_lo = eos%log_p%var2_min
+                                log_eint_hi = eos%log_p%var2_max
+                                max_iter = 20
+                            end if
+
+                            do iter = 1, max_iter
                                 log_eint_mid = 0.5d0*(log_eint_lo + log_eint_hi)
-                                log_p_eval = log_p_from_nH_eint(log_nH_val, log_eint_mid)
+                                log_p_eval = log_p_from_nH_eint(log_nH_val, &
+                                    log_eint_mid)
                                 if (log_p_eval < log_p_target) then
                                     log_eint_lo = log_eint_mid
                                 else
