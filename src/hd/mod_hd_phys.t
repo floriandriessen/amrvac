@@ -1927,7 +1927,8 @@ contains
 
     double precision :: gravity_field(ixI^S, 1:ndim)
     double precision :: wb_T(ixI^S), p_eq(ixI^S)
-    double precision :: dx_idims, alpha_prev, alpha_curr
+    double precision :: dx_idims
+    double precision :: alpha(ixI^S), beta(ixI^S)
     {^IFONED
     integer :: ix1, ix_mid
     }
@@ -1941,35 +1942,31 @@ contains
     dx_idims = dxlevel(1)
 
     {^IFONED
+    ! α_i = (dx/2) · g_i / T_i  (vectorised over ixO)
+    alpha(ixOmin1:ixOmax1) = 0.5d0 * dx_idims &
+      * gravity_field(ixOmin1:ixOmax1, 1) / wb_T(ixOmin1:ixOmax1)
+
     ! Anchor at block midpoint (least interpolation error)
     ix_mid = (ixOmin1 + ixOmax1) / 2
     p_eq(ix_mid) = w(ix_mid, p_)
 
-    ! Forward recurrence from midpoint to top
+    ! Forward: β_i = (1 + α_i) / (1 - α_{i+1})  (vectorised)
+    beta(ix_mid:ixOmax1-1) = (1.0d0 + alpha(ix_mid:ixOmax1-1)) &
+      / (1.0d0 - alpha(ix_mid+1:ixOmax1))
     do ix1 = ix_mid + 1, ixOmax1
-      alpha_prev = 0.5d0 * dx_idims * gravity_field(ix1 - 1, 1) &
-                   / wb_T(ix1 - 1)
-      alpha_curr = 0.5d0 * dx_idims * gravity_field(ix1, 1) &
-                   / wb_T(ix1)
-      p_eq(ix1) = p_eq(ix1 - 1) * (1.0d0 + alpha_prev) &
-                  / (1.0d0 - alpha_curr)
+      p_eq(ix1) = p_eq(ix1 - 1) * beta(ix1 - 1)
     end do
 
-    ! Backward recurrence from midpoint to bottom
+    ! Backward: β_i = (1 - α_{i+1}) / (1 + α_i)  (vectorised)
+    beta(ixOmin1:ix_mid-1) = (1.0d0 - alpha(ixOmin1+1:ix_mid)) &
+      / (1.0d0 + alpha(ixOmin1:ix_mid-1))
     do ix1 = ix_mid - 1, ixOmin1, -1
-      alpha_curr = 0.5d0 * dx_idims * gravity_field(ix1, 1) &
-                   / wb_T(ix1)
-      alpha_prev = 0.5d0 * dx_idims * gravity_field(ix1 + 1, 1) &
-                   / wb_T(ix1 + 1)
-      p_eq(ix1) = p_eq(ix1 + 1) * (1.0d0 - alpha_prev) &
-                  / (1.0d0 + alpha_curr)
+      p_eq(ix1) = p_eq(ix1 + 1) * beta(ix1)
     end do
 
     ! Replace interpolated p with recurrence-derived p, update rho = p/T
-    do ix1 = ixOmin1, ixOmax1
-      w(ix1, p_)   = p_eq(ix1)
-      w(ix1, rho_) = p_eq(ix1) / wb_T(ix1)
-    end do
+    w(ixOmin1:ixOmax1, p_)   = p_eq(ixOmin1:ixOmax1)
+    w(ixOmin1:ixOmax1, rho_) = p_eq(ixOmin1:ixOmax1) / wb_T(ixOmin1:ixOmax1)
     }
 
   end subroutine hd_wb_prolong
@@ -1997,7 +1994,8 @@ contains
     double precision, intent(out)    :: wb_T(ixI^S)
 
     double precision :: gravity_field(ixI^S, 1:ndim)
-    double precision :: dx_idims, alpha_prev, alpha_curr
+    double precision :: dx_idims
+    double precision :: alpha(ixI^S), beta(ixI^S)
     {^IFONED
     integer :: ix1
     }
@@ -2013,15 +2011,21 @@ contains
     ! Multiplicative trapezoidal recurrence for p_eq.
     ! p_eq(i+1) = p_eq(i) · (1 + α(i)) / (1 - α(i+1))
     ! Always positive for dx < 2H.
+    !
+    ! Vectorised: precompute α and β factors, then sequential cumulative product.
     {^IFONED
+    ! α_i = (dx/2) · g_i / T_i  (vectorised)
+    alpha(ixImin1:ixImax1) = 0.5d0 * dx_idims &
+      * gravity_field(ixImin1:ixImax1, idims) / wb_T(ixImin1:ixImax1)
+
+    ! β_i = (1 + α_i) / (1 - α_{i+1})  (vectorised)
+    beta(ixImin1:ixImax1-1) = (1.0d0 + alpha(ixImin1:ixImax1-1)) &
+      / (1.0d0 - alpha(ixImin1+1:ixImax1))
+
+    ! Cumulative product (sequential, unavoidable data dependency)
     wb_phi(ixImin1) = w(ixImin1, p_)
     do ix1 = ixImin1 + 1, ixImax1
-      alpha_prev = 0.5d0 * dx_idims * gravity_field(ix1 - 1, idims) &
-                   / wb_T(ix1 - 1)
-      alpha_curr = 0.5d0 * dx_idims * gravity_field(ix1, idims) &
-                   / wb_T(ix1)
-      wb_phi(ix1) = wb_phi(ix1 - 1) * (1.0d0 + alpha_prev) &
-                    / (1.0d0 - alpha_curr)
+      wb_phi(ix1) = wb_phi(ix1 - 1) * beta(ix1 - 1)
     end do
     }
 
@@ -2063,16 +2067,12 @@ contains
     double precision, intent(in)     :: wb_T(ixI^S)
 
     double precision :: T_shared(ixI^S)
-    {^IFONED
-    integer :: ix1
-    }
 
     ! Shared face temperature: T_face(i) = ½(T(i) + T(i+1))
     ! Used for BOTH L and R density recovery → ρ_L = ρ_R in HSE.
     {^IFONED
-    do ix1 = ixImin1, ixImax1 - 1
-      T_shared(ix1) = 0.5d0 * (wb_T(ix1) + wb_T(ix1 + 1))
-    end do
+    T_shared(ixImin1:ixImax1-1) = 0.5d0 * (wb_T(ixImin1:ixImax1-1) &
+      + wb_T(ixImin1+1:ixImax1))
     T_shared(ixImax1) = wb_T(ixImax1)
     }
 
