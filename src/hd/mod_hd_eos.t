@@ -222,11 +222,11 @@ module mod_hd_eos
                             w(ix^D,e_) = w(ix^D,p_)*p_to_eint + &
                                 half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                         else if (hd_well_balanced) then
-                            !> WB mode: bisect on forward log_p table for exact
-                            !> round-trip with to_primitive_LTE.
-                            !> Use p2eint table as initial guess to seed a narrow
-                            !> bracket, then bisect ~8 iterations instead of 20.
-                            !> Falls back to full-range bisection if guess is poor.
+                            !> WB mode: cached bisection on forward log_p table
+                            !> for exact round-trip with to_primitive_LTE.
+                            !> 1. p2eint table gives initial guess
+                            !> 2. Narrow bracket set from guess
+                            !> 3. Cached bisection avoids redundant table loads
                             log_nH_val = nH_in(ix^D)
                             log_p_target = dlog10(w(ix^D,p_)) - log_nH_val
 
@@ -267,17 +267,10 @@ module mod_hd_eos
                                 max_iter = 20
                             end if
 
-                            do iter = 1, max_iter
-                                log_eint_mid = 0.5d0*(log_eint_lo + log_eint_hi)
-                                log_p_eval = log_p_from_nH_eint(log_nH_val, &
-                                    log_eint_mid)
-                                if (log_p_eval < log_p_target) then
-                                    log_eint_lo = log_eint_mid
-                                else
-                                    log_eint_hi = log_eint_mid
-                                end if
-                                if (dabs(log_eint_hi - log_eint_lo) < 1.0d-14) exit
-                            end do
+                            !> Cached bisection: precomputes nH indices and
+                            !> table values once, avoids redundant loads
+                            call log_p_bisect_cached(log_nH_val, log_p_target, &
+                                log_eint_lo, log_eint_hi, max_iter, log_eint_mid)
                             eint_total = nH(ix^D) * 10.0d0**log_eint_mid
                             eint_total = max(eint_total, &
                                 nH(ix^D) * 10.0d0**eos%T%var2_min)

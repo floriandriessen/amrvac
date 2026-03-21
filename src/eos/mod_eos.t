@@ -59,6 +59,7 @@ module mod_eos
     public :: y_from_nH_eint, T_from_nH_eint, p2eint_from_nH_p, p_from_eint_IonE
     public :: gamma1_from_nH_eint, gamma1_from_nH_p
     public :: log_p_from_nH_eint
+    public :: log_p_bisect_cached
     public :: eint_nH_from_T
     public :: interp_clamped_monotone_bicubic_table
     public :: Rfactor_from_PI_temperature, update_PI_temperature
@@ -814,6 +815,156 @@ contains
             eos%log_p%var1_min, eos%log_p%var1_max, &
             eos%log_p%var2_min, eos%log_p%var2_max)
     end function log_p_from_nH_eint
+
+    !> Cached bisection on the log_p table for WB p→eint inversion.
+    !> Precomputes nH-direction indices and table values once, then
+    !> bisects using only cheap PCHIP evaluations with varying tx.
+    !> Expects a narrow initial bracket [lo, hi] (e.g. from p2eint guess).
+    subroutine log_p_bisect_cached(log_nH, log_p_target, &
+        log_eint_lo, log_eint_hi, max_iter, log_eint_result)
+        double precision, intent(in)    :: log_nH, log_p_target
+        double precision, intent(inout) :: log_eint_lo, log_eint_hi
+        integer, intent(in)             :: max_iter
+        double precision, intent(out)   :: log_eint_result
+
+        integer :: nx, ny, ix, iy, iter
+        integer :: i0, i1, i2, i3, j0, j1, j2, j3
+        double precision :: tx, ty, rx, ry
+        double precision :: xstep_inv, ystep_inv
+        double precision :: vmin_x, vmax_x, vmin_y, vmax_y
+        double precision :: log_eint_mid, log_p_eval
+
+        !> Table values: tv(y_row, x_col) for 4 y-rows x 4 x-cols
+        double precision :: tv(4,4)
+        !> Cached ix for detecting grid cell change
+        integer :: ix_cached
+
+        nx = eos%log_p%dim2   ! eint axis (varx)
+        ny = eos%log_p%dim1   ! nH axis (vary)
+        vmin_x = eos%log_p%var2_min
+        vmax_x = eos%log_p%var2_max
+        vmin_y = eos%log_p%var1_min
+        vmax_y = eos%log_p%var1_max
+        xstep_inv = dble(nx-1) / (vmax_x - vmin_x)
+        ystep_inv = dble(ny-1) / (vmax_y - vmin_y)
+
+        !> Precompute nH indices (constant across all iterations)
+        ry = (log_nH - vmin_y) * ystep_inv
+        ry = max(0.0d0, min(ry, dble(ny-1)))
+        iy = int(ry)
+        ty = ry - dble(iy)
+
+        !> Clamped y-row indices
+        j0 = max(0, min(ny-1, iy-1))
+        j1 = max(0, min(ny-1, iy  ))
+        j2 = max(0, min(ny-1, iy+1))
+        j3 = max(0, min(ny-1, iy+2))
+
+        ix_cached = -1
+
+        do iter = 1, max_iter
+            log_eint_mid = 0.5d0 * (log_eint_lo + log_eint_hi)
+
+            !> Compute eint-direction index
+            rx = (log_eint_mid - vmin_x) * xstep_inv
+            rx = max(0.0d0, min(rx, dble(nx-1)))
+            ix = int(rx)
+            tx = rx - dble(ix)
+
+            !> Load 16 table values only when ix changes
+            if (ix /= ix_cached) then
+                i0 = max(0, min(nx-1, ix-1))
+                i1 = max(0, min(nx-1, ix  ))
+                i2 = max(0, min(nx-1, ix+1))
+                i3 = max(0, min(nx-1, ix+2))
+
+                tv(1,1) = eos%log_p%table(j0+1, i0+1)
+                tv(1,2) = eos%log_p%table(j0+1, i1+1)
+                tv(1,3) = eos%log_p%table(j0+1, i2+1)
+                tv(1,4) = eos%log_p%table(j0+1, i3+1)
+                tv(2,1) = eos%log_p%table(j1+1, i0+1)
+                tv(2,2) = eos%log_p%table(j1+1, i1+1)
+                tv(2,3) = eos%log_p%table(j1+1, i2+1)
+                tv(2,4) = eos%log_p%table(j1+1, i3+1)
+                tv(3,1) = eos%log_p%table(j2+1, i0+1)
+                tv(3,2) = eos%log_p%table(j2+1, i1+1)
+                tv(3,3) = eos%log_p%table(j2+1, i2+1)
+                tv(3,4) = eos%log_p%table(j2+1, i3+1)
+                tv(4,1) = eos%log_p%table(j3+1, i0+1)
+                tv(4,2) = eos%log_p%table(j3+1, i1+1)
+                tv(4,3) = eos%log_p%table(j3+1, i2+1)
+                tv(4,4) = eos%log_p%table(j3+1, i3+1)
+
+                ix_cached = ix
+            end if
+
+            !> Evaluate PCHIP: 4 x-rows then 1 y-interp
+            log_p_eval = pchip_2d_from_cache(tv, tx, ty)
+
+            if (log_p_eval < log_p_target) then
+                log_eint_lo = log_eint_mid
+            else
+                log_eint_hi = log_eint_mid
+            end if
+
+            if (dabs(log_eint_hi - log_eint_lo) < 1.0d-14) exit
+        end do
+
+        log_eint_result = 0.5d0 * (log_eint_lo + log_eint_hi)
+
+    contains
+
+        pure double precision function pchip_1d(p0, p1, p2, p3, t) result(v)
+            double precision, intent(in) :: p0, p1, p2, p3, t
+            double precision :: d0, d1, d2, m1, m2, s, a1, a2, lim
+            double precision :: tt, ttt, h00, h10, h01, h11
+
+            d0 = p1 - p0;  d1 = p2 - p1;  d2 = p3 - p2
+
+            if (d1 == 0.0d0) then
+                m1 = 0.0d0;  m2 = 0.0d0
+            else
+                if (d0*d1 <= 0.0d0) then
+                    m1 = 0.0d0
+                else
+                    m1 = 2.0d0*d0*d1 / (d0 + d1)
+                end if
+                if (d1*d2 <= 0.0d0) then
+                    m2 = 0.0d0
+                else
+                    m2 = 2.0d0*d1*d2 / (d1 + d2)
+                end if
+                s = sign(1.0d0, d1)
+                a1 = s*m1;  a2 = s*m2
+                if (a1 < 0.0d0) a1 = 0.0d0
+                if (a2 < 0.0d0) a2 = 0.0d0
+                lim = 3.0d0*abs(d1)
+                if (a1 > lim) a1 = lim
+                if (a2 > lim) a2 = lim
+                m1 = s*a1;  m2 = s*a2
+            end if
+
+            tt = t*t;  ttt = tt*t
+            h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
+            h10 = ttt - 2.0d0*tt + t
+            h01 = -2.0d0*ttt + 3.0d0*tt
+            h11 = ttt - tt
+            v = h00*p1 + h10*m1 + h01*p2 + h11*m2
+        end function pchip_1d
+
+        pure double precision function pchip_2d_from_cache(c, tx, ty) result(z)
+            double precision, intent(in) :: c(4,4), tx, ty
+            double precision :: g0, g1, g2, g3
+            !> 4 x-direction interpolations (one per y-row)
+            g0 = pchip_1d(c(1,1), c(1,2), c(1,3), c(1,4), tx)
+            g1 = pchip_1d(c(2,1), c(2,2), c(2,3), c(2,4), tx)
+            g2 = pchip_1d(c(3,1), c(3,2), c(3,3), c(3,4), tx)
+            g3 = pchip_1d(c(4,1), c(4,2), c(4,3), c(4,4), tx)
+            !> 1 y-direction interpolation
+            z = pchip_1d(g0, g1, g2, g3, ty)
+        end function pchip_2d_from_cache
+
+    end subroutine log_p_bisect_cached
 
     double precision function eint_nH_from_T(log_nH, log_T) result(eint_nH)
         double precision, intent(in) :: log_nH, log_T
