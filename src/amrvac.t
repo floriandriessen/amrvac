@@ -390,6 +390,9 @@ contains
        write(*,'(a,f12.3,a)')'   - csound2                : ',timeeos_csound,' sec'
        write(*,'(a,f12.3,a)')'   - cons/prim conversion   : ',timeeos_conv,' sec'
        write(*,'(a,f12.3,a)')'   - get_pthermal           : ',timeeos_pthermal,' sec'
+       write(*,'(a,f12.3,a)')' Time spent on WB transform : ',time_wb_transform,' sec'
+       write(*,'(a,f12.3,a)')' Time spent on WB inverse+C : ',time_wb_inverse,' sec'
+       write(*,'(a,f12.3,a)')' Time spent on reconstruction:',time_wb_recon,' sec'
        write(*,'(a,f12.3,a)')' Time spent on computing    : ',timeloop-timeio_tot-timeeos_tot-timegr_tot-time_bc,' sec'
        write(*,'(a,f12.2,a)')'                  Percentage: ',100.0*(timeloop-timeio_tot-timeeos_tot-timegr_tot-time_bc)/timeloop,' %'
        write(*,'(a,es12.3 )')' Cells updated / proc / sec : ',dble(ncells_update)*dble(nstep)/dble(npe)/timeloop
