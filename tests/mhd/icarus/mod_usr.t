@@ -643,10 +643,7 @@ contains
     r    = x(ixI^S, 1)
     theta = x(ixI^S, 2)
     sin_theta = sin(theta)
-
-
     w(ixO^S,nw+7) = (v(ixI^S,3) + omega_frame*(r)* sin_theta)*unit_velocity*1d-3 ! the unit in km/s
-  
 
   end subroutine specialvar_output
 
