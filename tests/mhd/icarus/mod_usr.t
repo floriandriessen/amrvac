@@ -572,9 +572,9 @@ contains
         p    = p2d(ix2, ix3)   * (r_boundary / r)**2
         br   = br2d(ix2, ix3)  * (r_boundary / r)**2
         
-        !u_phi_corot = -omega_frame * r * sin_theta ! if  radial flow as inner BC in the inertial frame
+        u_phi_corot = -omega_frame * r * sin_theta ! if  radial flow as inner BC in the inertial frame
         
-        u_phi_corot = -omega_frame * (r - r_boundary) * sin_theta ! if radial flow as inner BC in the corotating frame
+        !u_phi_corot = -omega_frame * (r - r_boundary) * sin_theta ! if radial flow as inner BC in the corotating frame
         bphi = 0.d0                                         ! (u_phi_corot / ur) * br (creates divB)
 
 
@@ -612,11 +612,13 @@ contains
     double precision :: divb(ixI^S), divmom(ixI^S)
     double precision :: v(ixI^S,ndir), divV(ixI^S), momentum(ixI^S, ndir)
     integer :: i
+    double precision :: r_boundary
+    double precision ::  r(ixI^S), theta(ixI^S), sin_theta(ixI^S)
 
     ! output divB1
     call get_divb(w,ixI^L,ixO^L,divb)
     w(ixO^S,nw+1)=divb(ixO^S)
-   ! print *, block%level, block%dx(ixI^S,ndim)
+   
 
     do i=1,ndir
       v(ixI^S,i)=w(ixI^S,mom(i))/w(ixI^S,rho_)
@@ -636,12 +638,22 @@ contains
     w(ixO^S,nw+5)=block%dx(ixO^S,2)
     w(ixO^S,nw+6)=block%dx(ixO^S,3)
 
+    r_boundary   = xprobmin1 !in R_sun
+
+    r    = x(ixI^S, 1)
+    theta = x(ixI^S, 2)
+    sin_theta = sin(theta)
+
+
+    w(ixO^S,nw+7) = (v(ixI^S,3) + omega_frame*(r)* sin_theta)*unit_velocity*1d-3 ! the unit in km/s
+  
+
   end subroutine specialvar_output
 
   subroutine specialvarnames_output(varnames)
     character(len=*) :: varnames
 
-    varnames='divB divV div_mom dr dt dp'
+    varnames='divB divV div_mom dr dt dp v3I'
   end subroutine specialvarnames_output
 
 subroutine set_output_vars(ixI^L,ixO^L,qt,w,x)
@@ -718,8 +730,7 @@ end subroutine set_output_vars
     ! default: coarsen
       refine  = -1
       coarsen = 1
-    ! print *, "amr level ", level, xprobmin1, xprobmax1, domain_nx1, domain_nx2, domain_nx3, stretch_uncentered
-      ! common precomputes used by several modes
+        ! common precomputes used by several modes
       if (num_cmes > 0) then
         before_cme = (cme_index(1,1) - magnetogram_index(1))/60.0d0
       else
@@ -885,6 +896,9 @@ end subroutine set_output_vars
               r_g = x(i, ix2, ix3, 1)
               w(i,ix2,ix3,mag(1)) = br_bc  * (r_ref / r_g)**2
               w(i,ix2,ix3,rho_)   = rho_bc * (r_ref / r_g)**2
+              w(i,ix2,ix3,mom(3)) = -omega_frame * (r_g)*sin(x(i, ix2, ix3, 2))
+              w(i,ix2,ix3,mag(3)) = -w(i,ix2,ix3,mag(1))*omega_frame * (r_g)&
+              *sin(x(i, ix2, ix3, 2))/w(i,ix2,ix3,mom(1))
 
               ! (A) isothermal:
               ! w(i,ix2,ix3,p_) = p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )

@@ -10,7 +10,7 @@
         typefilelog = 'regression_test'
         slice_type    = 'csv'
         nocartesian   = .true.
-        nwauxio       = 6
+        nwauxio       = 7
 
 
 /

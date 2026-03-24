@@ -5,11 +5,11 @@
  &filelist
         autoconvert   = .true.
         saveprim      = .true.
-        base_filename ='output_for_yt/icarus_2015_5CMEs'
+        base_filename ='output_for_yt/icarus_2015_5CMEs_new'
         convert_type  = 'vtuBCCmpi'
         slice_type    = 'csv'
         nocartesian   = .true.
-        nwauxio       = 6
+        nwauxio       = 7
 
 
 /
@@ -18,7 +18,7 @@
         itsave(1,1)   = 0
         itsave(1,2)   = 0
        ! tsavestart(2) = 240.0
-        dtsave_dat    = 1.0
+        dtsave_dat    = 12.0
 /
 
 
