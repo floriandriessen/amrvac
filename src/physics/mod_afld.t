@@ -575,7 +575,6 @@ module mod_afld
     !$OMP PARALLEL DO PRIVATE(igrid)
     do iigrid=1,igridstail; igrid=igrids(iigrid);
        ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
-       ! call afld_get_diffcoef_central(psa(igrid)%w, psa(igrid)%w, psa(igrid)%x, ixG^LL, ixO^L)
        call put_diffterm_onegrid(ixG^LL,ixO^L,psa(igrid)%w)
     end do
     !$OMP END PARALLEL DO
@@ -605,13 +604,15 @@ module mod_afld
   end subroutine put_diffterm_onegrid
 
   !> Calculates cell-centered diffusion coefficient to be used in multigrid
-  subroutine afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+  subroutine afld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L, primitives_filled)
     use mod_global_parameters
     use mod_geometry
     use mod_usr_methods
     integer, intent(in)          :: ixI^L, ixO^L
+    logical, intent(in)          :: primitives_filled
     double precision, intent(inout) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: wCT(ixI^S, 1:nw)
+    double precision, intent(in) :: wCTprim(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision :: kappa(ixO^S,1:ndim), lambda(ixO^S,1:ndim), fld_R(ixO^S,1:ndim)
     double precision :: cc
@@ -641,7 +642,7 @@ module mod_afld
     !$OMP PARALLEL DO PRIVATE(igrid)
     do iigrid=1,igridstail; igrid=igrids(iigrid);
        ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
-        call afld_get_diffcoef_central(psa(igrid)%w, psa(igrid)%w, psa(igrid)%x, ixG^LL, ixO^L)
+        call afld_get_diffcoef_central(psa(igrid)%w, psa(igrid)%w, psa(igrid)%w, psa(igrid)%x, ixG^LL, ixO^L, .false.)
     end do
     !$OMP END PARALLEL DO
   end subroutine update_diffcoeff

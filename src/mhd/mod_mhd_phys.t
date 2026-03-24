@@ -246,7 +246,7 @@ module mod_mhd_phys
   }
   ! Begin: following relevant for radiative MHD using FLD
   ! first three are local and of interest for mod_usr applications
-  public :: mhd_get_pradiation
+  public :: mhd_get_pradiation_from_prim
   public :: mhd_get_pthermal_plus_pradiation
   public :: mhd_get_trad
   ! the following used in FLD modules
@@ -3219,8 +3219,8 @@ contains
     select case (boundspeed)
     case (1)
       if(mhd_radiation_use_csrad)then
-        call mhd_get_csrad_cons(wLp,x,ixI^L,ixO^L,idim,csoundL)
-        call mhd_get_csrad_cons(wRp,x,ixI^L,ixO^L,idim,csoundR)
+        call mhd_get_csrad_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
+        call mhd_get_csrad_prim(wRp,x,ixI^L,ixO^L,idim,csoundR)
       else
         ! This implements formula (10.52) from "Riemann Solvers and Numerical
         ! Methods for Fluid Dynamics" by Toro.
@@ -3258,8 +3258,7 @@ contains
     case (2)
       wmean(ixO^S,1:nwflux)=0.5d0*(wLp(ixO^S,1:nwflux)+wRp(ixO^S,1:nwflux))
       if(mhd_radiation_use_csrad)then
-        call mhd_to_conserved(ixI^L,ixO^L,wmean,x)
-        call mhd_get_csrad_cons(wmean,x,ixI^L,ixO^L,idim,csoundR)
+        call mhd_get_csrad_prim(wmean,x,ixI^L,ixO^L,idim,csoundR)
       else
         call mhd_get_csound_prim(wmean,x,ixI^L,ixO^L,idim,csoundR)
       endif
@@ -3279,8 +3278,8 @@ contains
       end if
     case (3)
       if(mhd_radiation_use_csrad)then
-        call mhd_get_csrad_cons(wLp,x,ixI^L,ixO^L,idim,csoundL)
-        call mhd_get_csrad_cons(wRp,x,ixI^L,ixO^L,idim,csoundR)
+        call mhd_get_csrad_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
+        call mhd_get_csrad_prim(wRp,x,ixI^L,ixO^L,idim,csoundR)
       else
         ! Miyoshi 2005 JCP 208, 315 equation (67)
         call mhd_get_csound_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
@@ -3508,7 +3507,8 @@ contains
   end subroutine mhd_get_ct_velocity_hll
 
   !> Calculate modified fast magnetosonic wave speed for FLD
-  subroutine mhd_get_csrad_cons(w,x,ixI^L,ixO^L,idim,csound)
+  !> NOTE: w is primitive on entry here!
+  subroutine mhd_get_csrad_prim(w,x,ixI^L,ixO^L,idim,csound)
     use mod_global_parameters
     use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
@@ -3524,8 +3524,7 @@ contains
 
     if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
-    call mhd_get_pradiation(w, x, ixI^L, ixO^L, prad_tensor, nghostcells-1)
-    !!call mhd_get_pradiation(w, x, ixI^L, ixO^L, prad_tensor, nghostcells)
+    call mhd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad_tensor, nghostcells-1)
 
     ! store |B|^2 in v
     if(B0field) then
@@ -3559,7 +3558,7 @@ contains
      {end do\}
     end if
 
-  end subroutine mhd_get_csrad_cons
+  end subroutine mhd_get_csrad_prim
 
   !> Calculate fast magnetosonic wave speed
   subroutine mhd_get_csound_prim(w,x,ixI^L,ixO^L,idim,csound)
@@ -4049,7 +4048,7 @@ contains
   end subroutine mhd_get_pe_equi
 
   !> Calculate radiation pressure within ixO^L
-  subroutine mhd_get_pradiation(w, x, ixI^L, ixO^L, prad, nth)
+  subroutine mhd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad, nth)
     use mod_global_parameters
     use mod_fld
     use mod_afld
@@ -4066,7 +4065,7 @@ contains
     case default
       call mpistop('Radiation formalism unknown')
     end select
-  end subroutine mhd_get_pradiation
+  end subroutine mhd_get_pradiation_from_prim
 
   !> Calculates the sum of the gas pressure and the max Prad tensor element
   subroutine mhd_get_pthermal_plus_pradiation(w, x, ixI^L, ixO^L, pth_plus_prad)
@@ -4074,18 +4073,20 @@ contains
     integer, intent(in)           :: ixI^L, ixO^L
     double precision, intent(in)  :: w(ixI^S, 1:nw)
     double precision, intent(in)  :: x(ixI^S, 1:ndim)
-    double precision              :: pth(ixI^S)
+    double precision, intent(out) :: pth_plus_prad(ixI^S)
+
+    double precision              :: wprim(ixI^S, 1:nw)
     double precision              :: prad_tensor(ixO^S, 1:ndim, 1:ndim)
     double precision              :: prad_max(ixO^S)
-    double precision, intent(out) :: pth_plus_prad(ixI^S)
     integer :: ix^D
         
-    call mhd_get_pthermal(w, x, ixI^L, ixO^L, pth)
-    call mhd_get_pradiation(w, x, ixI^L, ixO^L, prad_tensor,nghostcells)
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call mhd_to_primitive(ixI^L,ixO^L,wprim,x)
+    call mhd_get_pradiation_from_prim(wprim, x, ixI^L, ixO^L, prad_tensor,nghostcells)
     {do ix^D = ixOmin^D,ixOmax^D\}
       prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
     {enddo\}
-    pth_plus_prad(ixO^S) = pth(ixO^S) + prad_max(ixO^S)
+    pth_plus_prad(ixO^S) = wprim(ixO^S,p_) + prad_max(ixO^S)
   end subroutine mhd_get_pthermal_plus_pradiation
 
   !> Calculates radiation temperature 
@@ -5121,13 +5122,13 @@ contains
 
     select case(mhd_radiation_fld_formalism)
     case('fld')
-      call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      call fld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L, .true.)
       ! radiation force
       call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
         mhd_energy,qsourcesplit,active)
       call mhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_add_radiation')
     case('afld')
-      call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      call afld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L, .true.)
       ! radiation force
       call add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
         mhd_energy,qsourcesplit,active)

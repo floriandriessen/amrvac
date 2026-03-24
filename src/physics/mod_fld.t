@@ -653,13 +653,15 @@ module mod_fld
   end subroutine put_diffterm_onegrid
 
   !> Calculates cell-centered diffusion coefficient to be used in multigrid
-  subroutine fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+  subroutine fld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L, primitives_filled)
     use mod_global_parameters
     use mod_geometry
     use mod_usr_methods
     integer, intent(in)          :: ixI^L, ixO^L
+    logical, intent(in)          :: primitives_filled
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in) :: wCT(ixI^S,1:nw)
+    double precision, intent(in) :: wCTprim(ixI^S,1:nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
     integer :: idir,i,j,ix^D
     double precision :: cc
@@ -667,15 +669,25 @@ module mod_fld
     double precision :: max_D(ixI^S),grad_r_e(ixI^S),rad_e(ixI^S)
 
     cc = const_c/unit_velocity
-    call fld_get_opacity(wCT, x, ixI^L, ixO^L, kappa)
-    call fld_get_fluxlimiter(wCT, x, ixI^L, ixO^L, lambda, fld_R, nghostcells-1)
-    !> calculate diffusion coefficient
-    w(ixI^S,i_diff_mg) = zero !> so that w(i_diff_mg) in ghostcells won't accumulate to extreme values
-    w(ixO^S,i_diff_mg) = cc*lambda(ixO^S)/(kappa(ixO^S)*wCT(ixO^S,iw_rho))
-    where(w(ixO^S,i_diff_mg) .lt. 0.d0) &
-      w(ixO^S,i_diff_mg) = smalldouble
-    if(associated(usr_special_diffcoef)) &
-      call usr_special_diffcoef(w, wCT, x, ixI^L, ixO^L)
+    if(primitives_filled)then
+       ! TODO: pass primitives here
+       call fld_get_opacity(wCT, x, ixI^L, ixO^L, kappa)
+       call fld_get_fluxlimiter(wCT, x, ixI^L, ixO^L, lambda, fld_R, nghostcells-1)
+       !> calculate diffusion coefficient
+       w(ixI^S,i_diff_mg) = zero !> so that w(i_diff_mg) in ghostcells won't accumulate to extreme values
+       w(ixO^S,i_diff_mg) = cc*lambda(ixO^S)/(kappa(ixO^S)*wCT(ixO^S,iw_rho))
+       where(w(ixO^S,i_diff_mg) .lt. 0.d0) w(ixO^S,i_diff_mg) = smalldouble
+     else
+       ! WARNING: in this case, w, wCT, wCTprim are exactly the same storage location
+       call fld_get_opacity(wCT, x, ixI^L, ixO^L, kappa)
+       call fld_get_fluxlimiter(wCT, x, ixI^L, ixO^L, lambda, fld_R, nghostcells-1)
+       !> calculate diffusion coefficient
+       w(ixI^S,i_diff_mg) = zero !> so that w(i_diff_mg) in ghostcells won't accumulate to extreme values
+       w(ixO^S,i_diff_mg) = cc*lambda(ixO^S)/(kappa(ixO^S)*wCT(ixO^S,iw_rho))
+       where(w(ixO^S,i_diff_mg) .lt. 0.d0) w(ixO^S,i_diff_mg) = smalldouble
+     endif
+     if(associated(usr_special_diffcoef)) call usr_special_diffcoef(w, wCT, x, ixI^L, ixO^L)
+
   end subroutine fld_get_diffcoef_central
 
   subroutine update_diffcoeff(psa)
@@ -688,7 +700,7 @@ module mod_fld
     !$OMP PARALLEL DO PRIVATE(igrid)
     do iigrid=1,igridstail; igrid=igrids(iigrid);
        ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
-        call fld_get_diffcoef_central(psa(igrid)%w, psa(igrid)%w, psa(igrid)%x, ixG^LL, ixO^L)
+        call fld_get_diffcoef_central(psa(igrid)%w, psa(igrid)%w, psa(igrid)%w, psa(igrid)%x, ixG^LL, ixO^L, .false.)
     end do
     !$OMP END PARALLEL DO
   end subroutine update_diffcoeff

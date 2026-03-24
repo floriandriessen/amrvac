@@ -32,7 +32,6 @@ contains
     character(len=256), allocatable :: files(:)
     integer :: clt_size, lon_size
     double precision :: min_diff, latest_time
-    real :: pi
 character(len=20) :: time_str
 integer :: time_int
     ! Initialize outputs
@@ -219,15 +218,14 @@ integer :: time_int
     clt_size = 90
     lon_size = 180
 
-    pi = 4.0d0 * atan(1.0d0)
 
     allocate(clts(clt_size), lons(lon_size))
     do i = 1, (clt_size)
-        clts(i) = dble(i-1) * pi / dble(clt_size)
+        clts(i) = dble(i-1) * dpi / dble(clt_size)
     end do
 
     do i = 1, (lon_size)
-        lons(i) = -pi + dble(i-1) * 2*pi / dble(lon_size)
+        lons(i) = -dpi + dble(i-1) * 2*dpi / dble(lon_size)
     end do
     found = 1  ! success
   end subroutine get_datacube_arrays
@@ -245,13 +243,12 @@ integer :: time_int
     double precision, intent(out) :: vr_val, vp_val, vt_val, br_val, bt_val, bp_val, md_val, temp_val
     integer :: i, j, k
     real :: val_1(8), val_2(8), val_min(8), val_max(8)
-    double precision :: synoptic_correction, lon, pi
+    double precision :: synoptic_correction, lon
     
     ! Correct synoptic rotation
-    pi = 4.0d0 * atan(1.0d0)
-    synoptic_correction = 2*pi/27.27/24.0d0
+    synoptic_correction = 2*dpi/27.27/24.0d0
     
-    lon = modulo(lon_in + synoptic_correction*ts_magnetogram + pi, 2*pi) -pi
+    lon = modulo(lon_in + synoptic_correction*ts_magnetogram + dpi, 2*dpi) -dpi
     ! Initialize outputs
     found = 0
 

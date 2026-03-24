@@ -2586,12 +2586,12 @@ contains
 
     select case(rmhd_radiation_formalism)
     case('fld')
-      call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      call fld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L,.true.)
       !> radiation force
       if(rmhd_radiation_force) call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,rmhd_energy,qsourcesplit,active)
       call rmhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
     case('afld')
-      call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      call afld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L,.true.)
       !> radiation force
       if(rmhd_radiation_force) call add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,rmhd_energy,qsourcesplit,active)
       call rmhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')

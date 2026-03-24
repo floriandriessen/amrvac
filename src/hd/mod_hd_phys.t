@@ -134,7 +134,7 @@ module mod_hd_phys
   public :: hd_get_Rfactor
   ! Begin: following relevant for radiative hydro using FLD
   ! first three are local and of interest for mod_usr applications
-  public :: hd_get_pradiation
+  public :: hd_get_pradiation_from_prim
   public :: hd_get_pthermal_plus_pradiation
   public :: hd_get_trad
   ! the following used in FLD modules
@@ -1166,24 +1166,24 @@ contains
   end subroutine hd_get_pthermal
 
   !> Calculate radiation pressure within ixO^L
-  subroutine hd_get_pradiation(w, x, ixI^L, ixO^L, prad)
+  subroutine hd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad, nth)
     use mod_global_parameters
     use mod_fld
     use mod_afld
-    integer, intent(in)          :: ixI^L, ixO^L
+    integer, intent(in)          :: ixI^L, ixO^L,nth
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: prad(ixO^S, 1:ndim, 1:ndim)
 
     select case (hd_radiation_fld_formalism)
     case('fld')
-      call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nghostcells)
+      call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
     case('afld')
-      call afld_get_radpress(w, x, ixI^L, ixO^L, prad, nghostcells)
+      call afld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
     case default
       call mpistop('Radiation formalism unknown')
     end select
-  end subroutine hd_get_pradiation
+  end subroutine hd_get_pradiation_from_prim
 
   !> calculates the sum of the gas pressure and max Prad tensor element
   subroutine hd_get_pthermal_plus_pradiation(w, x, ixI^L, ixO^L, pth_plus_prad)
@@ -1191,18 +1191,20 @@ contains
     integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision             :: pth(ixI^S)
+    double precision, intent(out):: pth_plus_prad(ixI^S)
+
+    double precision             :: wprim(ixI^S, 1:nw)
     double precision             :: prad_tensor(ixO^S, 1:ndim, 1:ndim)
     double precision             :: prad_max(ixO^S)
-    double precision, intent(out):: pth_plus_prad(ixI^S)
     integer :: ix^D
 
-    call hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
-    call hd_get_pradiation(w, x, ixI^L, ixO^L, prad_tensor)
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call hd_to_primitive(ixI^L,ixO^L,wprim,x)
+    call hd_get_pradiation_from_prim(wprim, x, ixI^L, ixO^L, prad_tensor,nghostcells)
     {do ix^D = ixOmin^D,ixOmax^D\}
       prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
     {enddo\}
-    pth_plus_prad(ixO^S) = pth(ixO^S) + prad_max(ixO^S)
+    pth_plus_prad(ixO^S) = wprim(ixO^S,p_) + prad_max(ixO^S)
   end subroutine hd_get_pthermal_plus_pradiation
 
   !> Calculates radiation temperature
@@ -1528,13 +1530,13 @@ contains
 
     select case(hd_radiation_fld_formalism)
     case('fld')
-      call fld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      call fld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L, .true.)
       ! radiation force
       call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
         hd_energy,qsourcesplit,active)
       call hd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_add_radiation')
     case('afld')
-      call afld_get_diffcoef_central(w, wCT, x, ixI^L, ixO^L)
+      call afld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L, .true.)
       ! radiation force
       call add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
         hd_energy,qsourcesplit,active)
