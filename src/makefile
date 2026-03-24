@@ -173,6 +173,7 @@ mod_convert_files.o: mod_global_parameters.mod
 mod_convert_files.o: mod_physics.mod
 mod_convert_files.o: mod_thermal_emission.mod
 mod_convert_files.o: mod_usr_methods.mod
+mod_datacube.o: mod_constants.mod
 mod_dipole.o: mod_comm_lib.mod
 mod_dipole.o: mod_global_parameters.mod
 mod_dt.o: mod_comm_lib.mod

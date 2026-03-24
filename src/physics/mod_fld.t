@@ -390,6 +390,7 @@ module mod_fld
 
   !> Calculate Radiation Pressure
   !> Returns Radiation Pressure as tensor
+  !> NOTE: w is primitive on entry
   subroutine fld_get_radpress(w, x, ixI^L, ixO^L, rad_pressure, nth)
     use mod_global_parameters
     integer, intent(in)          :: ixI^L, ixO^L, nth
@@ -436,6 +437,8 @@ module mod_fld
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(in)    :: dtfactor, qdt
     double precision, intent(inout) :: w(ixI^S,1:nw)
+
+    double precision :: wprim(ixI^S,1:nw)
     double precision, dimension(ixO^S) :: a1,a2,a3,c0,c1,kappa
     double precision, dimension(ixI^S) :: e_gas,E_rad,vel,grad_v,nabla_vP
     double precision, dimension(ixI^S,1:ndim,1:ndim) :: div_v,edd
