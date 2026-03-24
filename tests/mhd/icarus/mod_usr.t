@@ -6,6 +6,7 @@ module mod_usr
   use mod_constants, only: mp_SI, kB_SI, miu0_SI
   use, intrinsic :: ieee_arithmetic
   use mod_datacube
+  use mod_particles
   implicit none
 
   character(len=20)                              :: printsettingformat
@@ -59,6 +60,12 @@ module mod_usr
   integer             :: cme_exists
       public :: bc_data_get_3d
 
+   ! Additional variables
+  integer                     :: dr1_, dt1_, dp1_
+
+  integer :: i_sol,i_err ! indices for extra variables
+  integer :: isol   ! index for extra payload in gridvars for particles
+
 contains
 
   subroutine usr_params_read(files)
@@ -104,6 +111,7 @@ contains
     use mod_global_parameters
     use mod_usr_methods
 
+
     call usr_params_read(par_files)
     usr_set_parameters  => initglobaldata_usr
     usr_init_one_grid   => initonegrid_usr
@@ -114,9 +122,21 @@ contains
     usr_source          => specialsource
     usr_create_particles => generate_particles
     usr_particle_position => move_particle
+    particles_define_additional_gridvars => define_additional_gridvars_usr
+    particles_fill_additional_gridvars => fill_additional_gridvars_usr
+    usr_update_payload => update_payload_usr
+    usr_modify_output      => set_output_vars
+
 
     call set_coordinate_system('spherical_3D')
+
+
     call mhd_activate()
+
+    dr1_ = var_set_extravar("dr1","dr1")
+    dt1_  = var_set_extravar("dt1","dt1")
+    dp1_  = var_set_extravar("dp1","dp1")
+
 
 
     !  Note: mhd_activate sets the physical units used by MPI-AMRVAC as governed
@@ -281,6 +301,68 @@ contains
     w_convert_factor(mag(3)) = w_convert_factor(mag(1))
 
   end subroutine initglobaldata_usr
+
+  subroutine define_additional_gridvars_usr(ngridvars)
+    use mod_global_parameters
+    integer, intent(inout) :: ngridvars
+ 
+    ! extra variable as payload: add the actual solution
+    print *, "gridvars ", ngridvars
+    isol = ngridvars+3
+    ngridvars = ngridvars+3
+    print *, "gridvars after", ngridvars
+
+  end subroutine define_additional_gridvars_usr
+
+  subroutine fill_additional_gridvars_usr
+    use mod_global_parameters
+    use mod_usr_methods, only: usr_particle_fields
+
+    integer :: igrid, iigrid
+    double precision :: pth(ixG^T)
+    double precision :: w(ixG^T,1:nw)
+   ! print *, "igridstail", igridstail
+   !print *, dr1_, dp1_, dt1_
+    do iigrid=1,igridstail; igrid=igrids(iigrid);
+      !print *, igrid, gridvars(igrid)%w(ixG^T,10)
+      w(ixG^T,1:nw) = ps(igrid)%w(ixG^T,1:nw)
+      gridvars(igrid)%w(ixG^T,dr1_)=block%dx(ixG^T,1)
+      gridvars(igrid)%w(ixG^T,dt1_)=block%dx(ixG^T,2)
+      gridvars(igrid)%w(ixG^T,dp1_)=block%dx(ixG^T,3)
+     
+    end do
+    !print *, "in fill after", w(ixG^T,10)
+
+    !do iigrid=1,igridstail; igrid=igrids(iigrid);
+    !  call set_density_profile(ixG^LL,ixG^LL,global_time,ps(igrid)%x(ixG^T,1:ndim),rhoprofile)
+    !  gridvars(igrid)%w(ixG^T,isol) = rhoprofile(ixG^T)
+    !end do
+
+  end subroutine fill_additional_gridvars_usr
+
+  subroutine update_payload_usr(igrid,xpart,upart,qpart,mpart,mypayload,mynpayload,particle_time)
+    use mod_global_parameters
+    integer, intent(in)           :: igrid,mynpayload
+    double precision, intent(in)  :: xpart(1:ndir),upart(1:ndir),qpart,mpart,particle_time
+    double precision, intent(out) :: mypayload(mynpayload)
+    double precision              :: xgrid(ixG^T,1:ndim)
+
+    xgrid = ps(igrid)%x
+   ! print *, "in payload ", npayload
+
+    ! put the solution at particle_time for comparison
+    
+    if (npayload > 0) then
+      call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dr1_),xgrid,xpart,mypayload(1))
+      call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dt1_),xgrid,xpart,mypayload(2))
+      call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dp1_),xgrid,xpart,mypayload(3))
+      !gridvars(igrid)%w(ixG^T,dr1_) = block%dx(ixG^T,1)
+      !gridvars(igrid)%w(ixG^T,dt1_) = block%dx(ixG^T,2)
+      !gridvars(igrid)%w(ixG^T,dp1_) = block%dx(ixG^T,3)
+      
+    end if
+
+  end subroutine update_payload_usr
 
   subroutine generate_particles(n_particles, x, v, q, m, follow)
     use mod_particles
@@ -534,6 +616,7 @@ contains
     ! output divB1
     call get_divb(w,ixI^L,ixO^L,divb)
     w(ixO^S,nw+1)=divb(ixO^S)
+   ! print *, block%level, block%dx(ixI^S,ndim)
 
     do i=1,ndir
       v(ixI^S,i)=w(ixI^S,mom(i))/w(ixI^S,rho_)
@@ -549,13 +632,33 @@ contains
     call divvector(momentum,ixI^L,ixO^L,divmom)
     w(ixO^S,nw+3)=divmom(ixO^S)
 
+    w(ixO^S,nw+4)=block%dx(ixO^S,1)
+    w(ixO^S,nw+5)=block%dx(ixO^S,2)
+    w(ixO^S,nw+6)=block%dx(ixO^S,3)
+
   end subroutine specialvar_output
 
   subroutine specialvarnames_output(varnames)
     character(len=*) :: varnames
 
-    varnames='divB divV div_mom'
+    varnames='divB divV div_mom dr dt dp'
   end subroutine specialvarnames_output
+
+subroutine set_output_vars(ixI^L,ixO^L,qt,w,x)
+use mod_global_parameters
+
+    integer, intent(in)             :: ixI^L,ixO^L
+    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(inout) :: w(ixI^S,nw)
+
+
+    w(ixO^S,dr1_) = block%dx(ixO^S,1)
+    w(ixO^S,dt1_) = block%dx(ixO^S,2)
+    w(ixO^S,dp1_) = block%dx(ixO^S,3)
+
+   
+end subroutine set_output_vars
+  
 
   subroutine specialsource(qdt,ixI^L,ixO^L,iw^LIM,qtC,wCT,qt,w,x)
     use mod_global_parameters
@@ -615,7 +718,7 @@ contains
     ! default: coarsen
       refine  = -1
       coarsen = 1
-
+    ! print *, "amr level ", level, xprobmin1, xprobmax1, domain_nx1, domain_nx2, domain_nx3, stretch_uncentered
       ! common precomputes used by several modes
       if (num_cmes > 0) then
         before_cme = (cme_index(1,1) - magnetogram_index(1))/60.0d0
