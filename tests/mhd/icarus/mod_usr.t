@@ -640,8 +640,8 @@ contains
 
     r_boundary   = xprobmin1 !in R_sun
 
-    r    = x(ixI^S, 1)
-    theta = x(ixI^S, 2)
+    r    = x(ixO^S, 1)
+    theta = x(ixO^S, 2)
     sin_theta = sin(theta)
     w(ixO^S,nw+7) = (v(ixO^S,3) + &
     omega_frame*(r)* sin_theta)*unit_velocity*1d-3 ! the unit in km/s
