@@ -613,7 +613,7 @@ contains
     double precision :: v(ixI^S,ndir), divV(ixI^S), momentum(ixI^S, ndir)
     integer :: i
     double precision :: r_boundary
-    double precision ::  r(ixI^S), theta(ixI^S), sin_theta(ixI^S)
+    double precision ::  r(ixO^S), theta(ixO^S), sin_theta(ixO^S)
 
     ! output divB1
     call get_divb(w,ixI^L,ixO^L,divb)
