@@ -1550,7 +1550,7 @@ contains
 
   end subroutine hd_add_radiation_source
 
-  subroutine hd_get_dt(w, ixI^L, ixO^L, dtnew, dx^D, x)
+  subroutine hd_get_dt(wprim, ixI^L, ixO^L, dtnew, dx^D, x)
     use mod_global_parameters
     use mod_dust, only: dust_get_dt
     use mod_viscosity, only: viscosity_get_dt
@@ -1561,33 +1561,33 @@ contains
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: dx^D, x(ixI^S, 1:^ND)
-    double precision, intent(in)    :: w(ixI^S, 1:nw)
+    double precision, intent(in)    :: wprim(ixI^S, 1:nw)
     double precision, intent(inout) :: dtnew
 
     dtnew = bigdouble
 
     if(hd_dust) then
-      call dust_get_dt(w, ixI^L, ixO^L, dtnew, dx^D, x)
+      call dust_get_dt(wprim, ixI^L, ixO^L, dtnew, dx^D, x)
     end if
 
     if(hd_viscosity) then
-      call viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call viscosity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
 
     if(hd_gravity) then
-      call gravity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call gravity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
    end if
 
    if (hd_cak_force) then
-     call cak_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+     call cak_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
    end if
 
    if(hd_radiation_fld) then
       select case(hd_radiation_fld_formalism)
         case('fld')
-          call fld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+          call fld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
         case('afld')
-          call afld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+          call afld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
         case default
           call mpistop('Radiation formalism unknown')
       end select

@@ -6299,7 +6299,7 @@ contains
   end subroutine get_current
 
   !> If resistivity is not zero, check diffusion time limit for dt and similar other effects
-  subroutine mhd_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+  subroutine mhd_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
     use mod_viscosity, only: viscosity_get_dt
@@ -6311,7 +6311,7 @@ contains
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
     double precision, intent(in)    :: dx^D
-    double precision, intent(in)    :: w(ixI^S,1:nw)
+    double precision, intent(in)    :: wprim(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
     double precision              :: dxarr(ndim)
@@ -6328,8 +6328,8 @@ contains
        dtnew=dtdiffpar*minval(block%ds(ixO^S,1:ndim))**2/mhd_eta
       end if
     else if (mhd_eta<zero)then
-       call get_current(w,ixI^L,ixO^L,idirmin,current)
-       call usr_special_resistivity(w,ixI^L,ixO^L,idirmin,x,current,eta)
+       call get_current(wprim,ixI^L,ixO^L,idirmin,current)
+       call usr_special_resistivity(wprim,ixI^L,ixO^L,idirmin,x,current,eta)
        dtnew=bigdouble
        do idim=1,ndim
          if(slab_uniform) then
@@ -6351,27 +6351,27 @@ contains
     end if
 
     if(mhd_viscosity) then
-      call viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call viscosity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
 
     if(mhd_gravity) then
-      call gravity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call gravity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
 
     if(mhd_ambipolar_exp) then
-      dtnew=min(dtdiffpar*get_ambipolar_dt(w,ixI^L,ixO^L,dx^D,x),dtnew)
+      dtnew=min(dtdiffpar*get_ambipolar_dt(wprim,ixI^L,ixO^L,dx^D,x),dtnew)
     endif
 
     if (mhd_cak_force) then
-      call cak_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call cak_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
 
     if(mhd_radiation_fld) then
       select case(mhd_radiation_fld_formalism)
         case('fld')
-          call fld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+          call fld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
         case('afld')
-          call afld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+          call afld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
         case default
           call mpistop('Radiation formalism unknown')
       end select

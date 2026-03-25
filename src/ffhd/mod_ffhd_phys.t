@@ -1298,20 +1298,20 @@ contains
       He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
   end subroutine ffhd_update_temperature
 
-  subroutine ffhd_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+  subroutine ffhd_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
     use mod_gravity, only: gravity_get_dt
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
     double precision, intent(in)    :: dx^D
-    double precision, intent(in)    :: w(ixI^S,1:nw)
+    double precision, intent(in)    :: wprim(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
     dtnew = bigdouble
 
     if(ffhd_gravity) then
-      call gravity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call gravity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
   end subroutine ffhd_get_dt
 

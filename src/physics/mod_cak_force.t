@@ -440,34 +440,34 @@ contains
   end subroutine get_gelectron
 
   !> Check time step for total radiation contribution
-  subroutine cak_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+  subroutine cak_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
 
     integer, intent(in)    :: ixI^L, ixO^L
     real(8), intent(in)    :: dx^D, x(ixI^S,1:ndim)
-    real(8), intent(in)    :: w(ixI^S,1:nw)
+    real(8), intent(in)    :: wprim(ixI^S,1:nw)
     real(8), intent(inout) :: dtnew
     
     ! Local variables
     real(8) :: ge(ixO^S), max_gr, dt_cak
 
-    call get_gelectron(ixI^L,ixO^L,w,x,ge)
+    call get_gelectron(ixI^L,ixO^L,wprim,x,ge)
 
     dtnew = bigdouble
 
     ! Get dt from line force that is saved in the w-array in nwextra slot
-    max_gr = max( maxval(abs(ge(ixO^S) + w(ixO^S,gcak1_))), epsilon(1.0d0) )
+    max_gr = max( maxval(abs(ge(ixO^S) + wprim(ixO^S,gcak1_))), epsilon(1.0d0) )
     dt_cak = minval( sqrt(block%dx(ixO^S,1)/max_gr) )
     dtnew  = min(dtnew, courantpar*dt_cak)
 
     {^NOONED
     if (cak_vector_force) then
-      max_gr = max( maxval(abs(w(ixO^S,gcak2_))), epsilon(1.0d0) )
+      max_gr = max( maxval(abs(wprim(ixO^S,gcak2_))), epsilon(1.0d0) )
       dt_cak = minval( sqrt(block%dx(ixO^S,1) * block%dx(ixO^S,2)/max_gr) )
       dtnew  = min(dtnew, courantpar*dt_cak)
 
       {^IFTHREED
-      max_gr = max( maxval(abs(w(ixO^S,gcak3_))), epsilon(1.0d0) )
+      max_gr = max( maxval(abs(wprim(ixO^S,gcak3_))), epsilon(1.0d0) )
       dt_cak = minval( sqrt(block%dx(ixO^S,1) * sin(block%dx(ixO^S,3))/max_gr) )
       dtnew  = min(dtnew, courantpar*dt_cak)
       }

@@ -35,12 +35,12 @@ contains
         if(local_timestep) then
           ps(igrid)%dt(ixM^T)=bigdouble
         endif
-        call getdt_courant(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x,&
+        call getdt_courant_and_phys(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x,&
              cmax_mype)
         dtnew=min(dtnew,qdtnew)
   
-        call phys_get_dt(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x)
-        dtnew=min(dtnew,qdtnew)
+!        call phys_get_dt(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x)
+!        dtnew=min(dtnew,qdtnew)
   
         if (associated(usr_get_dt)) then
            call usr_get_dt(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x)
@@ -153,7 +153,7 @@ contains
     contains
   
       !> compute CFL limited dt (for variable time stepping)
-      subroutine getdt_courant(w,ixI^L,ixO^L,dtnew,dx^D,x,cmax_mype)
+      subroutine getdt_courant_and_phys(w,ixI^L,ixO^L,dtnew,dx^D,x,cmax_mype)
         use mod_global_parameters
         use mod_physics, only: phys_get_cmax, &
                                phys_get_tcutoff,phys_get_auxiliary, phys_to_primitive
@@ -166,6 +166,7 @@ contains
         double precision :: courantmax, dxinv(1:ndim), courantmaxtot, courantmaxtots
         double precision :: cmax(ixI^S), cmaxtot(ixI^S), wprim(ixI^S,1:nw)
         double precision :: tco_local, Tmax_local
+        double precision :: dtnewphys
         integer :: idims
         integer :: hxO^L
   
@@ -266,6 +267,11 @@ contains
           ! courantmax='max(c/dx)'
           if (courantmax>smalldouble) dtnew=min(dtnew,courantpar/courantmax)
         end select
-      end subroutine getdt_courant
+
+
+       call phys_get_dt(wprim,ixI^L,ixO^L,dtnewphys,dx^D,x)
+       dtnew=min(dtnew,dtnewphys)
+
+      end subroutine getdt_courant_and_phys
   end subroutine setdt
 end module mod_dt

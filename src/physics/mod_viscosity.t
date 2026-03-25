@@ -1110,14 +1110,14 @@ contains
 
   end subroutine viscosity_add_source_cylinder
 
-  subroutine viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+  subroutine viscosity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     ! Check diffusion time limit for dt < dtdiffpar * dx**2 / (mu/rho)
     use mod_global_parameters
     use mod_geometry
 
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: dx^D, x(ixI^S,1:ndim)
-    double precision, intent(in) :: w(ixI^S,1:nw)
+    double precision, intent(in) :: wprim(ixI^S,1:nw)
     double precision, intent(inout) :: dtnew
 
     double precision :: tmp(ixI^S),rho(ixI^S)
@@ -1127,7 +1127,7 @@ contains
     ! Calculate the kinematic viscosity tmp=mu/rho
     ! here vc_mu must be non-zero!!!
     ! allow for handling of split of densities by calling get_rho
-    call phys_get_rho(w,x,ixI^L,ixO^L,rho)
+    call phys_get_rho(wprim,x,ixI^L,ixO^L,rho)
     tmp(ixO^S)=vc_mu/rho(ixO^S)
 
     if(slab_uniform)then
