@@ -53,10 +53,11 @@ TEST_DIRS := $(RHO_DIRS) $(NL_DIRS) $(HD_DIRS) $(RHD_DIRS) $(RMHD_DIRS) $(MHD_DI
 # Directories with altered names (useful for cleaning)
 CLEAN_TEST := $(TEST_DIRS:%=clean-%)
 
-.PHONY: all rho hd rhd rmhd mhd mg rd ard mf twofl ffhd clean $(TEST_DIRS) $(CLEAN_TEST)
+.PHONY: all rho nl hd rhd rmhd mhd mg rd ard mf twofl ffhd clean $(TEST_DIRS) $(CLEAN_TEST)
 
-all: rho hd rhd rmhd mhd mg rd ard mf twofl ffhd
+all: rho nl hd rhd rmhd mhd mg rd ard mf twofl ffhd
 rho: $(RHO_DIRS)
+nl: $(NL_DIRS)
 hd: $(HD_DIRS)
 rhd: $(RHD_DIRS)
 rmhd: $(RMHD_DIRS)
