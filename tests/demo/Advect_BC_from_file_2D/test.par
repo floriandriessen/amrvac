@@ -1,18 +1,18 @@
 &filelist
-        base_filename='output/advect_alfven_2D'
-    	convert_type='vtuBCCmpi'
-        autoconvert=T
+        base_filename='advect_alfven_test'
+        typefilelog='regression_test'
+        autoconvert=F
  /
 
  &savelist
         itsave(1,1)=0
         itsave(1,2)=0
         dtsave_log=0.05d0
-        dtsave_dat=0.05d0
+        dtsave_dat=0.5d0
  /
 
  &stoplist
-        time_max=1.5d0
+        time_max=0.5d0
  /
 
  &methodlist

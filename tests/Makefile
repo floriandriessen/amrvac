@@ -11,6 +11,8 @@ RHO_DIRS := rho/auto_1d rho/auto_2d rho/auto_3d
 
 NL_DIRS := nonlinear/burgers2d nonlinear/nonconvex_1d
 
+DEMO_DIRS := demo/Advect_BC_from_file_2D demo/Shu_Osher_1D_HD demo/AlfvenShock_MHD2D
+
 HD_DIRS := hd/Riemann_1D hd/Riemann_2D hd/Rayleigh_Taylor_2D		\
 hd/Rayleigh_Taylor_3D hd/Kelvin_Helmholtz_2D hd/blast_wave_Cartesian_2D	\
 hd/blast_wave_polar_2D hd/blast_wave_polar_stretched_2D			\
@@ -33,6 +35,8 @@ mhd/blast_wave_Cartesian_3D mhd/Ambipolar1DWave-B0split mhd/Ambipolar1DWave mhd/
 
 RHD_DIRS := rhd/RHD_wave_1D rhd/RHD_shock_1D
 
+SRHD_DIRS := srhd/Jet_cylindrical_2D
+
 RMHD_DIRS := rmhd/Brio_Wu_1.75D rmhd/Torrilhon_1.75D rmhd/Convection_2D
 
 MG_DIRS := multigrid/convergence_2d multigrid/convergence_3d	\
@@ -48,17 +52,19 @@ MF_DIRS := mf/Mackay_bipole_Cartesian_3D mf/sheared_arcade_Antiochos_3D
 
 TWOFL_DIRS := twofl/Alfven_wave_1D twofl/Riemann_1D twofl/KHI_2D
 
-TEST_DIRS := $(RHO_DIRS) $(NL_DIRS) $(HD_DIRS) $(RHD_DIRS) $(RMHD_DIRS) $(MHD_DIRS) $(MG_DIRS) $(RD_DIRS) $(ARD_DIRS)  $(MF_DIRS) $(TWOFL_DIRS) $(FFHD_DIRS)
+TEST_DIRS := $(RHO_DIRS) $(NL_DIRS) $(DEMO_DIRS) $(HD_DIRS) $(SRHD_DIRS) $(RHD_DIRS) $(RMHD_DIRS) $(MHD_DIRS) $(MG_DIRS) $(RD_DIRS) $(ARD_DIRS)  $(MF_DIRS) $(TWOFL_DIRS) $(FFHD_DIRS)
 
 # Directories with altered names (useful for cleaning)
 CLEAN_TEST := $(TEST_DIRS:%=clean-%)
 
-.PHONY: all rho nl hd rhd rmhd mhd mg rd ard mf twofl ffhd clean $(TEST_DIRS) $(CLEAN_TEST)
+.PHONY: all rho nl demo hd srhd rhd rmhd mhd mg rd ard mf twofl ffhd clean $(TEST_DIRS) $(CLEAN_TEST)
 
-all: rho nl hd rhd rmhd mhd mg rd ard mf twofl ffhd
+all: rho nl demo hd srhd rhd rmhd mhd mg rd ard mf twofl ffhd
 rho: $(RHO_DIRS)
 nl: $(NL_DIRS)
+demo: $(DEMO_DIRS)
 hd: $(HD_DIRS)
+srhd: $(SRHD_DIRS)
 rhd: $(RHD_DIRS)
 rmhd: $(RMHD_DIRS)
 mhd: $(MHD_DIRS)
