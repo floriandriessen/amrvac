@@ -29,6 +29,9 @@ module mod_hd_phys
   !> Whether radiation-gas interaction is handled using flux limited diffusion
   logical, public, protected              :: hd_radiation_fld = .false.
 
+  !> Whether mixed gas-radiation sound speed is used for cbounds in FLD
+  logical, public, protected              :: hd_radiation_use_csrad = .false.
+
   !> Formalism to treat radiation: either fld or afld (anisotropic fld)
   character(len=8), public :: hd_radiation_fld_formalism = 'fld'
 
@@ -157,7 +160,7 @@ contains
     hd_gravity, He_abundance,H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
     hd_trac_type, hd_cak_force, hd_partial_ionization, &
-    hd_radiation_fld,hd_radiation_fld_formalism
+    hd_radiation_fld,hd_radiation_fld_formalism,hd_radiation_use_csrad
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -305,6 +308,12 @@ contains
           end select
        endif
     else
+      if(hd_radiation_use_csrad)then
+          hd_radiation_use_csrad=.false.
+          if(mype==0) then
+            write(*,*)'Warning: setting FLD specific flag to hd_radiation_use_csrad=F'
+          endif
+      endif
       r_e=-1
     endif
 
@@ -1019,8 +1028,13 @@ contains
       umean(ixO^S)=(wLp(ixO^S,mom(idim))*tmp1(ixO^S)+wRp(ixO^S,mom(idim))*tmp2(ixO^S))*tmp3(ixO^S)
 
       if(hd_energy) then
-        csoundL(ixO^S)=hd_gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
-        csoundR(ixO^S)=hd_gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+         if(hd_radiation_use_csrad)then
+            call hd_get_csrad2_prim(wLp,x,ixI^L,ixO^L,csoundL)
+            call hd_get_csrad2_prim(wRp,x,ixI^L,ixO^L,csoundR)
+         else
+            csoundL(ixO^S)=hd_gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
+            csoundR(ixO^S)=hd_gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+         endif
       else
         call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
         call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
@@ -1052,7 +1066,11 @@ contains
     case (2)
       wmean(ixO^S,1:nwflux)=0.5d0*(wLC(ixO^S,1:nwflux)+wRC(ixO^S,1:nwflux))
       tmp1(ixO^S)=wmean(ixO^S,mom(idim))/wmean(ixO^S,rho_)
-      call hd_get_csound2(wmean,x,ixI^L,ixO^L,csoundR)
+      if(hd_radiation_use_csrad)then
+         call hd_get_csrad2_prim(wmean,x,ixI^L,ixO^L,csoundR)
+      else
+         call hd_get_csound2(wmean,x,ixI^L,ixO^L,csoundR)
+      endif
       csoundR(ixO^S) = dsqrt(csoundR(ixO^S))
 
       if(present(cmin)) then
@@ -1074,8 +1092,13 @@ contains
     case (3)
       ! Miyoshi 2005 JCP 208, 315 equation (67)
       if(hd_energy) then
-        csoundL(ixO^S)=hd_gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
-        csoundR(ixO^S)=hd_gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+         if(hd_radiation_use_csrad)then
+            call hd_get_csrad2_prim(wLp,x,ixI^L,ixO^L,csoundL)
+            call hd_get_csrad2_prim(wRp,x,ixI^L,ixO^L,csoundR)
+         else
+            csoundL(ixO^S)=hd_gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
+            csoundR(ixO^S)=hd_gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+         endif
       else
         call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
         call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
@@ -1164,6 +1187,30 @@ contains
     end if
 
   end subroutine hd_get_pthermal
+
+  !> Calculate modified squared sound speed for FLD
+  !> NOTE: w is primitive on entry here!
+  subroutine hd_get_csrad2_prim(w,x,ixI^L,ixO^L,csound)
+    use mod_global_parameters
+
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
+    double precision, intent(out):: csound(ixO^S)
+
+    double precision :: inv_rho
+    double precision :: prad_tensor(ixO^S, 1:ndim, 1:ndim)
+    double precision :: prad_max(ixO^S)
+    integer :: ix^D
+
+    call hd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad_tensor, nghostcells-1)
+
+   {do ix^DB=ixOmin^DB,ixOmax^DB \}
+      inv_rho=1.d0/w(ix^D,rho_)
+      prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
+      csound(ix^D)=max(hd_gamma,4.d0/3.d0)*(w(ix^D,p_)+prad_max(ix^D))*inv_rho
+   {end do\}
+
+  end subroutine hd_get_csrad2_prim
 
   !> Calculate radiation pressure within ixO^L
   subroutine hd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad, nth)

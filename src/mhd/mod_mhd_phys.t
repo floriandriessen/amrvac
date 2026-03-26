@@ -2381,7 +2381,9 @@ contains
               w(ix^D,e_)=small_e+half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+))
           end if
           if(mhd_radiation_fld)then
+            if(small_values_fix_iw(r_e)) then
              if(flag(ix^D,r_e)) w(ix^D,r_e)=small_r_e
+            endif
           endif
        {end do\}
       case ("average")
@@ -3510,7 +3512,6 @@ contains
   !> NOTE: w is primitive on entry here!
   subroutine mhd_get_csrad_prim(w,x,ixI^L,ixO^L,idim,csound)
     use mod_global_parameters
-    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
