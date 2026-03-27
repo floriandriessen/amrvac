@@ -23,8 +23,8 @@ module mod_wb_atmosphere
 
   !> Variable indices for density and pressure — set during wb_atmos_init
   !> to avoid depending on a specific physics module.
-  integer :: iw_rho = -1
-  integer :: iw_p   = -1
+  integer :: wb_iw_rho = -1
+  integer :: wb_iw_p   = -1
 
   !> Grid-aligned discrete HSE (built at finest AMR resolution)
   double precision, allocatable, public :: wb_pa(:)   !< equilibrium pressure
@@ -70,8 +70,8 @@ contains
     integer :: ig, na, n_cells, level_factor
 
     wb_grav_dir = grav_dir
-    iw_rho = irho
-    iw_p   = ip
+    wb_iw_rho = irho
+    wb_iw_p   = ip
 
     ! Grid parameters at finest AMR level
     level_factor = 2**(refine_max_level - 1)
@@ -181,8 +181,8 @@ contains
       ig = nint((s - wb_x_lo) / wb_dx_grid) + 1
       ig = max(1, min(ig, wb_n_grid))
 
-      w(ix^D, iw_rho) = wb_ra(ig)
-      w(ix^D, iw_p)   = wb_pa(ig)
+      w(ix^D, wb_iw_rho) = wb_ra(ig)
+      w(ix^D, wb_iw_p)   = wb_pa(ig)
     {end do\}
 
   end subroutine wb_atmos_set_w

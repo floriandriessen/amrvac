@@ -2052,10 +2052,13 @@ contains
   !>   w(rho_) = rho_cell, w(p_) = p_cell (restored cell-centre primitives)
   !>
   !> Pressure: p_face = q_face * p_eq_face   (multiplicative, well-balanced)
-  !> Density:  rho_face = p_face / T_shared  (shared face T, well-balanced)
+  !> Density:  rho_face = p_face / T_blended
   !>
-  !> T_shared = 0.5*(T(i) + T(i+1)) is the SAME for L and R states.
-  !> In HSE: p_L = p_R = p_eq_face, rho_L = rho_R -> zero HLL diffusion.
+  !> Blends between shared T (well-balanced, zero HLL dissipation) and
+  !> individual limiter-reconstructed T (non-WB, full dissipation) using
+  !> a contact detector sigma = |T_faceL - T_faceR| / T_avg.
+  !> In HSE: T is smooth → sigma ≈ 0 → pure WB (ρ_L = ρ_R).
+  !> At contacts: T jump → sigma > 0 → ρ_L ≠ ρ_R → dissipation restored.
   subroutine hd_wb_inverse(ixI^L, ixL^L, ixR^L, idims, wLp, wRp, w, &
        wb_phi, wb_phi_face, wb_T)
     use mod_global_parameters
@@ -2067,22 +2070,40 @@ contains
     double precision, intent(in)     :: wb_T(ixI^S)
 
     double precision :: T_shared(ixI^S)
+    double precision :: T_face_L(ixI^S), T_face_R(ixI^S)
+    double precision :: sigma(ixI^S), T_for_rhoL(ixI^S), T_for_rhoR(ixI^S)
 
     ! Shared face temperature: T_face(i) = ½(T(i) + T(i+1))
-    ! Used for BOTH L and R density recovery → ρ_L = ρ_R in HSE.
     {^IFONED
     T_shared(ixImin1:ixImax1-1) = 0.5d0 * (wb_T(ixImin1:ixImax1-1) &
       + wb_T(ixImin1+1:ixImax1))
     T_shared(ixImax1) = wb_T(ixImax1)
     }
 
+    ! Save limiter-reconstructed T before rho_ slot is overwritten
+    ! (rho_ still holds T from the WB transform at this point)
+    T_face_L(ixL^S) = wLp(ixL^S, rho_)
+    T_face_R(ixR^S) = wRp(ixR^S, rho_)
+
+    ! Contact detector: relative T jump across interface
+    ! sigma = 0 in HSE (smooth T), sigma > 0 at contacts (T discontinuity)
+    sigma(ixL^S) = dabs(T_face_L(ixL^S) - T_face_R(ixR^S)) &
+                 / (0.5d0 * (T_face_L(ixL^S) + T_face_R(ixR^S)) + smalldouble)
+    sigma(ixL^S) = min(sigma(ixL^S), 1.0d0)
+
+    ! Blended T for density recovery
+    T_for_rhoL(ixL^S) = (1.d0 - sigma(ixL^S)) * T_shared(ixL^S) &
+                       + sigma(ixL^S) * T_face_L(ixL^S)
+    T_for_rhoR(ixR^S) = (1.d0 - sigma(ixL^S)) * T_shared(ixR^S) &
+                       + sigma(ixL^S) * T_face_R(ixR^S)
+
     ! Pressure inverse: p = q · p_eq_face (multiplicative)
     wLp(ixL^S, p_) = wLp(ixL^S, p_) * wb_phi_face(ixL^S)
     wRp(ixR^S, p_) = wRp(ixR^S, p_) * wb_phi_face(ixR^S)
 
-    ! Density inverse: ρ = p / T_shared (shared face T, always positive)
-    wLp(ixL^S, rho_) = wLp(ixL^S, p_) / T_shared(ixL^S)
-    wRp(ixR^S, rho_) = wRp(ixR^S, p_) / T_shared(ixR^S)
+    ! Density inverse: ρ = p / T_blended
+    wLp(ixL^S, rho_) = wLp(ixL^S, p_) / T_for_rhoL(ixL^S)
+    wRp(ixR^S, rho_) = wRp(ixR^S, p_) / T_for_rhoR(ixR^S)
 
     ! Restore cell-center values
     w(ixI^S, p_) = w(ixI^S, p_) * wb_phi(ixI^S)

@@ -247,6 +247,10 @@ contains
 
     time_advance=.true.
 
+    ! Pre-compute column mass before first advance so escape probability
+    ! is active from the very first timestep (avoids IC transient)
+    if(phys_escape_prob) call escape_prob_compute_colmass()
+
     time_evol : do
 
        time_before_advance=MPI_WTIME()

@@ -87,6 +87,8 @@ module mod_mhd_phys
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
   integer, public, protected              :: Tweight_
+  !> Index of cached log10(nH) in wextra for LTE+TC fast path
+  integer, public, protected              :: iw_log_nH = -1
   !> Indices of the tracers
   integer, allocatable, public, protected :: tracer(:)
   !> The number of waves
@@ -814,6 +816,11 @@ contains
       call mpistop("radiative cooling needs mhd_energy=T")
     end if
 
+    !> Cache log10(nH) in wextra for LTE+IonE TC (density invariant during STS)
+    if (eos%eos_type == 'LTE' .and. eos%ionE .and. mhd_thermal_conduction) then
+        iw_log_nH = var_set_wextra()
+    end if
+
     ! initialize thermal conduction module
     if (mhd_thermal_conduction) then
       call sts_init()
@@ -857,7 +864,11 @@ contains
           phys_e_to_ei => mhd_e_to_ei_semirelati
           phys_ei_to_e => mhd_ei_to_e_semirelati
         else
-          call set_conversion_methods_to_head(mhd_e_to_ei, mhd_ei_to_e)
+          if (iw_log_nH > 0) then
+            call set_conversion_methods_to_head(mhd_e_to_ei_and_cache_log_nH, mhd_ei_to_e)
+          else
+            call set_conversion_methods_to_head(mhd_e_to_ei, mhd_ei_to_e)
+          end if
           phys_e_to_ei => mhd_e_to_ei
           phys_ei_to_e => mhd_ei_to_e
         end if
@@ -1265,6 +1276,12 @@ contains
         b=2d0+3d0*He_abundance
       end if
       RR=1d0
+    else if (eos%eos_type == 'LTE') then
+      !> Remove the assumed FI normalisation from the units and handle in EoS
+      a=1d0
+      b=1d0
+      eos%nH2rhoFactor = 1d0+4d0*eos%He_abundance
+      RR=(2d0+3d0*eos%He_abundance) / (1d0+4d0*eos%He_abundance)
     else
       a=1d0
       b=1d0
@@ -2028,7 +2045,7 @@ contains
 
     w(ixO^S,p_)=w(ixO^S,e_)*eos%gamma_minus_1
     ! call eos%to_conserved(ixI^L,ixO^L,w,x)
-    call eos%to_conserved(ixI^L,ixO^L,w)
+    call eos%to_conserved(ixI^L,ixO^L,w,x)
 
   end subroutine mhd_ei_to_e_semirelati
 
@@ -2064,6 +2081,19 @@ contains
 
   end subroutine mhd_e_to_ei
 
+  !> Wrapper: e_to_ei + cache log10(nH) in wextra for LTE TC fast path.
+  !> During STS substeps density is invariant, so log10(nH) is computed once
+  !> per STS cycle (in sts_before_first_cycle hook) and reused across all substeps.
+  subroutine mhd_e_to_ei_and_cache_log_nH(ixI^L,ixO^L,w,x)
+    use mod_global_parameters
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(inout) :: w(ixI^S, nw)
+    double precision, intent(in)    :: x(ixI^S, 1:ndim)
+
+    call mhd_e_to_ei(ixI^L,ixO^L,w,x)
+    block%wextra(ixO^S, iw_log_nH) = dlog10(w(ixO^S, rho_) / eos%nH2rhoFactor)
+  end subroutine mhd_e_to_ei_and_cache_log_nH
+
   !> Transform hydrodynamic energy to internal energy
   subroutine mhd_e_to_ei_hde(ixI^L,ixO^L,w,x)
     use mod_global_parameters
@@ -2092,8 +2122,7 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    ! call eos%to_primitive(ixI^L,ixO^L,w,x)
-    call eos%to_primitive(ixI^L,ixO^L,w)
+    call eos%to_primitive(ixI^L,ixO^L,w,x)
     w(ixO^S,e_)=w(ixO^S,p_)*eos%inv_gamma_minus_1
 
   end subroutine mhd_e_to_ei_semirelati
@@ -2731,7 +2760,9 @@ contains
     integer :: idims,ix^D,jxO^L,hxO^L,ixA^D,ixB^D
     integer :: jxP^L,hxP^L,ixP^L,ixQ^L
 
-    if(mhd_partial_ionization) then
+    if (eos%eos_type == 'LTE') then
+      Te(ixI^S) = w(ixI^S, Te_)
+    else if(mhd_partial_ionization) then
       call mhd_get_temperature_from_Te(w,x,ixI^L,ixI^L,Te)
     else
       call mhd_get_Rfactor(w,x,ixI^L,ixI^L,Te)
@@ -6474,7 +6505,7 @@ contains
      case(1)
        ! 2nd order CD for divB=0 to set normal B component better
       !  if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
        {^IFTWOD
        ixFmin1=ixOmin1+1
        ixFmax1=ixOmax1+1
@@ -6541,10 +6572,10 @@ contains
        end if
        }
       !  if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
      case(2)
       !  if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
        {^IFTWOD
        ixFmin1=ixOmin1-1
        ixFmax1=ixOmax1-1
@@ -6611,10 +6642,10 @@ contains
        end if
        }
       !  if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
      case(3)
       !  if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
        {^IFTWOD
        ixFmin1=ixOmin1+1
        ixFmax1=ixOmax1-1
@@ -6681,10 +6712,10 @@ contains
        end if
        }
       !  if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
      case(4)
       !  if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
        {^IFTWOD
        ixFmin1=ixOmin1+1
        ixFmax1=ixOmax1-1
@@ -6751,11 +6782,11 @@ contains
        end if
        }
       !  if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
      {^IFTHREED
      case(5)
       !  if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
        ixFmin1=ixOmin1+1
        ixFmax1=ixOmax1-1
        ixFmin2=ixOmin2+1
@@ -6796,10 +6827,10 @@ contains
          end do
        end if
       !  if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
      case(6)
       !  if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_primitive(ixG^L,ixO^L,w,x)
        ixFmin1=ixOmin1+1
        ixFmax1=ixOmax1-1
        ixFmin2=ixOmin2+1
@@ -6840,7 +6871,7 @@ contains
          end do
        end if
       !  if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
-       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w)
+       if(total_energy) call eos%to_conserved(ixG^L,ixO^L,w,x)
      }
      case default
        call mpistop("Special boundary is not defined for this region")
