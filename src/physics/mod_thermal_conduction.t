@@ -210,7 +210,7 @@ contains
     double precision :: dtnew
 
     double precision :: mf(ixO^S,1:ndim),Te(ixI^S),rho(ixI^S),gradT(ixI^S)
-    double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndim)
+    double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndir)
     double precision :: dtdiff_tcond,maxtmp2
     integer          :: idims,ix^D
 
@@ -219,15 +219,15 @@ contains
     if(allocated(iw_mag)) then
       if(B0field) then
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
-          ^D&blocal(^D)=w({ix^D},iw_mag(^D))+block%B0({ix^D},^D,0)\
+          ^C&blocal(^C)=w({ix^D},iw_mag(^C))+block%B0({ix^D},^C,0)\
          {^IFTWOD
           if(blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2)
+            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(^CE&(blocal(^CE)/blocal(1))**2+))
           else
             mf(ix^D,1)=0.d0
           end if
           if(blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2)
+            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(^CF&(blocal(^CF)/blocal(2))**2+))
           else
             mf(ix^D,2)=0.d0
           end if
@@ -254,12 +254,12 @@ contains
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
          {^IFTWOD
           if(w(ix^D,iw_mag(1))/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(w(ix^D,iw_mag(2))/w(ix^D,iw_mag(1)))**2)
+            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(^CE&(w(ix^D,iw_mag(^CE))/w(ix^D,iw_mag(1)))**2+))
           else
             mf(ix^D,1)=0.d0
           end if
           if(w(ix^D,iw_mag(2))/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(w(ix^D,iw_mag(1))/w(ix^D,iw_mag(2)))**2)
+            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(^CF&(w(ix^D,iw_mag(^CF))/w(ix^D,iw_mag(2)))**2+))
           else
             mf(ix^D,2)=0.d0
           end if
@@ -427,7 +427,7 @@ contains
     !! qdd store the heat conduction energy changing rate
     double precision, dimension(ixI^S,1:ndim) :: mf,Bc,Bcf,gradT
     double precision, dimension(ixI^S) :: ka,kaf,ke,kef,qdd,Bnorm
-    double precision :: minq,maxq,qd(ixI^S,2**(ndim-1)), blocal(ndim)
+    double precision :: minq,maxq,qd(ixI^S,2**(ndim-1)), blocal(ndir)
     integer :: idims,idir,ix^D,ix^L,ixC^L,ixA^L,ixB^L
 
     ix^L=ixO^L^LADD1;
@@ -437,15 +437,15 @@ contains
     if(allocated(iw_mag)) then
       if(B0field) then
        {do ix^DB=ixmin^DB,ixmax^DB\}
-          ^D&blocal(^D)=w({ix^D},iw_mag(^D))+block%B0({ix^D},^D,0)\
+          ^C&blocal(^C)=w({ix^D},iw_mag(^C))+block%B0({ix^D},^C,0)\
          {^IFTWOD
           if(blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2)
+            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(^CE&(blocal(^CE)/blocal(1))**2+))
           else
             mf(ix^D,1)=0.d0
           end if
           if(blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2)
+            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(^CF&(blocal(^CF)/blocal(2))**2+))
           else
             mf(ix^D,2)=0.d0
           end if
@@ -472,12 +472,12 @@ contains
        {do ix^DB=ixmin^DB,ixmax^DB\}
          {^IFTWOD
           if(w(ix^D,iw_mag(1))/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(w(ix^D,iw_mag(2))/w(ix^D,iw_mag(1)))**2)
+            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(^CE&(w(ix^D,iw_mag(^CE))/w(ix^D,iw_mag(1)))**2+))
           else
             mf(ix^D,1)=0.d0
           end if
           if(w(ix^D,iw_mag(2))/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(w(ix^D,iw_mag(1))/w(ix^D,iw_mag(2)))**2)
+            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(^CF&(w(ix^D,iw_mag(^CF))/w(ix^D,iw_mag(2)))**2+))
           else
             mf(ix^D,2)=0.d0
           end if
@@ -573,9 +573,9 @@ contains
       ! compensate with perpendicular conductivity
       if(fl%tc_perpendicular) then
         if(B0field) then
-          qdd(ix^S)=fl%tc_k_perp*rho(ix^S)**2/((^D&(w(ix^S,iw_mag(^D))+block%B0(ix^S,^D,0))**2+)*dsqrt(Te(ix^S))+smalldouble)
+          qdd(ix^S)=fl%tc_k_perp*rho(ix^S)**2/((^C&(w(ix^S,iw_mag(^C))+block%B0(ix^S,^C,0))**2+)*dsqrt(Te(ix^S))+smalldouble)
         else
-          qdd(ix^S)=fl%tc_k_perp*rho(ix^S)**2/((^D&w(ix^S,iw_mag(^D))**2+)*dsqrt(Te(ix^S))+smalldouble)
+          qdd(ix^S)=fl%tc_k_perp*rho(ix^S)**2/((^C&w(ix^S,iw_mag(^C))**2+)*dsqrt(Te(ix^S))+smalldouble)
         end if
        {^IFTHREED
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
@@ -654,7 +654,7 @@ contains
           ! averaged b at face centers
           Bcf(ixA^S,idims)=Bcf(ixA^S,idims)*0.5d0**(ndim-1)
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bcf(ixA^S,idims))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bcf(ixA^S,idims))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -927,7 +927,7 @@ contains
           ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
           ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bnorm(ixA^S))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bnorm(ixA^S))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -1231,7 +1231,7 @@ contains
           ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
           ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
           ixD^L=ixA^L+kr(idims,^D);
-          qd(ixA^S)=2.75d0*(rho(ixA^S)+rho(ixD^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixD^S)))**3
+          qd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixD^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixD^S)))**3
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)

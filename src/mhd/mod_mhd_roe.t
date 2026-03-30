@@ -15,7 +15,8 @@ module mod_mhd_roe
 contains
 
   subroutine mhd_roe_init()
-    use mod_global_parameters, only: entropycoef, nw
+    use mod_global_parameters, only: entropycoef
+    use mod_variables, only: nw
     integer :: il
 
     phys_average => mhd_average

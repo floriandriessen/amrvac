@@ -2076,7 +2076,7 @@ contains
     end if
 
     if(fix_small_values) then
-      call mhd_handle_small_ei(w,x,ixI^L,ixI^L,e_,'mhd_e_to_ei')
+      call mhd_handle_small_ei(w,x,ixI^L,ixO^L,e_,'mhd_e_to_ei')
     end if
 
   end subroutine mhd_e_to_ei
@@ -3928,7 +3928,7 @@ contains
 
     if(mhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4035,7 +4035,7 @@ contains
 
     if(mhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4214,7 +4214,7 @@ contains
     end do
     if(mhd_hyperbolic_thermal_conduction) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^D&w({ix^D},b^D_)**2+)+smalldouble)
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
         f(ix^D,q_)=zero
      {end do\}
     end if
@@ -4777,7 +4777,7 @@ contains
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
     double precision, dimension(ixI^S) :: R,Te,rho_loc
-    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndim),bunitvec(ndim)
+    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndir),bunitvec(ndim)
     integer :: ix^D
 
     call mhd_get_rho(wCT,x,ixI^L,ixI^L,rho_loc)
@@ -4790,19 +4790,20 @@ contains
     do ix1=ixOmin1,ixOmax1
       if(mhd_trac) then
         if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-          sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+          sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
           sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
         else
-          sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
           sigma_T7=sigma_T5*Te(ix^D)
         end if
       else
-        sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+        sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
         sigma_T7=sigma_T5*Te(ix^D)
       end if
       sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
       if(mhd_htc_sat) then
-        f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0)
+        ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
+        f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
         tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
         w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
       else
@@ -4816,28 +4817,28 @@ contains
       do ix1=ixOmin1,ixOmax1
         if(mhd_trac) then
           if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-            sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+            sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
             sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
           else
-            sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
             sigma_T7=sigma_T5*Te(ix^D)
           end if
         else
-          sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
           sigma_T7=sigma_T5*Te(ix^D)
         end if
         if(B0field) then
-          ^D&bdir(^D)=wCT({ix^D},mag(^D))+block%B0({ix^D},^D,0)\
+          ^C&bdir(^C)=wCT({ix^D},mag(^C))+block%B0({ix^D},^C,0)\
         else
-          ^D&bdir(^D)=wCT({ix^D},mag(^D))\
+          ^C&bdir(^C)=wCT({ix^D},mag(^C))\
         end if
         if(Bdir(1)/=0.d0) then
-          bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(Bdir(2)/Bdir(1))**2)
+          bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(^CE&(Bdir(^CE)/Bdir(1))**2+))
         else
           bunitvec(1)=0.d0
         end if
         if(Bdir(2)/=0.d0) then
-          bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(Bdir(1)/Bdir(2))**2)
+          bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(^CF&(Bdir(^CF)/Bdir(2))**2+))
         else
           bunitvec(2)=0.d0
         end if
@@ -4845,7 +4846,7 @@ contains
            bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
         if(mhd_htc_sat) then
-          f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0)
+          f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
           tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
           w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
         else
@@ -4861,20 +4862,20 @@ contains
         do ix1=ixOmin1,ixOmax1
           if(mhd_trac) then
             if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-              sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+              sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
               sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
             else
-              sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+              sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
               sigma_T7=sigma_T5*Te(ix^D)
             end if
           else
-            sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
             sigma_T7=sigma_T5*Te(ix^D)
           end if
           if(B0field) then
-            ^D&bdir(^D)=wCT({ix^D},mag(^D))+block%B0({ix^D},^D,0)\
+            ^C&bdir(^C)=wCT({ix^D},mag(^C))+block%B0({ix^D},^C,0)\
           else
-            ^D&bdir(^D)=wCT({ix^D},mag(^D))\
+            ^C&bdir(^C)=wCT({ix^D},mag(^C))\
           end if
           if(Bdir(1)/=0.d0) then
             bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(Bdir(2)/Bdir(1))**2+(Bdir(3)/Bdir(1))**2)
@@ -4896,7 +4897,8 @@ contains
             +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
           if(mhd_htc_sat) then
-            f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*rho_loc(ix^D)*(mhd_gamma*wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0)
+            ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
+            f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
             tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
             w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
           else
