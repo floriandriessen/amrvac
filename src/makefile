@@ -519,6 +519,7 @@ mod_radiative_cooling.o: mod_comm_lib.mod
 mod_radiative_cooling.o: mod_global_parameters.mod
 mod_radiative_cooling.o: mod_physics.mod
 mod_radiative_cooling.o: mod_radloss_tables.mod
+mod_random.o: mod_constants.mod
 mod_random_heating.o: mod_comm_lib.mod
 mod_random_heating.o: mod_global_parameters.mod
 mod_random_heating_3D.o: mod_comm_lib.mod
