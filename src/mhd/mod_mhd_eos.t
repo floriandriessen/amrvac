@@ -89,14 +89,11 @@ contains
 
       ! === Prolongation ===
       if (eos%eos_type == 'LTE' .and. eos%ionE) then
-        eos%to_prolong   => mhd_to_prolong_LTE
-        eos%from_prolong => mhd_from_prolong_LTE
-      else
-        eos%to_prolong   => eos%to_primitive
-        eos%from_prolong => eos%to_conserved
+        eos%to_prolong    => mhd_to_prolong_LTE
+        eos%from_prolong  => mhd_from_prolong_LTE
+        phys_to_prolong   => mhd_to_prolong_LTE
+        phys_from_prolong => mhd_from_prolong_LTE
       end if
-      phys_to_prolong   => eos%to_prolong
-      phys_from_prolong => eos%from_prolong
 
       ! === Rfactor (matching HD: routing in link_eos, not phys_init) ===
       if (eos%eos_type == 'LTE') then
@@ -160,19 +157,7 @@ contains
         phys_get_ei => mhd_get_ei_origin
       end if
 
-      ! === e_to_ei / ei_to_e (needed by update_eos_LTE even without TC) ===
-      if (.not. mhd_internal_e) then
-        if (mhd_hydrodynamic_e) then
-          phys_e_to_ei => mhd_e_to_ei_hde
-          phys_ei_to_e => mhd_ei_to_e_hde
-        else if (mhd_semirelativistic) then
-          phys_e_to_ei => mhd_e_to_ei_semirelati
-          phys_ei_to_e => mhd_ei_to_e_semirelati
-        else
-          phys_e_to_ei => mhd_e_to_ei
-          phys_ei_to_e => mhd_ei_to_e
-        end if
-      end if
+      ! phys_e_to_ei / phys_ei_to_e assigned in mhd_phys_init (mod_mhd_phys.t)
 
     end subroutine mhd_link_eos
 
@@ -409,7 +394,7 @@ contains
       integer :: ix^D
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_origin')
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_origin')
       end if
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -435,7 +420,7 @@ contains
       integer :: ix^D
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_origin_noe')
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_origin_noe')
       end if
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -457,7 +442,7 @@ contains
       integer                         :: ix^D
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_hde')
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_hde')
       end if
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -481,7 +466,7 @@ contains
       integer                         :: ix^D
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_inte')
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_inte')
       end if
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -505,7 +490,7 @@ contains
       integer :: ix^D
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_split_rho')
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_split_rho')
       end if
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -531,7 +516,7 @@ contains
       integer :: ix^D
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_semirelati')
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_semirelati')
       end if
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -590,7 +575,7 @@ contains
       integer :: ix^D, idir
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_semirelati_noe')
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_semirelati_noe')
       end if
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -781,7 +766,7 @@ contains
       {end do\}
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, &
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, &
             'mhd_to_primitive_origin_LTE')
       end if
 
@@ -835,7 +820,7 @@ contains
       {end do\}
 
       if (fix_small_values) then
-        call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, &
+        call phys_handle_small_values(.false., w, x, ixI^L, ixO^L, &
             'mhd_to_primitive_inte_LTE')
       end if
 
@@ -1085,9 +1070,9 @@ contains
 
      {do ix^DB= ixOmin^DB,ixOmax^DB\}
         if(has_equi_pe0) then
-          pth(ix^D)=gamma_1*w(ix^D,e_)+block%equi_vars(ix^D,equi_pe0_,0)
+          pth(ix^D)=eos%gamma_minus_1*w(ix^D,e_)+block%equi_vars(ix^D,equi_pe0_,0)
         else
-          pth(ix^D)=gamma_1*w(ix^D,e_)
+          pth(ix^D)=eos%gamma_minus_1*w(ix^D,e_)
         end if
         if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
      {end do\}
@@ -1126,10 +1111,10 @@ contains
 
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         if(has_equi_rho0) then
-          pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))&
+          pth(ix^D)=eos%gamma_minus_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))&
                +(^C&w(ix^D,b^C_)**2+)))+block%equi_vars(ix^D,equi_pe0_,0)
         else
-          pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
+          pth(ix^D)=eos%gamma_minus_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
                +(^C&w(ix^D,b^C_)**2+)))
         end if
         if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
@@ -1218,7 +1203,7 @@ contains
 
         inv_rho=1.d0/w(ix^D,rho_)
         ! Va^2/c^2
-        b2=b2*inv_rho*inv_squared_c
+        b2=b2*inv_rho*eos%inv_squared_c
         ! equation (15)
         gamma2=1.d0/(1.d0+b2)
         ! Convert momentum to velocity
@@ -1238,10 +1223,10 @@ contains
         b(ix^D,1)=zero
         }
         ! Calculate pressure = (gamma-1) * (e-eK-eB-eE)
-        pth(ix^D)=gamma_1*(w(ix^D,e_)&
+        pth(ix^D)=eos%gamma_minus_1*(w(ix^D,e_)&
                    -half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
                    +(^C&w(ix^D,b^C_)**2+)&
-                   +(^C&b(ix^D,^C)**2+)*inv_squared_c))
+                   +(^C&b(ix^D,^C)**2+)*eos%inv_squared_c))
         if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
      {end do\}
 
@@ -1278,7 +1263,7 @@ contains
       integer :: iw, ix^D
 
      {do ix^DB= ixOmin^DB,ixOmax^DB\}
-        pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)))
+        pth(ix^D)=eos%gamma_minus_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)))
         if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
      {end do\}
       if(check_small_values.and..not.fix_small_values) then
@@ -1326,7 +1311,7 @@ contains
       double precision :: R(ixI^S)
 
       call eos%get_Rfactor(w,x,ixI^L,ixO^L,R)
-      res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+      res(ixO^S) = eos%gamma_minus_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
     end subroutine mhd_get_temperature_from_eint
 
     !> Calculate temperature=p/rho when in e_ the total energy is stored
@@ -1370,7 +1355,7 @@ contains
       double precision :: R(ixI^S)
 
       call eos%get_Rfactor(w,x,ixI^L,ixO^L,R)
-      res(ixO^S) = (gamma_1 * w(ixO^S, e_) + block%equi_vars(ixO^S,equi_pe0_,b0i)) /&
+      res(ixO^S) = (eos%gamma_minus_1 * w(ixO^S, e_) + block%equi_vars(ixO^S,equi_pe0_,b0i)) /&
                   ((w(ixO^S,rho_) +block%equi_vars(ixO^S,equi_rho0_,b0i))*R(ixO^S))
 
     end subroutine mhd_get_temperature_from_eint_with_equi

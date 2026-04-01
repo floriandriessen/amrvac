@@ -104,7 +104,9 @@ module mod_eos_container
         procedure (get_eos_variable_alt), pointer, nopass :: get_nH => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_Te => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_csound2 => null()
-    
+        procedure (convert_condition), pointer, nopass :: to_prolong => null()
+        procedure (convert_condition), pointer, nopass :: from_prolong => null()
+
     end type eos_container
 
 end module mod_eos_container

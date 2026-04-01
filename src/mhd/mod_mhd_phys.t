@@ -499,14 +499,6 @@ contains
     mag(:) = var_set_bfield(ndir)
     b^C_=mag(^C);
 
-    if (eos%eos_type == 'LTE') then
-      Ne_ = var_set_ne()
-      Te_ = var_set_te()
-    else
-      Ne_ = -1
-      Te_ = -1
-    end if
-
     if (mhd_glm) then
       psi_ = var_set_fluxvar('psi', 'psi', need_bc=.false.)
     else
@@ -515,10 +507,22 @@ contains
 
     if(mhd_hyperbolic_thermal_conduction) then
       ! hyperbolic thermal conduction flux q
+      ! Must be registered before non-flux vars (Ne_, Te_) to avoid index collision
       q_ = var_set_q()
       need_global_cmax=.true.
     else
       q_=-1
+    end if
+
+    if (eos%eos_type == 'LTE') then
+      Ne_ = var_set_ne()
+      Te_ = var_set_te()
+    else if (hd_partial_ionization) then !  set temperature as an auxiliary variable to get ionization degree
+      Ne_ = -1
+      Te_ = var_set_auxvar('Te','Te')
+    else
+      Ne_ = -1
+      Te_ = -1
     end if
 
     allocate(tracer(mhd_n_tracer))
@@ -526,13 +530,6 @@ contains
     do itr = 1, mhd_n_tracer
       tracer(itr) = var_set_fluxvar("trc", "trp", itr, need_bc=.false.)
     end do
-
-    !  set temperature as an auxiliary variable to get ionization degree
-    if(mhd_partial_ionization) then
-      Te_ = var_set_auxvar('Te','Te')
-    else
-      Te_ = -1
-    end if
 
     ! set number of variables which need update ghostcells
     nwgc=nwflux+nwaux
@@ -877,6 +874,20 @@ contains
       tc_fl%get_rho => mhd_get_rho
       tc_fl%e_ = e_
       tc_fl%Tcoff_ = Tcoff_
+    end if
+
+    ! Energy conversion pointers needed by EOS module regardless of TC method
+    if(.not.mhd_internal_e .and. .not.associated(phys_e_to_ei)) then
+      if(mhd_hydrodynamic_e) then
+        phys_e_to_ei => mhd_e_to_ei_hde
+        phys_ei_to_e => mhd_ei_to_e_hde
+      else if(mhd_semirelativistic) then
+        phys_e_to_ei => mhd_e_to_ei_semirelati
+        phys_ei_to_e => mhd_ei_to_e_semirelati
+      else
+        phys_e_to_ei => mhd_e_to_ei
+        phys_ei_to_e => mhd_ei_to_e
+      end if
     end if
 
     ! Initialize radiative cooling module
@@ -4611,6 +4622,7 @@ contains
   !> w[iws]=w[iws]+qdt*S[iws,wCT] where S is the source based on wCT within ixO
   subroutine mhd_add_source(qdt,dtfactor,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     use mod_global_parameters
+    use mod_timing, only: time_htc_total, time_htc0
     use mod_radiative_cooling, only: radiative_cooling_add_source
     use mod_viscosity, only: viscosity_add_source
     use mod_gravity, only: gravity_add_source
@@ -4642,7 +4654,9 @@ contains
 
       if(mhd_hyperbolic_thermal_conduction) then
         active = .true.
+        time_htc0 = MPI_WTIME()
         call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+        time_htc_total = time_htc_total + (MPI_WTIME() - time_htc0)
       end if
 
       ! Source for B0 splitting
@@ -4776,13 +4790,22 @@ contains
     double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
-    double precision, dimension(ixI^S) :: R,Te,rho_loc
-    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndir),bunitvec(ndim)
+    double precision, dimension(ixI^S) :: Te,rho_loc
+    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,eint,Bdir(ndir),bunitvec(ndim)
     integer :: ix^D
 
     call mhd_get_rho(wCT,x,ixI^L,ixI^L,rho_loc)
-    call mhd_get_Rfactor(wCTprim,x,ixI^L,ixI^L,R)
-    Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+    if(Te_ > 0) then
+      ! Use EOS-cached temperature (LTE-accurate, avoids recomputation)
+      Te(ixI^S)=wCT(ixI^S,Te_)
+    else
+      ! Compute from primitives (FI case)
+      block0: block
+        double precision, dimension(ixI^S) :: R
+        call mhd_get_Rfactor(wCTprim,x,ixI^L,ixI^L,R)
+        Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      end block block0
+    end if
     ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
     ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
    {^IFONED
@@ -4801,14 +4824,16 @@ contains
         sigma_T7=sigma_T5*Te(ix^D)
       end if
       sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
+      ! internal energy density: eint = e_total - KE - ME(perturbation)
+      eint=wCT(ix^D,e_)-half*((^C&wCT(ix^D,m^C_)**2+)/rho_loc(ix^D)+(^C&wCT(ix^D,b^C_)**2+))
       if(mhd_htc_sat) then
         ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
         f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
-        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(eint*cmax_global**2))
         w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
       else
         w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-         max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+         max(4.d0*dt, sigma_T7*courantpar**2/(eint*cmax_global**2))
       end if
     end do
     }
@@ -4845,13 +4870,15 @@ contains
         sigmaT5_bgradT=sigma_T5*(&
            bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
+        ! internal energy density: eint = e_total - KE - ME(perturbation)
+        eint=wCT(ix^D,e_)-half*((^C&wCT(ix^D,m^C_)**2+)/rho_loc(ix^D)+(^C&wCT(ix^D,b^C_)**2+))
         if(mhd_htc_sat) then
           f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
-          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(eint*cmax_global**2))
           w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
         else
           w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-           max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+           max(4.d0*dt, sigma_T7*courantpar**2/(eint*cmax_global**2))
         end if
       end do
     end do
@@ -4896,14 +4923,16 @@ contains
              bunitvec(1)*((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)&
             +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
+          ! internal energy density: eint = e_total - KE - ME(perturbation)
+          eint=wCT(ix^D,e_)-half*((^C&wCT(ix^D,m^C_)**2+)/rho_loc(ix^D)+(^C&wCT(ix^D,b^C_)**2+))
           if(mhd_htc_sat) then
             ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
             f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
-            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(eint*cmax_global**2))
             w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
           else
             w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-             max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
+             max(4.d0*dt, sigma_T7*courantpar**2/(eint*cmax_global**2))
           end if
         end do
       end do
