@@ -197,6 +197,7 @@ contains
 
   subroutine timeintegration()
     use mod_timing
+    use mod_source, only: time_sts_total
     use mod_advance, only: advance, process, process_advanced
     use mod_forest, only: nleafs_active
     use mod_global_parameters
@@ -322,7 +323,9 @@ contains
        if(phys_escape_prob) call escape_prob_compute_colmass()
 
        ! solving equations
+       tw_tmp=MPI_WTIME()
        call advance(it)
+       tw_advance=MPI_WTIME()-tw_tmp
 
        ! if met unphysical values, output the last good status and stop the run
        call MPI_ALLREDUCE(crash,crashall,1,MPI_LOGICAL,MPI_LOR,icomm,ierrmpi)
@@ -352,7 +355,24 @@ contains
        else
           if (refine_max_level>1 .and. .not.(fixgrid())) call resettree
        end if
-       timegr_tot=timegr_tot+(MPI_WTIME()-timegr0)
+       tw_regrid=MPI_WTIME()-timegr0
+       timegr_tot=timegr_tot+tw_regrid
+
+       ! write main-loop timing to user timing log
+       tw_tc_total = time_sts_total + time_htc_total - tw_tc_prev
+       tw_tc_prev = time_sts_total + time_htc_total
+       tw_eos_hydro = timeeos_conv + timeeos_pthermal + timeeos_update &
+                    - tw_eos_hydro_prev
+       tw_eos_hydro_prev = timeeos_conv + timeeos_pthermal + timeeos_update
+       tw_eos_tc = timeeos_Tfromei + timeeos_csound - tw_eos_tc_prev
+       tw_eos_tc_prev = timeeos_Tfromei + timeeos_csound
+       if (mype==0 .and. timing_log_opened) then
+         write(timing_unit,'(a,i8,1x,es12.5,1x,i6,1x,9(f10.4,1x))') &
+           '  MAIN ', it, global_time, nleafs_active, &
+           tw_setdt, tw_advance, tw_tc_total, tw_eos_hydro, tw_eos_tc, &
+           tw_regrid, tw_save, tw_process, tw_advance - tw_tc_total
+         call flush(timing_unit)
+       end if
 
        ! update time variables
        it = it + 1

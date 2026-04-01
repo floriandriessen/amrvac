@@ -18,5 +18,14 @@ module mod_timing
   double precision       :: tpartc=0.0d0, tpartc_io=0.0d0, tpartc_int=0.0d0, tpartc_com=0.0d0, tpartc_grid=0.0d0
   double precision       :: tpartc0, tpartc_int_0, tpartc_com0, tpartc_io_0, tpartc_grid_0
   double precision       :: timeLast
+  double precision       :: tw_advance=0.0d0, tw_setdt=0.0d0
+  double precision       :: tw_regrid=0.0d0, tw_save=0.0d0
+  double precision       :: tw_process=0.0d0, tw_tc_total=0.0d0
+  double precision       :: tw_tc_prev=0.0d0, tw_tmp=0.0d0
+  double precision       :: tw_eos_hydro=0.0d0, tw_eos_hydro_prev=0.0d0
+  double precision       :: tw_eos_tc=0.0d0, tw_eos_tc_prev=0.0d0
+  double precision       :: time_htc_total=0.0d0, time_htc0=0.0d0
   integer                :: itTimeLast
+  integer, parameter     :: timing_unit=55
+  logical                :: timing_log_opened=.false.
 end module mod_timing
