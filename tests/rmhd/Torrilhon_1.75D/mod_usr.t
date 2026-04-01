@@ -87,8 +87,10 @@ contains
     double precision, intent(in)       :: x(ixI^S,1:ndim)
     double precision                   :: w(ixI^S,nw+nwauxio)
     double precision                   :: normconv(0:nw+nwauxio)
+    double precision :: wlocal(ixI^S,nw)
     double precision :: lamb(ixO^S), R(ixO^S)
 
+    wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
     call fld_get_fluxlimiter(w,x,ixI^L,ixO^L,lamb,R,1)
     w(ixO^S,nw+1)=lamb(ixO^S)
     w(ixO^S,nw+2)=R(ixO^S)

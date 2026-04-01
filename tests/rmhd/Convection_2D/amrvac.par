@@ -73,22 +73,16 @@
         dtdiffpar=0.4d0
  /
 
- &rmhd_list
-        rmhd_thermal_conduction=.true.
-        rmhd_viscosity=.true.
-        rmhd_gravity=.true.
+ &mhd_list
+        mhd_thermal_conduction=.true.
+        mhd_viscosity=.true.
+        mhd_gravity=.true.
         He_abundance = 0.d0 
-        rmhd_energy = .true.
-        radio_acoustic_filter = .false.
-        rmhd_radiation_formalism = 'fld'
-        rmhd_radiation_force = .true. 
-        rmhd_energy_interact = .true.
-        rmhd_radiation_diffusion = .true.
-        rmhd_radiation_advection = .true.
+        mhd_energy = .true.
+        mhd_radiation_fld = .true. 
 /
 
  &fld_list
-        fld_Eint_split = .false.
         fld_Radforce_split = .false.
         fld_opacity_law = 'const'
         fld_kappa0 = 0.4d0

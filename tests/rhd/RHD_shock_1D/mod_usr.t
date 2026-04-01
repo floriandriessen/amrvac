@@ -12,6 +12,7 @@ module mod_usr
   double precision :: v2
   double precision :: T1
   double precision :: T2
+  double precision :: fld_mu
 
   double precision :: p1,p2,eg1,eg2,Er1,Er2
 
@@ -50,6 +51,8 @@ contains
     use mod_fld
 
     call params_read(par_files)
+
+    fld_mu=(1.0d0+4.0d0*He_abundance)/(2.0d0+3.0d0*He_abundance)
 
     p1 = const_kB*T1*rho1/(const_mp*fld_mu)
     p2 = const_kB*T2*rho2/(const_mp*fld_mu)

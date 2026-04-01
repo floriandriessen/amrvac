@@ -10,6 +10,7 @@ module mod_usr
   double precision :: eg0
   double precision :: tau_wave
   double precision :: ampl
+  double precision :: fld_mu
 
   double precision :: T0, a0, p0, Er0
 
@@ -48,6 +49,7 @@ contains
 
     call params_read(par_files)
 
+    fld_mu=(1.0d0+4.0d0*He_abundance)/(2.0d0+3.0d0*He_abundance)
 
     p0 = eg0*(hd_gamma - one)
     ca = dsqrt(hd_gamma*p0/rho0)

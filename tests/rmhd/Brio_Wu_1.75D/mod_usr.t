@@ -90,9 +90,11 @@ contains
     double precision                   :: w(ixI^S,nw+nwauxio)
     double precision                   :: normconv(0:nw+nwauxio)
 
+    double precision                   :: wlocal(ixI^S,nw)
     double precision :: lamb(ixO^S), R(ixO^S)
 
-    call fld_get_fluxlimiter(w,x,ixI^L,ixO^L,lamb,R,nghostcells)
+    wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2)
     w(ixO^S,nw+1)=lamb(ixO^S)
     w(ixO^S,nw+2)=R(ixO^S)
   end subroutine specialvar_output

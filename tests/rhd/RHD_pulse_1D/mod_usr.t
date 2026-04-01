@@ -11,6 +11,7 @@ module mod_usr
   double precision :: T0 = 1.d7
   double precision :: T1 = 2.d7
   double precision :: wdth = 24.d0
+  double precision :: fld_mu
 
 contains
 
@@ -63,6 +64,7 @@ contains
     T1 = T1/unit_temperature
     wdth = wdth/unit_length
   
+    fld_mu=(1.0d0+4.0d0*He_abundance)/(2.0d0+3.0d0*He_abundance)
     if(mype==0)then
     print*, 'u_time', unit_time
     print*, 'u_length', unit_length
@@ -94,14 +96,15 @@ contains
     * (T0**4.d0/temp(ixI^S) - temp(ixI^S)**3.d0)
 
     w(ixI^S,mom(:)) = 0.d0
-    w(ixI^S,mom(1)) = w(ixI^S,rho_)*v0
+    w(ixI^S,mom(1)) = v0
 
-    pth(ixI^S) = temp(ixI^S)*w(ixI^S,rho_)
-    w(ixI^S,e_) = pth(ixI^S)/(hd_gamma-1.d0) + half*w(ixI^S,rho_)*v0**2
+    w(ixI^S,p_) = temp(ixI^S)*w(ixI^S,rho_)
     w(ixI^S,r_e) = const_rad_a*(temp(ixI^S)*unit_temperature)**4.d0/unit_pressure
 
-    call fld_get_opacity(w, x, ixI^L, ixO^L, kappa)
-    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nghostcells)
+    call fld_get_opacity_prim(w, x, ixI^L, ixO^L, kappa)
+    call fld_get_fluxlimiter_prim(w, x, ixI^L, ixO^L, lambda, fld_R, nghostcells)
+
+    call hd_to_conserved(ixI^L,ixI^L,w,x)
 
     w(ixO^S,i_diff_mg) = (const_c/unit_velocity)*lambda(ixO^S)/(kappa(ixO^S)*w(ixO^S,rho_))
 
