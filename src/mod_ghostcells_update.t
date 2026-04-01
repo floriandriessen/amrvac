@@ -388,7 +388,7 @@ contains
 
     ! fill internal physical boundary
     if (internalboundary) then 
-       call getintbc(time,ixG^LL)
+       call getintbc(time,qdt,ixG^LL)
     end if
 
     ! prepare coarse values to send to coarser neighbors

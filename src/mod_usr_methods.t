@@ -43,6 +43,7 @@ module mod_usr_methods
 
   ! Source terms
   procedure(source), pointer          :: usr_source           => null()
+  procedure(source), pointer          :: usr_source_after     => null()
   procedure(get_dt), pointer          :: usr_get_dt           => null()
   procedure(phys_gravity), pointer    :: usr_gravity          => null()
   procedure(sub_get_heating), pointer :: usr_get_heating      => null()
@@ -157,10 +158,10 @@ module mod_usr_methods
     !> want to introduce an extra variable (nwextra, to be distinguished from nwaux)
     !> which can be used to identify the internal boundary region location.
     !> Its effect should always be local as it acts on the mesh.
-    subroutine internal_bc(level,qt,ixI^L,ixO^L,w,x)
+    subroutine internal_bc(level,qt,qdt,ixI^L,ixO^L,w,x)
       use mod_global_parameters
       integer, intent(in)             :: ixI^L,ixO^L,level
-      double precision, intent(in)    :: qt
+      double precision, intent(in)    :: qt, qdt
       double precision, intent(inout) :: w(ixI^S,1:nw)
       double precision, intent(in)    :: x(ixI^S,1:ndim)
     end subroutine internal_bc

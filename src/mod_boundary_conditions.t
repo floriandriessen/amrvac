@@ -265,15 +265,15 @@ contains
   end subroutine bc_phys
 
   !> fill inner boundary values
-  subroutine getintbc(time,ixG^L)
+  subroutine getintbc(time,qdt,ixG^L)
     use mod_usr_methods, only: usr_internal_bc
     use mod_global_parameters
 
-    double precision, intent(in)   :: time
+    double precision, intent(in)   :: time, qdt
     integer, intent(in)            :: ixG^L
-  
+
     integer :: iigrid, igrid, ixO^L
-  
+
     ixO^L=ixG^L^LSUBnghostcells;
 
     !$OMP PARALLEL DO SCHEDULE(dynamic) PRIVATE(igrid)
@@ -282,7 +282,7 @@ contains
        ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
 
        if (associated(usr_internal_bc)) then
-          call usr_internal_bc(node(plevel_,igrid),time,ixG^L,ixO^L,ps(igrid)%w,ps(igrid)%x)
+          call usr_internal_bc(node(plevel_,igrid),time,qdt,ixG^L,ixO^L,ps(igrid)%w,ps(igrid)%x)
        end if
     end do
     !$OMP END PARALLEL DO
