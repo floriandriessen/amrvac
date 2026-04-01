@@ -145,8 +145,6 @@ module mod_rmhd_phys
   logical, public :: divbwave = .true.
   !> clean initial divB
   logical, public :: clean_initial_divb = .false.
-  !> Formalism to treat radiation
-  character(len=8), public :: rmhd_radiation_formalism = 'fld'
   !> In the case of no rmhd_energy, how to compute pressure
   character(len=8), public :: rmhd_pressure = 'Trad'
   !> Treat radiation fld_Rad_force
@@ -240,7 +238,7 @@ contains
       boundary_divbfix, boundary_divbfix_skip, rmhd_divb_nth, clean_initial_divb,&
       rmhd_trac, rmhd_trac_type, rmhd_trac_mask, rmhd_trac_finegrid, rmhd_cak_force,&
       rmhd_hyperbolic_thermal_conduction, &
-      rmhd_pressure, rmhd_radiation_formalism,&
+      rmhd_pressure, &
       rmhd_radiation_force, rmhd_energy_interact, rmhd_radiation_diffusion,&
       rmhd_radiation_advection, radio_acoustic_filter, size_ra_filter, dt_c
 
@@ -277,7 +275,6 @@ contains
     use mod_gravity, only: gravity_init
     use mod_particles, only: particles_init, particles_eta, particles_etah
     use mod_fld
-    use mod_afld
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_cak_force, only: cak_init
@@ -557,6 +554,7 @@ contains
     else
       rmhd_get_Rfactor=>Rfactor_from_constant_ionization
     end if
+    phys_get_Rfactor=>rmhd_get_Rfactor
 
     if(rmhd_partial_ionization) then
       rmhd_get_temperature => rmhd_get_temperature_from_Te
@@ -601,14 +599,7 @@ contains
     call rmhd_physical_units()
 
     !> Initiate radiation-closure module
-    select case(rmhd_radiation_formalism)
-    case('fld')
       call fld_init(He_abundance, rmhd_gamma)
-    case('afld')
-      call afld_init(He_abundance, rmhd_gamma)
-    case default
-      call mpistop('Radiation formalism unknown')
-    end select
 
     if(rmhd_hyperbolic_thermal_conduction) then
       if(SI_unit)then
@@ -2180,20 +2171,12 @@ contains
   subroutine rmhd_get_pradiation(w, x, ixI^L, ixO^L, prad, nth)
     use mod_global_parameters
     use mod_fld
-    use mod_afld
     integer, intent(in)          :: ixI^L, ixO^L, nth
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: prad(ixO^S, 1:ndim, 1:ndim)
 
-    select case (rmhd_radiation_formalism)
-    case('fld')
       call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
-    case('afld')
-      call afld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
-    case default
-      call mpistop('Radiation formalism unknown')
-    end select
   end subroutine rmhd_get_pradiation
 
   !> Calculates the sum of the gas pressure and the max Prad tensor element
@@ -2575,7 +2558,6 @@ contains
     use mod_global_parameters
     use mod_usr_methods
     use mod_fld
-    use mod_afld
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
     double precision, intent(in)    :: wCT(ixI^S,1:nw),wCTprim(ixI^S,1:nw)
@@ -2584,24 +2566,10 @@ contains
     logical, intent(inout) :: active
     double precision :: cmax(ixI^S)
 
-    select case(rmhd_radiation_formalism)
-    case('fld')
-      call fld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L,.true.)
+      call fld_get_diffcoef_central(w, x, ixI^L, ixO^L)
       !> radiation force
-      if(rmhd_radiation_force) call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,rmhd_energy,qsourcesplit,active)
+      if(rmhd_radiation_force) call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
       call rmhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
-    case('afld')
-      call afld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L,.true.)
-      !> radiation force
-      if(rmhd_radiation_force) call add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,rmhd_energy,qsourcesplit,active)
-      call rmhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_e_interact')
-      !> photon tiring, heating and cooling
-      if(rmhd_energy) then
-        if (rmhd_energy_interact) call get_afld_energy_interact(qdt,ixI^L,ixO^L,wCT,w,x,rmhd_energy,qsourcesplit,active)
-      endif
-    case default
-      call mpistop('Radiation formalism unknown')
-    end select
   end subroutine rmhd_add_radiation_source
 
   subroutine add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x)
@@ -3312,7 +3280,6 @@ contains
     use mod_gravity, only: gravity_get_dt
     use mod_cak_force, only: cak_get_dt
     use mod_fld, only: fld_radforce_get_dt
-    use mod_afld, only: afld_radforce_get_dt
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
     double precision, intent(in)    :: dx^D
@@ -3350,14 +3317,7 @@ contains
         end if
       end if
       if(rmhd_radiation_force) then
-        select case(rmhd_radiation_formalism)
-        case('fld')
           call fld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
-        case('afld')
-          call afld_radforce_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
-        case default
-          call mpistop('Radiation formalism unknown')
-        end select
       endif
       if(rmhd_viscosity) then
         call viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)

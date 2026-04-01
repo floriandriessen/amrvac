@@ -159,10 +159,8 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_cak_force = .false.
   !> Whether radiation-gas interaction is handled using flux limited diffusion
   logical, public, protected              :: mhd_radiation_fld = .false.
-  !> Whether mixed gas-radiation sound speed is used for cbounds in FLD
-  logical, public, protected              :: mhd_radiation_use_csrad = .false.
-  !> Formalism to treat radiation: either fld or afld (anisotropic fld)
-  character(len=8), public :: mhd_radiation_fld_formalism = 'fld'
+  !> control over stencil to use for (diagnostic) info on fld
+  integer, public, protected              :: nth_for_fld
   !> whether split off equilibrium density and pressure
   logical, public :: has_equi_rho_and_p = .false.
   logical, public :: mhd_equi_thermal = .false.
@@ -235,7 +233,6 @@ module mod_mhd_phys
   public :: mhd_face_to_center
   public :: get_divb
   public :: get_current
-  public :: mhd_get_Rfactor
   !> needed  public if we want to use the ambipolar coefficient in the user file
   public :: multiplyAmbiCoef
   public :: get_normalized_divb
@@ -245,15 +242,23 @@ module mod_mhd_phys
   public :: mhd_clean_divb_multigrid
   }
   ! Begin: following relevant for radiative MHD using FLD
-  ! first three are local and of interest for mod_usr applications
-  public :: mhd_get_pradiation_from_prim
+  ! first four are local and only of interest for mod_usr applications
+  ! where they can be used in diagnostics
+  ! NOTE those with _prim expect primitives on entry
   public :: mhd_get_pthermal_plus_pradiation
+  public :: mhd_get_csrad2
   public :: mhd_get_trad
+  public :: mhd_get_pradiation_from_prim
+  ! the following used in FLD module
+  !    as pointer phys_get_Rfactor
+  public :: mhd_get_Rfactor
+  !    as pointer phys_get_csrad2
+  public :: mhd_get_csrad2_prim
   ! the following used in FLD modules
   !    as pointer phys_get_tgas
-  public :: mhd_get_temperature_from_etot
+  public :: mhd_get_temperature_from_prim 
   !    as pointer phys_set_mg_bounds
-  public :: mhd_set_mg_bounds              
+  public :: mhd_set_mg_bounds
   ! End: following relevant for radiative MHD using FLD
 
 contains
@@ -277,7 +282,7 @@ contains
       mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
       mhd_hydrodynamic_e, mhd_trac, mhd_trac_type, mhd_trac_mask, mhd_trac_finegrid, mhd_cak_force, &
       mhd_hyperbolic_thermal_conduction, mhd_htc_sat,&
-      mhd_radiation_fld,mhd_radiation_fld_formalism,mhd_radiation_use_csrad
+      mhd_radiation_fld,nth_for_fld
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -325,7 +330,6 @@ contains
     use mod_multigrid_coupling
     }
     use mod_fld
-    use mod_afld
 
     integer :: itr, idir
 
@@ -565,6 +569,10 @@ contains
             write(*,*)'Warning: Optically thin cooling together with FLD radiation'
           endif
        endif
+       nth_for_fld=2
+       if(mype==0) then
+            write(*,*)'Initializing nth_for_fld=2'
+       endif
        if(SI_unit)then
           call mpistop('using FLD implies the use of cgs units')
        endif
@@ -584,27 +592,12 @@ contains
           !> set added variable and equation for radiation energy
           r_e = var_set_radiation_energy()
           phys_set_mg_bounds       => mhd_set_mg_bounds
-          phys_get_tgas            => mhd_get_temperature_from_etot
+          phys_get_tgas            => mhd_get_temperature_from_prim
+          phys_get_csrad2          => mhd_get_csrad2_prim
           !> Initiate radiation-closure module
-          select case (mhd_radiation_fld_formalism)
-          case('fld')
-           call fld_init(He_abundance, mhd_gamma)
-          case('afld')
-           {^IFONED
-          call mpistop('using anisotropic FLD implies multidimensional setup')
-           }
-           call afld_init(He_abundance, mhd_gamma)
-          case default
-           call mpistop('Radiation formalism unknown')
-          end select
+          call fld_init(He_abundance, mhd_gamma)
        endif
     else
-      if(mhd_radiation_use_csrad)then
-          mhd_radiation_use_csrad=.false.
-          if(mype==0) then
-            write(*,*)'Warning: setting FLD specific flag to mhd_radiation_use_csrad=F'
-          endif
-      endif
       r_e=-1
     endif
 
@@ -830,6 +823,8 @@ contains
     else
       mhd_get_Rfactor=>Rfactor_from_constant_ionization
     end if
+
+    phys_get_Rfactor=>mhd_get_Rfactor
 
     if(mhd_partial_ionization) then
       mhd_get_temperature => mhd_get_temperature_from_Te
@@ -1390,7 +1385,15 @@ contains
         else
            call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
         endif
+        if(mype==0)then
+           write(*,*)'========================'
+           write(*,*)'Using FLD with settings:'
+           write(*,*)'Using FLD with settings: mhd_radiation_fld=',mhd_radiation_fld
+           write(*,*)'Using FLD with settings:      nth_for_fld=',nth_for_fld
+           write(*,*)'========================'
+        endif
     endif
+
 
   end subroutine mhd_check_params
 
@@ -3220,15 +3223,10 @@ contains
 
     select case (boundspeed)
     case (1)
-      if(mhd_radiation_use_csrad)then
-        call mhd_get_csrad_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
-        call mhd_get_csrad_prim(wRp,x,ixI^L,ixO^L,idim,csoundR)
-      else
-        ! This implements formula (10.52) from "Riemann Solvers and Numerical
-        ! Methods for Fluid Dynamics" by Toro.
-        call mhd_get_csound_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
-        call mhd_get_csound_prim(wRp,x,ixI^L,ixO^L,idim,csoundR)
-      endif
+      ! This implements formula (10.52) from "Riemann Solvers and Numerical
+      ! Methods for Fluid Dynamics" by Toro.
+      call mhd_get_csound_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
+      call mhd_get_csound_prim(wRp,x,ixI^L,ixO^L,idim,csoundR)
       if(present(cmin)) then
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
           tmp1=sqrt(wLp(ix^D,rho_))
@@ -3259,11 +3257,7 @@ contains
       end if
     case (2)
       wmean(ixO^S,1:nwflux)=0.5d0*(wLp(ixO^S,1:nwflux)+wRp(ixO^S,1:nwflux))
-      if(mhd_radiation_use_csrad)then
-        call mhd_get_csrad_prim(wmean,x,ixI^L,ixO^L,idim,csoundR)
-      else
-        call mhd_get_csound_prim(wmean,x,ixI^L,ixO^L,idim,csoundR)
-      endif
+      call mhd_get_csound_prim(wmean,x,ixI^L,ixO^L,idim,csoundR)
       if(present(cmin)) then
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
           cmax(ix^D,1)=max(wmean(ix^D,mom(idim))+csoundR(ix^D),zero)
@@ -3279,14 +3273,9 @@ contains
         cmax(ixO^S,1)=abs(wmean(ixO^S,mom(idim)))+csoundR(ixO^S)
       end if
     case (3)
-      if(mhd_radiation_use_csrad)then
-        call mhd_get_csrad_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
-        call mhd_get_csrad_prim(wRp,x,ixI^L,ixO^L,idim,csoundR)
-      else
-        ! Miyoshi 2005 JCP 208, 315 equation (67)
-        call mhd_get_csound_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
-        call mhd_get_csound_prim(wRp,x,ixI^L,ixO^L,idim,csoundR)
-      endif
+      ! Miyoshi 2005 JCP 208, 315 equation (67)
+      call mhd_get_csound_prim(wLp,x,ixI^L,ixO^L,idim,csoundL)
+      call mhd_get_csound_prim(wRp,x,ixI^L,ixO^L,idim,csoundR)
       if(present(cmin)) then
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
           csoundL(ix^D)=max(csoundL(ix^D),csoundR(ix^D))
@@ -3508,58 +3497,58 @@ contains
 
   end subroutine mhd_get_ct_velocity_hll
 
-  !> Calculate modified fast magnetosonic wave speed for FLD
+  !> Calculate modified squared sound speed for FLD
+  !> NOTE: only for diagnostic purposes, unused subroutine
+  subroutine mhd_get_csrad2(w,x,ixI^L,ixO^L,csound)
+    use mod_global_parameters
+    
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
+    double precision, intent(out):: csound(ixI^S)
+        
+    double precision :: wprim(ixI^S, nw)
+
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call mhd_to_primitive(ixI^L,ixO^L,wprim,x)
+    call mhd_get_csrad2_prim(wprim,x,ixI^L,ixO^L,csound)
+
+  end subroutine mhd_get_csrad2
+
+
+  !> Calculate modified squared fast wave speed for FLD
   !> NOTE: w is primitive on entry here!
-  subroutine mhd_get_csrad_prim(w,x,ixI^L,ixO^L,idim,csound)
+  !> NOTE: used in FLD module as phys_get_csrad2
+  subroutine mhd_get_csrad2_prim(w,x,ixI^L,ixO^L,csound)
     use mod_global_parameters
 
-    integer, intent(in)          :: ixI^L, ixO^L, idim
+    integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(out):: csound(ixO^S)
 
-    double precision :: adiabs(ixO^S), gammas(ixO^S)
-    double precision :: inv_rho, cfast2, AvMinCs2, b2, kmax
+    double precision :: inv_rho, b2
     double precision :: prad_tensor(ixO^S, 1:ndim, 1:ndim)
     double precision :: prad_max(ixO^S)
     integer :: ix^D
 
-    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    call mhd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad_tensor)
 
-    call mhd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad_tensor, nghostcells-1)
-
-    ! store |B|^2 in v
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         inv_rho=1.d0/w(ix^D,rho_)
         prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
-        csound(ix^D)=max(mhd_gamma,4.d0/3.d0)*(w(ix^D,p_)+prad_max(ix^D))*inv_rho
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
-        cfast2=b2*inv_rho+csound(ix^D)
-        AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*(w(ix^D,mag(idim))+&
-         block%B0(ix^D,idim,b0i))**2*inv_rho
-        if(AvMinCs2<zero) AvMinCs2=zero
-        csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(mhd_hall) then
-          csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
-        end if
+        csound(ix^D)=max(mhd_gamma,4.d0/3.d0)*(w(ix^D,p_)+half*b2+prad_max(ix^D))*inv_rho
      {end do\}
     else
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         inv_rho=1.d0/w(ix^D,rho_)
         prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
-        csound(ix^D)=max(mhd_gamma,4.d0/3.d0)*(w(ix^D,p_)+prad_max(ix^D))*inv_rho
         b2=(^C&w(ix^D,b^C_)**2+)
-        cfast2=b2*inv_rho+csound(ix^D)
-        AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*w(ix^D,mag(idim))**2*inv_rho
-        if(AvMinCs2<zero) AvMinCs2=zero
-        csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(mhd_hall) then
-          csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
-        end if
+        csound(ix^D)=max(mhd_gamma,4.d0/3.d0)*(w(ix^D,p_)+half*b2+prad_max(ix^D))*inv_rho
      {end do\}
     end if
 
-  end subroutine mhd_get_csrad_prim
+  end subroutine mhd_get_csrad2_prim
 
   !> Calculate fast magnetosonic wave speed
   subroutine mhd_get_csound_prim(w,x,ixI^L,ixO^L,idim,csound)
@@ -3983,6 +3972,20 @@ contains
     res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
   end subroutine mhd_get_temperature_from_eint
 
+  !> Calculate temperature=p/rho when in e_ the pressure p_ (primitive) is stored
+  subroutine mhd_get_temperature_from_prim(w, x, ixI^L, ixO^L, res)
+    use mod_global_parameters
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: res(ixI^S)
+
+    double precision :: R(ixI^S)
+
+    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+    res(ixO^S) =  w(ixO^S, p_)/(w(ixO^S,rho_)*R(ixO^S))
+  end subroutine mhd_get_temperature_from_prim
+
   !> Calculate temperature=p/rho from total energy 
   subroutine mhd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
@@ -4049,23 +4052,16 @@ contains
   end subroutine mhd_get_pe_equi
 
   !> Calculate radiation pressure within ixO^L
-  subroutine mhd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad, nth)
+  subroutine mhd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad)
     use mod_global_parameters
     use mod_fld
-    use mod_afld
-    integer, intent(in)          :: ixI^L, ixO^L, nth
+    integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: prad(ixO^S, 1:ndim, 1:ndim)
        
-    select case (mhd_radiation_fld_formalism)
-    case('fld')
-      call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
-    case('afld')
-      call afld_get_radpress(w, x, ixI^L, ixO^L, prad, nth)
-    case default
-      call mpistop('Radiation formalism unknown')
-    end select
+    call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nth_for_fld)
+
   end subroutine mhd_get_pradiation_from_prim
 
   !> Calculates the sum of the gas pressure and the max Prad tensor element
@@ -4083,7 +4079,7 @@ contains
         
     wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
     call mhd_to_primitive(ixI^L,ixO^L,wprim,x)
-    call mhd_get_pradiation_from_prim(wprim, x, ixI^L, ixO^L, prad_tensor,nghostcells)
+    call mhd_get_pradiation_from_prim(wprim, x, ixI^L, ixO^L, prad_tensor)
     {do ix^D = ixOmin^D,ixOmax^D\}
       prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
     {enddo\}
@@ -5111,7 +5107,6 @@ contains
     use mod_global_parameters
     use mod_usr_methods
     use mod_fld
-    use mod_afld
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
@@ -5119,27 +5114,10 @@ contains
     double precision, intent(inout) :: w(ixI^S,1:nw)
     logical, intent(in) :: qsourcesplit
     logical, intent(inout) :: active
-    double precision :: cmax(ixI^S)
 
-    select case(mhd_radiation_fld_formalism)
-    case('fld')
-      call fld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L, .true.)
-      ! radiation force
-      call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
-        mhd_energy,qsourcesplit,active)
-      call mhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'fld_add_radiation')
-    case('afld')
-      call afld_get_diffcoef_central(w, wCT, wCTprim, x, ixI^L, ixO^L, .true.)
-      ! radiation force
-      call add_afld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
-        mhd_energy,qsourcesplit,active)
-      call mhd_handle_small_values(.true., w, x, ixI^L, ixO^L, 'afld_add_radiation')
-      ! photon tiring, heating and cooling
-      call get_afld_energy_interact(qdt,ixI^L,ixO^L,wCT,w,x,&
-        mhd_energy,qsourcesplit,active)
-    case default
-      call mpistop('Radiation formalism unknown')
-    end select
+    ! radiation force
+    call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
+    if(fix_small_values) call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'fld_add_radiation')
 
   end subroutine mhd_add_radiation_source
 
@@ -6307,7 +6285,6 @@ contains
     use mod_gravity, only: gravity_get_dt
     use mod_cak_force, only: cak_get_dt
     use mod_fld, only: fld_radforce_get_dt
-    use mod_afld, only: afld_radforce_get_dt
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
@@ -6368,14 +6345,7 @@ contains
     end if
 
     if(mhd_radiation_fld) then
-      select case(mhd_radiation_fld_formalism)
-        case('fld')
-          call fld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
-        case('afld')
-          call afld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
-        case default
-          call mpistop('Radiation formalism unknown')
-      end select
+      call fld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     endif
 
   end subroutine mhd_get_dt

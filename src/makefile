@@ -53,17 +53,6 @@ mod_advance.o: mod_physics.mod
 mod_advance.o: mod_source.mod
 mod_advance.o: mod_tvd.mod
 mod_advance.o: mod_usr_methods.mod
-mod_afld.o: mod_comm_lib.mod
-mod_afld.o: mod_constants.mod
-mod_afld.o: mod_forest.mod
-mod_afld.o: mod_geometry.mod
-mod_afld.o: mod_ghostcells_update.mod
-mod_afld.o: mod_global_parameters.mod
-mod_afld.o: mod_multigrid_coupling.mod
-mod_afld.o: mod_opal_opacity.mod
-mod_afld.o: mod_physics.mod
-mod_afld.o: mod_usr_methods.mod
-mod_afld.o: mod_variables.mod
 mod_amr_fct.o: mod_forest.mod
 mod_amr_fct.o: mod_global_parameters.mod
 mod_amr_fct.o: mod_physics.mod
@@ -279,7 +268,6 @@ mod_hd_hllc.o: mod_dust.mod
 mod_hd_hllc.o: mod_global_parameters.mod
 mod_hd_hllc.o: mod_hd_phys.mod
 mod_hd_hllc.o: mod_physics_hllc.mod
-mod_hd_phys.o: mod_afld.mod
 mod_hd_phys.o: mod_basic_types.mod
 mod_hd_phys.o: mod_cak_force.mod
 mod_hd_phys.o: mod_comm_lib.mod
@@ -410,7 +398,6 @@ mod_mhd_hllc.o: mod_functions_bfield.mod
 mod_mhd_hllc.o: mod_global_parameters.mod
 mod_mhd_hllc.o: mod_mhd_phys.mod
 mod_mhd_hllc.o: mod_physics_hllc.mod
-mod_mhd_phys.o: mod_afld.mod
 mod_mhd_phys.o: mod_cak_force.mod
 mod_mhd_phys.o: mod_comm_lib.mod
 mod_mhd_phys.o: mod_constants.mod
@@ -555,7 +542,6 @@ mod_rho_roe.o: mod_rho_phys.mod
 mod_rmhd.o: mod_amrvac.mod
 mod_rmhd.o: mod_functions_bfield.mod
 mod_rmhd.o: mod_rmhd_phys.mod
-mod_rmhd_phys.o: mod_afld.mod
 mod_rmhd_phys.o: mod_cak_force.mod
 mod_rmhd_phys.o: mod_comm_lib.mod
 mod_rmhd_phys.o: mod_constants.mod

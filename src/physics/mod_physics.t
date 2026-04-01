@@ -69,6 +69,8 @@ module mod_physics
   procedure(sub_check_w), pointer         :: phys_check_w                => null()
   procedure(sub_get_pthermal), pointer    :: phys_get_pthermal           => null()
   procedure(sub_get_tgas), pointer        :: phys_get_tgas               => null()
+  procedure(sub_get_csrad2), pointer      :: phys_get_csrad2             => null()
+  procedure(sub_get_Rfactor), pointer     :: phys_get_Rfactor            => null()
   procedure(sub_boundary_adjust), pointer :: phys_boundary_adjust        => null()
   procedure(sub_write_info), pointer      :: phys_write_info             => null()
   procedure(sub_small_values), pointer    :: phys_handle_small_values    => null()
@@ -272,6 +274,22 @@ module mod_physics
        double precision, intent(in) :: x(ixI^S,1:ndim)
        double precision, intent(out):: tgas(ixI^S)
      end subroutine sub_get_tgas
+
+     subroutine sub_get_csrad2(w,x,ixI^L,ixO^L,cmax)
+       use mod_global_parameters
+       integer, intent(in)          :: ixI^L, ixO^L
+       double precision, intent(in) :: w(ixI^S,nw)
+       double precision, intent(in) :: x(ixI^S,1:ndim)
+       double precision, intent(out):: cmax(ixI^S)
+     end subroutine sub_get_csrad2
+
+     subroutine sub_get_Rfactor(w,x,ixI^L,ixO^L,cmax)
+       use mod_global_parameters
+       integer, intent(in)          :: ixI^L, ixO^L
+       double precision, intent(in) :: w(ixI^S,nw)
+       double precision, intent(in) :: x(ixI^S,1:ndim)
+       double precision, intent(out):: cmax(ixI^S)
+     end subroutine sub_get_Rfactor
 
      subroutine sub_write_info(file_handle)
        integer, intent(in) :: file_handle
