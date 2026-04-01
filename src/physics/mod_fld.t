@@ -36,8 +36,6 @@ module mod_fld
     logical :: diffcrash_resume = .true.
     !> A copy of (m)hd_gamma
     double precision, private, protected :: fld_gamma
-    !> mean particle mass
-    double precision, public :: fld_mu = 0.6d0
     !> running timestep for diffusion solver, initialised as zero
     double precision :: dt_diff = 0.d0
     !> public methods
@@ -92,8 +90,6 @@ module mod_fld
     mg%n_extra_vars = 1
     mg%operator_type = mg_vhelmholtz
     i_diff_mg = var_set_extravar("D", "D")
-    !> mean molecular weight
-    fld_mu = (1.+4*He_abundance)/(2.+3.*He_abundance)
     !> set gamma
     fld_gamma = r_gamma
     !> Read in opacity table if necesary
@@ -398,7 +394,7 @@ module mod_fld
       ! Calculate R everywhere
       ! |grad E|/(rho kappa E)
       fld_R(ixO^S) = dsqrt(normgrad2(ixO^S))/(kappa(ixO^S)*w(ixO^S,iw_rho)*w(ixO^S,iw_r_e))
-      where(normgrad2(ixO^S)<smalldouble)
+      where(normgrad2(ixO^S)<smalldouble**2)
         ! treat uniform case as diffusion limit
         fld_R(ixO^S)=zero
         fld_lambda(ixO^S) = 1.0d0/3.0d0
@@ -516,7 +512,7 @@ module mod_fld
         ! initialize off-diagonal part here
         if(idir .ne. jdir) eddington_tensor(ixO^S,idir,jdir) = zero
         ! add part depending on unit vectors along gradient E
-        where(normgrad2(ixO^S) .gt. smalldouble)
+        where(normgrad2(ixO^S) .gt. smalldouble**2)
           eddington_tensor(ixO^S,idir,jdir) = eddington_tensor(ixO^S,idir,jdir)+&
             half*(3.d0*f(ixO^S)-one)*grad_r_e(ixO^S,idir)*grad_r_e(ixO^S,jdir)/normgrad2(ixO^S)
         endwhere

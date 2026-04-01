@@ -54,12 +54,10 @@
   hd_gravity = .false.
   hd_energy = .true.
   hd_gamma = 1.4d0
-  hd_radiation_fld_formalism = 'fld'
   hd_radiation_fld = .true.
  /
 
  &fld_list
-  fld_Eint_split = .false.
   fld_Radforce_split = .false.
   fld_opacity_law = 'const'
   fld_kappa0 = 0.4d0

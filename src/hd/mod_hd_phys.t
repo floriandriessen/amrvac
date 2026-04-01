@@ -1062,17 +1062,17 @@ contains
       end if
 
     case (2)
-      if(hd_energy) then
-         ! note usage of primitives here
-         wmean(ixO^S,1:nwflux)=0.5d0*(wLp(ixO^S,1:nwflux)+wRp(ixO^S,1:nwflux))
-         tmp1(ixO^S)=wmean(ixO^S,mom(idim))
-         csoundR(ixO^S)=hd_gamma*wmean(ixO^S,p_)/wmean(ixO^S,rho_)
-      else
+      !if(hd_energy) then
+      !   ! note usage of primitives here
+      !   wmean(ixO^S,1:nwflux)=0.5d0*(wLp(ixO^S,1:nwflux)+wRp(ixO^S,1:nwflux))
+      !   tmp1(ixO^S)=wmean(ixO^S,mom(idim))
+      !   csoundR(ixO^S)=hd_gamma*wmean(ixO^S,p_)/wmean(ixO^S,rho_)
+      !else
          ! note usage of conservatives here
          wmean(ixO^S,1:nwflux)=0.5d0*(wLC(ixO^S,1:nwflux)+wRC(ixO^S,1:nwflux))
          tmp1(ixO^S)=wmean(ixO^S,mom(idim))/wmean(ixO^S,rho_)
          call hd_get_csound2(wmean,x,ixI^L,ixO^L,csoundR)
-      endif
+      !endif
       csoundR(ixO^S) = dsqrt(csoundR(ixO^S))
 
       if(present(cmin)) then
