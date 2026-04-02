@@ -39,11 +39,13 @@ module mod_hd_eos
             
             eos%p_to_e => p_to_e !> suitable for both FI and LTE
 
-            ! Link sound speed computation
+            ! Link sound speed and gamma1 computation
             if (eos%eos_type == 'LTE' .and. eos%ionE) then
                 eos%get_csound2 => hd_get_csound2_LTE
+                phys_get_gamma1 => hd_get_gamma1_LTE
             else
                 eos%get_csound2 => hd_get_csound2_FI
+                phys_get_gamma1 => hd_get_gamma1_FI
             end if
 
             ! choose Rfactor in ideal gas law
@@ -179,16 +181,13 @@ module mod_hd_eos
             !> On entry: w(rho_) = density, w(m_) = velocity, w(p_) = pressure.
             !> On exit:  w(rho_) unchanged, w(m_) unchanged, w(e_) = total energy.
             !>
-            !> Three paths for ionE (LTE with ionisation):
+            !> Four paths for ionE (LTE with ionisation):
             !>   1. FI bypass (p/rho > threshold): analytic eint = p/(gamma-1) + eion*nH
-            !>   2. WB mode (hd_well_balanced): 20-iter bisection on forward T,y PCHIP
-            !>      tables for exact round-trip with hd_to_primitive_LTE
-            !>   3. Standard: p2eint inverse table lookup (fast, ~0.01% round-trip error)
-            !>
-            !> The bisection in path 2 is essential for well-balanced schemes: any
-            !> round-trip error appears as q != 1 and generates spurious velocities.
-            !> Testing showed path 3 gives 29 km/s (1000x worse) vs path 2 at 27 m/s.
+            !>   2. Analytical Saha (eos_method='analytic'): direct Saha solve for T,y from p
+            !>   3. WB mode (hd_well_balanced): cached bisection on forward tables
+            !>   4. Standard: p2eint inverse table lookup (fast, ~0.01% round-trip error)
             use mod_global_parameters
+            use mod_eos, only: saha_p_to_T
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -221,28 +220,30 @@ module mod_hd_eos
                                 + eos%eion_per_nH * nH(ix^D) / w(ix^D,p_)
                             w(ix^D,e_) = w(ix^D,p_)*p_to_eint + &
                                 half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+                        else if (eos%method == 'analytic') then
+                            !> Analytical Saha: bisect for T from p, return eint directly
+                            block
+                                double precision :: T_solve, y_solve, eint_nH_solve
+                                call saha_p_to_T(nH(ix^D), w(ix^D,p_), &
+                                    T_solve, y_solve, eint_nH_solve)
+                                w(ix^D,e_) = eint_nH_solve * nH(ix^D) + &
+                                    half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+                            end block
                         else if (hd_well_balanced) then
                             !> WB mode: cached bisection on forward log_p table
                             !> for exact round-trip with to_primitive_LTE.
-                            !> 1. p2eint table gives initial guess
-                            !> 2. Narrow bracket set from guess
-                            !> 3. Cached bisection avoids redundant table loads
                             log_nH_val = nH_in(ix^D)
                             log_p_target = dlog10(w(ix^D,p_)) - log_nH_val
 
-                            !> Initial guess from p2eint inverse table
                             p2eint_ratio = p2eint_from_nH_p(log_nH_val, log_p_target)
                             log_eint_guess = dlog10(p2eint_ratio) + log_p_target
 
-                            !> Clamp guess to table range
                             log_eint_guess = max(log_eint_guess, eos%log_p%var2_min)
                             log_eint_guess = min(log_eint_guess, eos%log_p%var2_max)
 
-                            !> Evaluate log_p at guess to determine bracket side
                             log_p_at_guess = log_p_from_nH_eint(log_nH_val, &
                                 log_eint_guess)
 
-                            !> Set narrow bracket (5e-4 decades ~ 0.1% in eint)
                             margin = 5.0d-4
                             if (log_p_at_guess < log_p_target) then
                                 log_eint_lo = log_eint_guess
@@ -261,14 +262,11 @@ module mod_hd_eos
                             if (f_bracket >= 0.0d0) then
                                 max_iter = 8
                             else
-                                !> Guess was poor — fall back to full range
                                 log_eint_lo = eos%log_p%var2_min
                                 log_eint_hi = eos%log_p%var2_max
                                 max_iter = 20
                             end if
 
-                            !> Cached bisection: precomputes nH indices and
-                            !> table values once, avoids redundant loads
                             call log_p_bisect_cached(log_nH_val, log_p_target, &
                                 log_eint_lo, log_eint_hi, max_iter, log_eint_mid)
                             eint_total = nH(ix^D) * 10.0d0**log_eint_mid
@@ -302,7 +300,8 @@ module mod_hd_eos
         subroutine hd_to_primitive_LTE(ixI^L, ixO^L, w, x)
             use mod_global_parameters
             use mod_dust, only: dust_to_primitive
-            use mod_eos, only: T_from_nH_eint, y_from_nH_eint
+            use mod_eos, only: T_from_nH_eint, y_from_nH_eint, &
+                saha_T_from_nH_eint, saha_y_from_nH_T
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -333,13 +332,21 @@ module mod_hd_eos
                         ! Cannot use stored Ne_/Te_ because they may be stale after
                         ! AMR prolongation/coarsening (nonlinear EoS breaks averaging).
                         eint_val = w(ix^D,e_) - half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)
-                        ! Floor eint to table minimum (prevents NaN from dlog10
-                        ! after strong rarefactions where KE > e_total numerically)
-                        eint_val = max(eint_val, nH(ix^D) * 10.0d0**eos%T%var2_min)
+                        ! Floor eint to prevent unphysical values
+                        if (eos%method /= 'analytic') then
+                            eint_val = max(eint_val, nH(ix^D) * 10.0d0**eos%T%var2_min)
+                        end if
+                        eint_val = max(eint_val, smalldouble)
                         if (eint_val * inv_rho > eos%eint_rho_FI_threshold) then
                             ! FI bypass: p = (gamma-1)*(eint - eion*nH)
                             w(ix^D,p_) = eos%gamma_minus_1 &
                                 * (eint_val - eos%eion_per_nH * nH(ix^D))
+                        else if (eos%method == 'analytic') then
+                            ! Analytical Saha: solve for T and y from eint
+                            call saha_T_from_nH_eint(nH(ix^D), &
+                                eint_val / nH(ix^D), T_loc, y_loc)
+                            w(ix^D,p_) = nH(ix^D) &
+                                * (1.0d0 + eos%He_abundance + y_loc) * T_loc
                         else
                             ! Ionisation zone: table lookup for T and y
                             eint_in = dlog10(eint_val) - log_nH(ix^D)
@@ -393,12 +400,15 @@ module mod_hd_eos
             !> For fully ionised cells (p/rho > threshold): cs2 = gamma * p/rho (exact).
             !> For ionisation zone cells: Gamma_1 from pressure-indexed table.
             use mod_global_parameters
+            use mod_eos, only: gamma1_from_nH_T_analytic, saha_T_from_nH_eint
+            use mod_physics, only: phys_e_to_ei
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(in)    :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
             double precision, intent(out)   :: cs2(ixI^S)
 
             double precision :: nH_val, log_nH, log_p_nH, g1, p_over_rho
+            double precision :: eint_val
             integer :: ix^D
 
             timeeos0 = MPI_WTIME()
@@ -406,21 +416,118 @@ module mod_hd_eos
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                 p_over_rho = w(ix^D, p_) / w(ix^D, rho_)
                 if (p_over_rho > eos%p_rho_FI_threshold) then
-                    !> Fully ionised: Gamma_1 = gamma = 5/3
                     cs2(ix^D) = eos%gamma * p_over_rho
                 else
-                    !> Ionisation zone: table lookup for Gamma_1
                     nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
-                    log_nH = dlog10(nH_val)
-                    log_p_nH = dlog10(w(ix^D, p_) / nH_val)
-                    g1 = gamma1_from_nH_p(log_nH, log_p_nH)
-                    cs2(ix^D) = g1 * p_over_rho
+                    if (eos%gamma1_method == 'effective') then
+                        !> Effective gamma: Gamma_1 = 1 + p/eint
+                        !> Use cached Te_ and Ne_ from update_eos_LTE
+                        if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0 .and. &
+                            iw_ne > 0) then
+                            block
+                                double precision :: y_loc, eint_loc
+                                y_loc = w(ix^D,iw_ne) / nH_val
+                                eint_loc = eos%inv_gamma_minus_1 * (1.0d0 + y_loc) * nH_val &
+                                    * w(ix^D,iw_te)
+                                if (eos%ionE) eint_loc = eint_loc &
+                                    + y_loc * eos%eion_per_nH * nH_val
+                                if (eint_loc > 0.0d0) then
+                                    g1 = 1.0d0 + w(ix^D,p_) / eint_loc
+                                else
+                                    g1 = eos%gamma
+                                end if
+                            end block
+                        else
+                            g1 = eos%gamma
+                        end if
+                        cs2(ix^D) = g1 * p_over_rho
+                    else if (eos%method == 'analytic') then
+                        !> Analytical exact: 2D Gamma1(nH, T) table
+                        !> Use cached Te_ from update_eos_LTE
+                        if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0) then
+                            g1 = gamma1_from_nH_T_analytic(nH_val, w(ix^D,iw_te))
+                        else
+                            g1 = eos%gamma
+                        end if
+                        cs2(ix^D) = g1 * p_over_rho
+                    else
+                        !> Table lookup for Gamma_1
+                        log_nH = dlog10(nH_val)
+                        log_p_nH = dlog10(w(ix^D, p_) / nH_val)
+                        g1 = gamma1_from_nH_p(log_nH, log_p_nH)
+                        cs2(ix^D) = g1 * p_over_rho
+                    end if
                 end if
             {end do\}
 
             timeeos_csound = timeeos_csound + (MPI_WTIME()-timeeos0)
 
         end subroutine hd_get_csound2_LTE
+
+        !> Return constant gamma for FI EoS
+        subroutine hd_get_gamma1_FI(w, x, ixI^L, ixO^L, gamma1)
+            use mod_global_parameters
+            integer, intent(in)             :: ixI^L, ixO^L
+            double precision, intent(in)    :: w(ixI^S, nw)
+            double precision, intent(in)    :: x(ixI^S, 1:ndim)
+            double precision, intent(out)   :: gamma1(ixI^S)
+
+            gamma1(ixO^S) = eos%gamma
+
+        end subroutine hd_get_gamma1_FI
+
+        !> Return effective adiabatic index for LTE+IonE EoS.
+        !> Dispatches on gamma1_method and eos%method.
+        subroutine hd_get_gamma1_LTE(w, x, ixI^L, ixO^L, gamma1)
+            use mod_global_parameters
+            use mod_eos, only: gamma1_from_nH_p, gamma1_from_nH_T_analytic
+            integer, intent(in)             :: ixI^L, ixO^L
+            double precision, intent(in)    :: w(ixI^S, nw)
+            double precision, intent(in)    :: x(ixI^S, 1:ndim)
+            double precision, intent(out)   :: gamma1(ixI^S)
+
+            double precision :: nH_val, p_over_rho
+            integer :: ix^D
+
+            {do ix^DB=ixOmin^DB,ixOmax^DB\}
+                p_over_rho = w(ix^D, p_) / w(ix^D, rho_)
+                if (p_over_rho > eos%p_rho_FI_threshold) then
+                    gamma1(ix^D) = eos%gamma
+                else
+                    nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
+                    if (eos%gamma1_method == 'effective') then
+                        if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0 .and. &
+                            iw_ne > 0) then
+                            block
+                                double precision :: y_g, eint_g
+                                y_g = w(ix^D,iw_ne) / nH_val
+                                eint_g = eos%inv_gamma_minus_1 * (1.0d0 + y_g) * nH_val &
+                                    * w(ix^D,iw_te)
+                                if (eos%ionE) eint_g = eint_g &
+                                    + y_g * eos%eion_per_nH * nH_val
+                                if (eint_g > 0.0d0) then
+                                    gamma1(ix^D) = 1.0d0 + w(ix^D,p_) / eint_g
+                                else
+                                    gamma1(ix^D) = eos%gamma
+                                end if
+                            end block
+                        else
+                            gamma1(ix^D) = eos%gamma
+                        end if
+                    else if (eos%method == 'analytic') then
+                        if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0) then
+                            gamma1(ix^D) = gamma1_from_nH_T_analytic(nH_val, w(ix^D,iw_te))
+                        else
+                            gamma1(ix^D) = eos%gamma
+                        end if
+                    else
+                        gamma1(ix^D) = gamma1_from_nH_p(dlog10(nH_val), &
+                            dlog10(w(ix^D, p_) / nH_val))
+                    end if
+                end if
+            {end do\}
+
+        end subroutine hd_get_gamma1_LTE
 
         subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
             use mod_global_parameters

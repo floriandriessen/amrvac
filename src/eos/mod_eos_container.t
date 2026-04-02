@@ -57,8 +57,10 @@ module mod_eos_container
     type eos_container
 
         character(len=std_len) :: eos_type
+        character(len=20)     :: method = 'tables'        !> 'tables' or 'analytic'
+        character(len=20)     :: gamma1_method = 'exact'   !> 'exact' or 'effective'
+        character(len=20)     :: inversion = 'bisect'      !> 'bisect' or 'newton' (analytic only)
         logical :: ionE
-        logical :: gamma1_approx
         character(len=std_len) :: table_location
         logical :: table_check
         double precision :: He_abundance
@@ -104,6 +106,7 @@ module mod_eos_container
         procedure (get_eos_variable_alt), pointer, nopass :: get_nH => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_Te => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_csound2 => null()
+        procedure (get_eos_variable_alt), pointer, nopass :: get_gamma1 => null()
         procedure (convert_condition), pointer, nopass :: to_prolong => null()
         procedure (convert_condition), pointer, nopass :: from_prolong => null()
 

@@ -605,6 +605,10 @@ contains
       double precision :: rad_taper_rho=bigdouble
       !> Density taper: Gaussian decay width
       double precision :: rad_taper_dey=0.0d0
+      !> Suppress only the low-T DM extension within the rad_modify region.
+      !> Cells inside rad_cut_hgt with T below the non-DM curve minimum
+      !> get zero cooling; coronal cooling above that T is unaffected.
+      logical :: rad_suppress_DM=.false.
       !> Enable escape probability cooling modification
       logical :: rad_escape_prob=.false.
       !> Effective opacity for escape probability (code units)
@@ -621,7 +625,7 @@ contains
       double precision :: rad_escape_height=0.0d0
 
       namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, &
-          rho_cap, rad_modify, rad_modify_sym, &
+          rho_cap, rad_modify, rad_modify_sym, rad_suppress_DM, &
           rad_cut_hgt, rad_cut_dey, rad_taper_rho, rad_taper_dey, &
           rad_escape_prob, rad_kappa_eff, rad_kappa_Tcutoff, rad_kappa_alpha, &
           rad_escape_type, rad_escape_tau_cutoff, rad_escape_height
@@ -642,6 +646,7 @@ contains
       fl%rho_cap=rho_cap
       fl%rad_modify=rad_modify
       fl%rad_modify_sym=rad_modify_sym
+      fl%rad_suppress_DM=rad_suppress_DM
       fl%rad_cut_hgt=rad_cut_hgt
       fl%rad_cut_dey=rad_cut_dey
       fl%rad_taper_rho=rad_taper_rho
@@ -693,11 +698,11 @@ contains
       kB=kB_cgs
     end if
     if(eq_state_units) then
-      a=1d0+4d0*He_abundance
+      a=1d0+4d0*eos%He_abundance
       if(hd_partial_ionization) then
-        b=1d0+H_ion_fr+He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
+        b=1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
       else
-        b=2d0+3d0*He_abundance
+        b=2d0+3d0*eos%He_abundance
       end if
       RR=1d0
     else if (eos%eos_type == 'LTE') then
@@ -709,7 +714,7 @@ contains
     else
       a=1d0
       b=1d0
-      RR=(1d0+H_ion_fr+He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*He_abundance)
+      RR=(1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*eos%He_abundance)
     end if
     if(unit_density/=1.d0 .or. unit_numberdensity/=1.d0) then
       if(unit_density/=1.d0) then

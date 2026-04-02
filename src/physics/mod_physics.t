@@ -81,6 +81,7 @@ module mod_physics
   procedure(sub_special_advance), pointer :: phys_special_advance        => null()
   procedure(sub_check_w), pointer         :: phys_check_w                => null()
   procedure(sub_get_pthermal), pointer    :: phys_get_pthermal           => null()
+  procedure(sub_get_pthermal), pointer    :: phys_get_gamma1             => null()
   procedure(sub_get_tgas), pointer        :: phys_get_tgas               => null()
   procedure(sub_get_trad), pointer        :: phys_get_trad               => null()
   procedure(sub_boundary_adjust), pointer :: phys_boundary_adjust        => null()

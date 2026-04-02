@@ -40,7 +40,8 @@ module mod_mhd_phys
   double precision, public                :: hypertc_kappa
   !> Coefficient of diffusive divB cleaning
   double precision                        :: divbdiff     = 0.8d0
-  !> Helium abundance over Hydrogen
+  !> He_abundance: USE eos%He_abundance instead. This variable is kept only
+  !> for namelist backwards compatibility and is synced from eos at init.
   double precision, public, protected  :: He_abundance=0.1d0
   !> Ionization fraction of H
   !> H_ion_fr = H+/(H+ + H)
@@ -276,7 +277,19 @@ contains
        read(unitpar, mhd_list, end=111)
 111    close(unitpar)
     end do
- 
+
+    ! He_abundance should be set once in eos_list. If also set in mhd_list,
+    ! sync to eos%He_abundance (which was read first in eos_init).
+    if (allocated(eos)) then
+      if (He_abundance /= eos%He_abundance) then
+        if (mype == 0) write(*,*) &
+          "WARNING: He_abundance in mhd_list (", He_abundance, &
+          ") differs from eos_list (", eos%He_abundance, &
+          "). Using eos_list value."
+      end if
+      He_abundance = eos%He_abundance
+    end if
+
   end subroutine mhd_read_params
 
   !> Write this module's parameters to a snapsoht
@@ -517,7 +530,7 @@ contains
     if (eos%eos_type == 'LTE') then
       Ne_ = var_set_ne()
       Te_ = var_set_te()
-    else if (hd_partial_ionization) then !  set temperature as an auxiliary variable to get ionization degree
+    else if (mhd_partial_ionization) then !  set temperature as an auxiliary variable to get ionization degree
       Ne_ = -1
       Te_ = var_set_auxvar('Te','Te')
     else
@@ -892,7 +905,7 @@ contains
 
     ! Initialize radiative cooling module
     if (mhd_radiative_cooling) then
-      call radiative_cooling_init_params(mhd_gamma,He_abundance)
+      call radiative_cooling_init_params(mhd_gamma,eos%He_abundance)
       allocate(rc_fl)
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%get_rho => mhd_get_rho
@@ -1280,11 +1293,11 @@ contains
       c_lightspeed=const_c
     end if
     if(eq_state_units) then
-      a=1d0+4d0*He_abundance
+      a=1d0+4d0*eos%He_abundance
       if(mhd_partial_ionization) then
-        b=1d0+H_ion_fr+He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
+        b=1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
       else
-        b=2d0+3d0*He_abundance
+        b=2d0+3d0*eos%He_abundance
       end if
       RR=1d0
     else if (eos%eos_type == 'LTE') then
@@ -1296,7 +1309,7 @@ contains
     else
       a=1d0
       b=1d0
-      RR=(1d0+H_ion_fr+He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*He_abundance)
+      RR=(1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*eos%He_abundance)
     end if
     if(unit_density/=1.d0 .or. unit_numberdensity/=1.d0) then
       if(unit_density/=1.d0) then
@@ -5076,8 +5089,8 @@ contains
 
     call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
 
-    w(ixO^S,Te_)=(2.d0+3.d0*He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
-     He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
+    w(ixO^S,Te_)=(2.d0+3.d0*eos%He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
+     eos%He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
 
   end subroutine mhd_update_temperature
 
@@ -7791,7 +7804,7 @@ contains
 
     call ionization_degree_from_temperature(ixI^L,ixO^L,w(ixI^S,Te_),iz_H,iz_He)
     ! assume the first and second ionization of Helium have the same degree
-    Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/(2.d0+3.d0*He_abundance)
+    Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/(2.d0+3.d0*eos%He_abundance)
 
   end subroutine Rfactor_from_temperature_ionization
 

@@ -106,6 +106,15 @@ module mod_radiative_cooling
 
     !> cutoff radiative cooling below rad_cut_hgt
     logical :: rad_cut
+    !> Suppress only the low-T DM extension (not all cooling) within
+    !> the rad_modify spatial taper region. When true and rad_modify is
+    !> active, cells inside rad_cut_hgt with T < tcoolmin_noDM get
+    !> factor=0; cells above that T cool normally. The junction
+    !> temperature tcoolmin_noDM is auto-set from the cooling curve.
+    logical :: rad_suppress_DM = .false.
+    !> Minimum log10(T) of the non-DM partner curve (auto-set during init).
+    !> Cells below 10^tcoolmin_noDM are suppressed when rad_suppress_DM=T.
+    double precision :: tcoolmin_noDM = 4.0d0
     !> Master switch for radiative loss modification (spatial + density taper)
     logical :: rad_modify
     !> Apply spatial taper at both boundaries (default: lower only)
@@ -1029,6 +1038,7 @@ module mod_radiative_cooling
       fl%Tfix=.false.
       fl%rc_split=.false.
       fl%rad_cut=.false.
+      fl%rad_suppress_DM=.false.
       fl%rad_cut_hgt=0.0d0
       fl%rad_cut_dey=0.15d0
       fl%rho_cap=bigdouble
@@ -1342,6 +1352,17 @@ module mod_radiative_cooling
             call mpistop("This coolingcurve is unknown")
          end select
 
+         ! Auto-detect junction temperature for _DM tabulated curves.
+         ! tcoolmin_noDM = min log10(T) of the coronal partner table.
+         select case(fl%coolcurve)
+         case('Dere_corona_DM', 'Dere_photo_DM')
+            fl%tcoolmin_noDM = t_Dere(1)    ! 4.00
+         case('Colgan_DM')
+            fl%tcoolmin_noDM = t_Colgan(1)  ! 4.065
+         case default
+            fl%tcoolmin_noDM = t_table(1)
+         end select
+
          ! create cooling table(s) for use in amrvac
          fl%tcoolmax = t_table(ntable)
          fl%tcoolmin = t_table(1)
@@ -1411,6 +1432,12 @@ module mod_radiative_cooling
          fl%Lcool(1:fl%ncool) = fl%Lcool(1:fl%ncool) * unit_numberdensity**2 * unit_time / unit_pressure * (1.d0+2.d0*He_abundance) 
 
          fl%tcoolmin       = fl%tcool(1)+smalldouble  ! avoid pointless interpolation
+         ! Convert tcoolmin_noDM from log10(K) to code units
+         fl%tcoolmin_noDM = 10.0d0**fl%tcoolmin_noDM / unit_temperature
+         if(fl%rad_suppress_DM .and. mype == 0) then
+           write(*,'(A,ES10.3,A)') ' DM suppression active: cooling disabled below T = ', &
+             fl%tcoolmin_noDM * unit_temperature, ' K within rad_cut_hgt'
+         end if
          ! smaller value for lowest temperatures from cooling table and user's choice
          if (fl%tlow==bigdouble) fl%tlow=fl%tcoolmin
          fl%tcoolmax       = fl%tcool(fl%ncool)
@@ -1599,9 +1626,19 @@ module mod_radiative_cooling
          emin = rhonew(ix^D) * fl%tlow * Rfactor(ix^D) * invgam
          if (eos%ionE) then
            nH_val = rhonew(ix^D) / eos%nH2rhoFactor
-           log_nH = dlog10(nH_val)
-           log_p_nH = dlog10(pnew(ix^D) / nH_val)
-           eint_current = pnew(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+           if (eos%method == 'analytic') then
+             block
+               double precision :: y_l, T_l
+               T_l = Te(ix^D)
+               y_l = wCT(ix^D, iw_ne) / nH_val
+               eint_current = eos%inv_gamma_minus_1 * (1.0d0 + y_l) * nH_val * T_l &
+                   + y_l * eos%eion_per_nH * nH_val
+             end block
+           else
+             log_nH = dlog10(nH_val)
+             log_p_nH = dlog10(pnew(ix^D) / nH_val)
+             eint_current = pnew(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+           end if
            lmax = max(zero, (eint_current - emin) / qdt)
          else
            lmax = max(zero, ( pnew(ix^D)*invgam - emin ) / qdt)
@@ -1716,7 +1753,7 @@ module mod_radiative_cooling
 
       factor = 1.0d0
 
-      ! Spatial + density taper (existing)
+      ! Spatial + density taper
       if(slab_uniform .and. fl%rad_modify) then
         ! Spatial taper: distance from nearest relevant boundary
         if(fl%rad_modify_sym) then
@@ -1725,7 +1762,18 @@ module mod_radiative_cooling
           d_boundary = x_ndim - xprobmin^ND
         end if
         if(d_boundary .le. fl%rad_cut_hgt) then
-          factor = factor * exp(-((d_boundary - fl%rad_cut_hgt) / fl%rad_cut_dey)**2)
+          if(fl%rad_suppress_DM) then
+            ! DM suppression: only kill cooling for T below the non-DM
+            ! junction (e.g. T < 10,000 K for Dere_corona_DM).
+            ! Coronal cooling (T >= junction) proceeds unmodified.
+            if(Te_val .lt. fl%tcoolmin_noDM) then
+              factor = 0.0d0
+              return
+            end if
+          else
+            ! Standard: Gaussian taper on ALL cooling near boundary
+            factor = factor * exp(-((d_boundary - fl%rad_cut_hgt) / fl%rad_cut_dey)**2)
+          end if
         end if
 
         ! Density taper
@@ -1802,9 +1850,19 @@ module mod_radiative_cooling
            emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
            if (eos%ionE) then
              nH_val = rho(ix^D) / eos%nH2rhoFactor
-             log_nH = dlog10(nH_val)
-             log_p_nH = dlog10(pth(ix^D) / nH_val)
-             eint_current = pth(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+             if (eos%method == 'analytic') then
+               block
+                 double precision :: y_l, T_l
+                 T_l = Te(ix^D)
+                 y_l = wCT(ix^D, iw_ne) / nH_val
+                 eint_current = 1.5d0 * (1.0d0 + y_l) * nH_val * T_l &
+                     + y_l * eos%eion_per_nH * nH_val
+               end block
+             else
+               log_nH = dlog10(nH_val)
+               log_p_nH = dlog10(pth(ix^D) / nH_val)
+               eint_current = pth(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+             end if
              Lmax = max(zero, (eint_current - emin) / qdt)
              emax = max(zero, eint_current - emin)
            else
@@ -1858,9 +1916,19 @@ module mod_radiative_cooling
            emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
            if (eos%ionE) then
              nH_val = rho(ix^D) / eos%nH2rhoFactor
-             log_nH = dlog10(nH_val)
-             log_p_nH = dlog10(pth(ix^D) / nH_val)
-             eint_current = pth(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+             if (eos%method == 'analytic') then
+               block
+                 double precision :: y_l, T_l
+                 T_l = Te(ix^D)
+                 y_l = wCT(ix^D, iw_ne) / nH_val
+                 eint_current = 1.5d0 * (1.0d0 + y_l) * nH_val * T_l &
+                     + y_l * eos%eion_per_nH * nH_val
+               end block
+             else
+               log_nH = dlog10(nH_val)
+               log_p_nH = dlog10(pth(ix^D) / nH_val)
+               eint_current = pth(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+             end if
              Lmax = max(zero, (eint_current - emin) / qdt)
            else
              Lmax = max(zero,pth(ix^D)*invgam-emin)/qdt
@@ -2230,9 +2298,20 @@ module mod_radiative_cooling
          if (eos%ionE) then
            ! LTE+IonE: EoS quantities for Y-advance; cap from conserved state
            nH_val = rhonew(ix^D) / eos%nH2rhoFactor
-           log_nH = dlog10(nH_val)
-           log_p_nH = dlog10(pnew(ix^D) / nH_val)
-           eint_current = pnew(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+           if (eos%method == 'analytic') then
+             ! Use cached Te_ and Ne_ to compute eint directly
+             block
+               double precision :: y_loc, T_loc
+               T_loc = Te(ix^D)
+               y_loc = wCT(ix^D, iw_ne) / nH_val
+               eint_current = eos%inv_gamma_minus_1 * (1.0d0 + y_loc) * nH_val * T_loc &
+                   + y_loc * eos%eion_per_nH * nH_val
+             end block
+           else
+             log_nH = dlog10(nH_val)
+             log_p_nH = dlog10(pnew(ix^D) / nH_val)
+             eint_current = pnew(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
+           end if
            Lmax = max(zero, eint_w(ix^D) - emin) / qdt
            emax = max(zero, eint_w(ix^D) - emin)
          else
@@ -2265,9 +2344,6 @@ module mod_radiative_cooling
            if(Tlocal2<=fl%tcoolmin) then
              de = emax
            else
-             ! Use FI formula for de in both paths: safe, avoids ionization energy
-             ! overshoot. The ionE Y-advance (gamma_eff_m1) already gives the correct
-             ! temperature drop; FI de formula is conservative in ionization zone.
              de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
            end if
            if(phys_trac) then

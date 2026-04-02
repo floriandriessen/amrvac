@@ -61,9 +61,20 @@ module mod_eos
     public :: log_p_from_nH_eint
     public :: log_p_bisect_cached
     public :: eint_nH_from_T
+    public :: saha_y_from_nH_T, saha_eint_from_nH_T, saha_p_from_nH_T_y
+    public :: saha_T_from_nH_eint, saha_p_to_T
+    public :: build_gamma1_analytic_table, gamma1_from_nH_T_analytic
     public :: interp_clamped_monotone_bicubic_table
     public :: Rfactor_from_PI_temperature, update_PI_temperature
     public :: get_temperature_from_eint_LTE_fast
+
+    ! Analytical H-only Saha constants (module-level parameters)
+    ! Prefactor: (2*pi*m_e*k_B/h^2)^{3/2} in CGS (cm^-3)
+    ! SI value is 2.4146830395719654e21 m^-3; divide by 1e6 for CGS
+    double precision, parameter :: saha_pf = 2.4146830395719654d15
+    double precision, parameter :: saha_chi_kB = 157763.42386247337d0
+    double precision, parameter :: saha_kB_cgs = 1.380649d-16
+    double precision, parameter :: saha_chi_H_cgs = 2.178710282685096d-11
 
 contains
     !> Read this module"s parameters from a file
@@ -83,14 +94,18 @@ contains
         double precision :: inv_gamma_minus_1
         double precision :: nH2rhoFactor
 
-        logical :: gamma1_approx
         logical :: disable_FI_bypass
+        character(len=20) :: eos_method, gamma1_method, lte_h_inversion
 
         namelist /eos_list/ eos_type, table_location, ionE
         namelist /eos_list/ table_check, He_abundance, gamma
-        namelist /eos_list/ gamma1_approx, disable_FI_bypass
+        namelist /eos_list/ disable_FI_bypass
+        namelist /eos_list/ eos_method, gamma1_method, lte_h_inversion
 
         eos_type = 'FI'
+        eos_method = 'tables'
+        gamma1_method = 'exact'
+        lte_h_inversion = 'bisect'
         disable_FI_bypass = .false.
         call get_environment_variable("AMRVAC_DIR", AMRVAC_DIR)
         table_location = trim(AMRVAC_DIR)//"/src/tables/eos_tables/"
@@ -98,7 +113,6 @@ contains
         table_check = .false.
         He_abundance = 0.1d0
         gamma = 5.0d0/3.0d0
-        gamma1_approx = .false.
 
         do n = 1, size(files)
             open(unitpar, file=trim(files(n)), status="old")
@@ -109,7 +123,6 @@ contains
         eos%eos_type = eos_type
         if(mype==0) write(*,*) "EoS type: "//trim(eos%eos_type)
         eos%ionE = ionE
-        eos%gamma1_approx = gamma1_approx
         if ((eos%eos_type == 'FI') .and. eos%ionE) then
             eos%ionE = .false.
             if(mype==0) write(*,*) "WARNING: eos_type = 'FI' requires ionE = .false."
@@ -124,21 +137,75 @@ contains
         eos%inv_gamma_minus_1 = 1.0d0 / eos%gamma_minus_1
         eos%nH2rhoFactor = 1.0d0 !> Assume the default is 1.0 i.e., FI
         eos%disable_FI_bypass = disable_FI_bypass
+        eos%method = eos_method
+        eos%gamma1_method = gamma1_method
+        eos%inversion = lte_h_inversion
+
+        ! Validate method combinations
+        if (eos%eos_type == 'FI' .and. eos%method == 'analytic') then
+            call mpistop("eos_method='analytic' requires eos_type='LTE'")
+        end if
+        if (eos%method == 'analytic' .and. eos%He_abundance > 0.0d0) then
+            if (mype == 0) write(*,*) &
+                "WARNING: eos_method='analytic' is H-only. He_abundance=", &
+                eos%He_abundance, " used in pressure law but not in Saha ionization."
+        end if
+        if (eos%method /= 'analytic' .and. eos%method /= 'tables') then
+            call mpistop("Unknown eos_method: "//trim(eos%method)// &
+                " (expected 'tables' or 'analytic')")
+        end if
+        if (eos%gamma1_method /= 'exact' .and. eos%gamma1_method /= 'effective' &
+            .and. eos%gamma1_method /= 'approx_table') then
+            call mpistop("Unknown gamma1_method: "//trim(eos%gamma1_method)// &
+                " (expected 'exact', 'approx_table', or 'effective')")
+        end if
+        if (eos%inversion /= 'bisect' .and. eos%inversion /= 'newton') then
+            call mpistop("Unknown lte_h_inversion: "//trim(eos%inversion)// &
+                " (expected 'bisect' or 'newton')")
+        end if
+        ! approx_table only meaningful with table-based EoS
+        if (eos%method == 'analytic' .and. eos%gamma1_method == 'approx_table') then
+            if (mype == 0) write(*,*) &
+                "WARNING: gamma1_method='approx_table' not applicable with analytic EoS."
+            if (mype == 0) write(*,*) &
+                "         Falling back to gamma1_method='exact' (analytic 2D table)."
+            eos%gamma1_method = 'exact'
+        end if
+        ! analytic with ionE=false is just ideal gas -- warn
+        if (eos%method == 'analytic' .and. .not. eos%ionE) then
+            if (mype == 0) then
+                write(*,*) "WARNING: eos_method='analytic' without ionE"
+                write(*,*) "  reduces to ideal gas. Consider eos_type='FI'."
+            end if
+        end if
+        ! effective gamma1 with LTE+ionE will use constant gamma -- warn
+        if (eos%eos_type == 'LTE' .and. eos%ionE .and. &
+            eos%gamma1_method == 'effective') then
+            if (mype == 0) write(*,*) &
+                "NOTE: gamma1_method='effective' uses constant gamma for sound speed."
+        end if
 
     end subroutine eos_read_params
 
     subroutine eos_init()
-        
+
         allocate(eos)
         call eos_read_params(par_files)
         if (eos%eos_type == 'LTE') then
-            call load_lte_tables("T")
-            call load_lte_tables("neOnH")
-            if (eos%ionE) then
-                call load_lte_tables("p2eint")
-                call try_load_lte_tables("gamma1")
-                call try_load_lte_tables("eint_from_T")
-            endif
+            if (eos%method == 'analytic') then
+                !> Analytical H-only Saha: no table files needed
+                if (mype == 0) write(*,*) 'EoS method: analytic (H-only Saha)'
+                if (mype == 0) write(*,*) '  inversion: ', trim(eos%inversion)
+                if (mype == 0) write(*,*) '  gamma1_method: ', trim(eos%gamma1_method)
+            else
+                call load_lte_tables("T")
+                call load_lte_tables("neOnH")
+                if (eos%ionE) then
+                    call load_lte_tables("p2eint")
+                    call try_load_lte_tables("gamma1")
+                    call try_load_lte_tables("eint_from_T")
+                endif
+            end if
         endif
 
         eos%get_rho => get_rho
@@ -153,75 +220,77 @@ contains
 
         if (allocated(eos)) then
             if (eos%eos_type == 'LTE') then
-                eos%T%table = eos%T%table - dlog10(unit_temperature) !> Store table in dimensionless units
                 eos%update_eos => update_eos_LTE
                 eos%get_thermal_pressure => get_thermal_pressure_LTE
                 eos%get_temperature_from_eint => get_temperature_from_eint_LTE
                 eos%get_Te => get_Te_LTE
 
-                eos%T%var1_min = eos%T%var1_min - dlog10(unit_numberdensity)
-                eos%T%var1_max = eos%T%var1_max - dlog10(unit_numberdensity)
-                eos%T%var2_min = eos%T%var2_min - dlog10(unit_pressure/unit_numberdensity)
-                eos%T%var2_max = eos%T%var2_max - dlog10(unit_pressure/unit_numberdensity)
-
-                eos%neOnH%var1_min = eos%neOnH%var1_min - dlog10(unit_numberdensity)
-                eos%neOnH%var1_max = eos%neOnH%var1_max - dlog10(unit_numberdensity)
-                eos%neOnH%var2_min = eos%neOnH%var2_min - dlog10(unit_pressure/unit_numberdensity)
-                eos%neOnH%var2_max = eos%neOnH%var2_max - dlog10(unit_pressure/unit_numberdensity)
-
-                if (eos%ionE) then
-                    !> Unit-convert file-loaded p2eint (needed temporarily by gamma1_p)
-                    if (allocated(eos%p2eint%table)) then
-                        eos%p2eint%var1_min = eos%p2eint%var1_min - dlog10(unit_numberdensity)
-                        eos%p2eint%var1_max = eos%p2eint%var1_max - dlog10(unit_numberdensity)
-                        eos%p2eint%var2_min = eos%p2eint%var2_min - dlog10(unit_pressure/unit_numberdensity)
-                        eos%p2eint%var2_max = eos%p2eint%var2_max - dlog10(unit_pressure/unit_numberdensity)
+                if (eos%method == 'analytic') then
+                    !> Analytical H-only Saha: no table unit conversion needed.
+                    !> Build Gamma1 table if 'exact' mode requested.
+                    if (eos%gamma1_method == 'exact') then
+                        call build_gamma1_analytic_table()
                     end if
 
-                    !> Gamma1: load from pre-computed file or build from T/neOnH tables
-                    if (allocated(eos%gamma1%table)) then
-                        eos%gamma1%var1_min = eos%gamma1%var1_min - dlog10(unit_numberdensity)
-                        eos%gamma1%var1_max = eos%gamma1%var1_max - dlog10(unit_numberdensity)
-                        eos%gamma1%var2_min = eos%gamma1%var2_min - dlog10(unit_pressure/unit_numberdensity)
-                        eos%gamma1%var2_max = eos%gamma1%var2_max - dlog10(unit_pressure/unit_numberdensity)
-                        if (mype == 0) write(*,*) 'Gamma1 table loaded from file'
-                    else
-                        call build_gamma1_table()
+                    !> Precompute FI bypass constants (same as table path)
+                    call precompute_FI_bypass_constants()
+
+                else
+                    !> Table-based path: unit conversion and table building
+                    eos%T%table = eos%T%table - dlog10(unit_temperature)
+
+                    eos%T%var1_min = eos%T%var1_min - dlog10(unit_numberdensity)
+                    eos%T%var1_max = eos%T%var1_max - dlog10(unit_numberdensity)
+                    eos%T%var2_min = eos%T%var2_min - dlog10(unit_pressure/unit_numberdensity)
+                    eos%T%var2_max = eos%T%var2_max - dlog10(unit_pressure/unit_numberdensity)
+
+                    eos%neOnH%var1_min = eos%neOnH%var1_min - dlog10(unit_numberdensity)
+                    eos%neOnH%var1_max = eos%neOnH%var1_max - dlog10(unit_numberdensity)
+                    eos%neOnH%var2_min = eos%neOnH%var2_min - dlog10(unit_pressure/unit_numberdensity)
+                    eos%neOnH%var2_max = eos%neOnH%var2_max - dlog10(unit_pressure/unit_numberdensity)
+
+                    if (eos%ionE) then
+                        if (allocated(eos%p2eint%table)) then
+                            eos%p2eint%var1_min = eos%p2eint%var1_min - dlog10(unit_numberdensity)
+                            eos%p2eint%var1_max = eos%p2eint%var1_max - dlog10(unit_numberdensity)
+                            eos%p2eint%var2_min = eos%p2eint%var2_min - dlog10(unit_pressure/unit_numberdensity)
+                            eos%p2eint%var2_max = eos%p2eint%var2_max - dlog10(unit_pressure/unit_numberdensity)
+                        end if
+
+                        if (allocated(eos%gamma1%table)) then
+                            eos%gamma1%var1_min = eos%gamma1%var1_min - dlog10(unit_numberdensity)
+                            eos%gamma1%var1_max = eos%gamma1%var1_max - dlog10(unit_numberdensity)
+                            eos%gamma1%var2_min = eos%gamma1%var2_min - dlog10(unit_pressure/unit_numberdensity)
+                            eos%gamma1%var2_max = eos%gamma1%var2_max - dlog10(unit_pressure/unit_numberdensity)
+                            if (mype == 0) write(*,*) 'Gamma1 table loaded from file'
+                        else
+                            call build_gamma1_table()
+                        endif
+
+                        call build_gamma1_p_table()
+                        call build_log_p_table()
+
+                        if (allocated(eos%p2eint%table)) deallocate(eos%p2eint%table)
+                        call build_p2eint_table()
+
+                        if (allocated(eos%eint_from_T%table)) deallocate(eos%eint_from_T%table)
+                        call build_eint_from_T_table()
                     endif
 
-                    !> Build pressure-indexed Gamma_1 table (needs p2eint temporarily)
-                    call build_gamma1_p_table()
+                    call precompute_step_inv(eos%T)
+                    call precompute_step_inv(eos%neOnH)
+                    if (eos%ionE) then
+                        call precompute_step_inv(eos%p2eint)
+                        call precompute_step_inv(eos%gamma1)
+                        call precompute_step_inv(eos%gamma1_p)
+                        call precompute_step_inv(eos%eint_from_T)
+                        call precompute_step_inv(eos%log_p)
+                    end if
 
-                    !> Build merged log10(p/nH) table for WB bisection (single lookup
-                    !> instead of separate T + neOnH lookups per bisection iteration).
-                    call build_log_p_table()
+                    call precompute_FI_bypass_constants()
 
-                    !> Now replace p2eint with exact inverse built from forward tables.
-                    !> This guarantees the to_conserved → to_primitive round-trip is exact.
-                    if (allocated(eos%p2eint%table)) deallocate(eos%p2eint%table)
-                    call build_p2eint_table()
-
-                    !> Discard pre-computed eint_from_T file — always rebuild.
-                    if (allocated(eos%eint_from_T%table)) deallocate(eos%eint_from_T%table)
-                    call build_eint_from_T_table()
-                endif
-
-                !> Precompute inverse step sizes for all LTE tables (avoids division in lookups)
-                call precompute_step_inv(eos%T)
-                call precompute_step_inv(eos%neOnH)
-                if (eos%ionE) then
-                    call precompute_step_inv(eos%p2eint)
-                    call precompute_step_inv(eos%gamma1)
-                    call precompute_step_inv(eos%gamma1_p)
-                    call precompute_step_inv(eos%eint_from_T)
-                    call precompute_step_inv(eos%log_p)
-                end if
-
-                !> Precompute fully-ionised regime bypass constants
-                call precompute_FI_bypass_constants()
-
-                !> Verify round-trip consistency at off-grid points
-                if (eos%ionE) call verify_eos_round_trips()
+                    if (eos%ionE) call verify_eos_round_trips()
+                end if  ! method == 'analytic' or 'tables'
 
             else if (eos%eos_type == 'FI') then
                 eos%update_eos => update_eos_FI !> do nothing
@@ -479,19 +548,28 @@ contains
         pth(ixO^S) = eos%gamma_minus_1 * wlocal(ixO^S,iw_e) !> pressure from internal energy only - SHOULD ONLY BE USED WHEN IonE IS UNIMPORTANT
 
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
-        nH_in(ixO^S) = dlog10(nH(ixO^S))
         ! Enforce internal energy floor for EoS lookup only.
         ! Prevents NaN from dlog10(eint<0) after strong rarefactions where
         ! kinetic energy can numerically exceed total energy.
         ! The conserved energy w(iw_e) is NOT modified: the physical fluxes
         ! based on the small positive pressure will naturally restore the cell.
-        {do ix^DB=ixOmin^DB,ixOmax^DB\}
-            eint_nH_floor = nH(ix^D) * 10.0d0**eos%T%var2_min
-            if (wlocal(ix^D,iw_e) < eint_nH_floor) then
-                wlocal(ix^D,iw_e) = eint_nH_floor
-            end if
-        {end do\}
-        eint_in(ixO^S) = dlog10(wlocal(ixO^S,iw_e)) - nH_in(ixO^S)
+        if (eos%method == 'analytic') then
+            ! Analytic: floor to ~100 K equivalent (no tables loaded)
+            ! In code units: eint/nH = T_code / (gamma-1) for neutral gas
+            {do ix^DB=ixOmin^DB,ixOmax^DB\}
+                eint_nH_floor = nH(ix^D) * eos%inv_gamma_minus_1 * 100.0d0 / unit_temperature
+                wlocal(ix^D,iw_e) = max(wlocal(ix^D,iw_e), eint_nH_floor)
+            {end do\}
+        else
+            nH_in(ixO^S) = dlog10(nH(ixO^S))
+            {do ix^DB=ixOmin^DB,ixOmax^DB\}
+                eint_nH_floor = nH(ix^D) * 10.0d0**eos%T%var2_min
+                if (wlocal(ix^D,iw_e) < eint_nH_floor) then
+                    wlocal(ix^D,iw_e) = eint_nH_floor
+                end if
+            {end do\}
+            eint_in(ixO^S) = dlog10(wlocal(ixO^S,iw_e)) - nH_in(ixO^S)
+        end if
 
         call eos%get_Rfactor(w, x, ixI^L, ixO^L,  Rfactor)
 
@@ -508,18 +586,27 @@ contains
                     w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)))
                 end if
             else
-                !> Ionisation zone: full table lookups
-                new_y(ix^D) = y_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
-                if (.not. eos%ionE) then
-                    w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)))
+                !> Ionisation zone
+                if (eos%method == 'analytic') then
+                    !> Analytical Saha: solve quadratic for T and y
+                    call saha_T_from_nH_eint(nH(ix^D), &
+                        wlocal(ix^D,iw_e) / nH(ix^D), &
+                        w(ix^D,iw_te), yy)
+                    new_y(ix^D) = yy
                 else
-                    if (eint_in(ix^D) < eos%T%var2_max) then
-                        w(ix^D,iw_te) = T_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
+                    !> Table lookups
+                    new_y(ix^D) = y_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
+                    if (.not. eos%ionE) then
+                        w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)))
                     else
-                        !> Above-table fallback with ionisation energy correction
-                        w(ix^D,iw_te) = eos%gamma_minus_1 &
-                            * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
-                            / (Rfactor(ix^D) * w(ix^D,iw_rho))
+                        if (eint_in(ix^D) < eos%T%var2_max) then
+                            w(ix^D,iw_te) = T_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
+                        else
+                            !> Above-table fallback with ionisation energy correction
+                            w(ix^D,iw_te) = eos%gamma_minus_1 &
+                                * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
+                                / (Rfactor(ix^D) * w(ix^D,iw_rho))
+                        end if
                     end if
                 end if
             end if
@@ -673,6 +760,13 @@ contains
                 res(ix^D) = eos%gamma_minus_1 &
                     * (w(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
                     / (Rfactor_FI * w(ix^D,iw_rho))
+            else if (eos%method == 'analytic') then
+                block0: block
+                    double precision :: T_loc, y_loc
+                    call saha_T_from_nH_eint(nH(ix^D), &
+                        w(ix^D,iw_e) / nH(ix^D), T_loc, y_loc)
+                    res(ix^D) = T_loc
+                end block block0
             else
                 res(ix^D) = T_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
             endif
@@ -716,29 +810,39 @@ contains
             * (w(ixO^S,iw_e) - eion_rho_inv * w(ixO^S,iw_rho)) &
             / w(ixO^S,iw_rho)
 
-        !> Pass 2: overwrite ionisation-zone cells with bilinear table result.
+        !> Pass 2: overwrite ionisation-zone cells.
         {do ix^DB=ixOmin^DB,ixOmax^DB\}
             if (w(ix^D,iw_e) <= eos%eint_rho_FI_threshold * w(ix^D,iw_rho)) then
-                if (iw_log_nH > 0) then
-                    log_nH_val = block%wextra(ix^D, iw_log_nH)
+                if (eos%method == 'analytic') then
+                    block1: block
+                        double precision :: nH_loc, T_loc, y_loc
+                        nH_loc = w(ix^D, iw_rho) / eos%nH2rhoFactor
+                        call saha_T_from_nH_eint(nH_loc, &
+                            w(ix^D,iw_e) / nH_loc, T_loc, y_loc)
+                        res(ix^D) = T_loc
+                    end block block1
                 else
-                    log_nH_val = dlog10(w(ix^D, iw_rho) / eos%nH2rhoFactor)
-                end if
-                log_eint_nH_val = dlog10(w(ix^D, iw_e)) - log_nH_val
+                    if (iw_log_nH > 0) then
+                        log_nH_val = block%wextra(ix^D, iw_log_nH)
+                    else
+                        log_nH_val = dlog10(w(ix^D, iw_rho) / eos%nH2rhoFactor)
+                    end if
+                    log_eint_nH_val = dlog10(w(ix^D, iw_e)) - log_nH_val
 
-                ry = max(0.0d0, min((log_nH_val - eos%T%var1_min) * eos%T%step_inv_1, &
-                                     dble(eos%T%dim1-1)))
-                rx = max(0.0d0, min((log_eint_nH_val - eos%T%var2_min) * eos%T%step_inv_2, &
-                                     dble(eos%T%dim2-1)))
-                jy = int(ry); jx = int(rx)
-                jy1 = min(jy+1, eos%T%dim1-1)
-                jx1 = min(jx+1, eos%T%dim2-1)
-                fy = ry - dble(jy); fx = rx - dble(jx)
-                res(ix^D) = dexp(ln10 * ( &
-                    (1.0d0-fy)*((1.0d0-fx)*eos%T%table(jy+1,jx+1)  &
-                                      + fx *eos%T%table(jy+1,jx1+1)) &
-                   +      fy *((1.0d0-fx)*eos%T%table(jy1+1,jx+1)   &
-                                      + fx *eos%T%table(jy1+1,jx1+1))))
+                    ry = max(0.0d0, min((log_nH_val - eos%T%var1_min) * eos%T%step_inv_1, &
+                                         dble(eos%T%dim1-1)))
+                    rx = max(0.0d0, min((log_eint_nH_val - eos%T%var2_min) * eos%T%step_inv_2, &
+                                         dble(eos%T%dim2-1)))
+                    jy = int(ry); jx = int(rx)
+                    jy1 = min(jy+1, eos%T%dim1-1)
+                    jx1 = min(jx+1, eos%T%dim2-1)
+                    fy = ry - dble(jy); fx = rx - dble(jx)
+                    res(ix^D) = dexp(ln10 * ( &
+                        (1.0d0-fy)*((1.0d0-fx)*eos%T%table(jy+1,jx+1)  &
+                                          + fx *eos%T%table(jy+1,jx1+1)) &
+                       +      fy *((1.0d0-fx)*eos%T%table(jy1+1,jx+1)   &
+                                          + fx *eos%T%table(jy1+1,jx1+1))))
+                end if
             end if
         {end do\}
 
@@ -762,30 +866,80 @@ contains
 
     end subroutine get_temperature_from_etot
 
+    !> Ionization fraction from (log10 nH, log10 eint/nH) in code units.
+    !> Dispatches: analytic -> Saha quadratic, tables -> PCHIP interpolation.
     double precision function y_from_nH_eint(nH, eint_nh) result(result_val)
         double precision, intent(in) :: nH, eint_nh
         double precision, parameter :: ln10 = 2.302585092994046d0
-        result_val = dexp(ln10 * interp_clamped_monotone_bicubic_table(nH, eint_nh, &
-            eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
-            eos%neOnH%var1_min, eos%neOnH%var1_max, &
-            eos%neOnH%var2_min, eos%neOnH%var2_max))
+        double precision :: T_loc, y_loc, eint_rho
+
+        if (eos%method == 'analytic') then
+            ! FI bypass: skip Saha solve for fully ionized cells
+            eint_rho = 10.0d0**eint_nh / eos%nH2rhoFactor
+            if (eint_rho > eos%eint_rho_FI_threshold) then
+                result_val = eos%neOnH_FI
+                return
+            end if
+            call saha_T_from_nH_eint(10.0d0**nH, 10.0d0**eint_nh, T_loc, y_loc)
+            result_val = y_loc
+        else
+            result_val = dexp(ln10 * interp_clamped_monotone_bicubic_table(nH, eint_nh, &
+                eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
+                eos%neOnH%var1_min, eos%neOnH%var1_max, &
+                eos%neOnH%var2_min, eos%neOnH%var2_max))
+        end if
     end function y_from_nH_eint
 
+    !> Temperature from (log10 nH, log10 eint/nH) in code units.
+    !> Dispatches: analytic -> Saha bisection/Newton, tables -> PCHIP interpolation.
     double precision function T_from_nH_eint(nH, eint_nh) result(result_val)
         double precision, intent(in) :: nH, eint_nh
         double precision, parameter :: ln10 = 2.302585092994046d0
-        result_val = dexp(ln10 * interp_clamped_monotone_bicubic_table(nH, eint_nh,&
-            eos%T%table, eos%T%dim1, eos%T%dim2, &
-            eos%T%var1_min, eos%T%var1_max, &
-            eos%T%var2_min, eos%T%var2_max))
+        double precision :: T_loc, y_loc, eint_rho, Rfactor_FI
+
+        if (eos%method == 'analytic') then
+            ! FI bypass: skip Saha solve for fully ionized cells
+            eint_rho = 10.0d0**eint_nh / eos%nH2rhoFactor
+            if (eint_rho > eos%eint_rho_FI_threshold) then
+                Rfactor_FI = eos%n_per_nH_FI / (1.0d0 + 4.0d0*eos%He_abundance)
+                result_val = eos%gamma_minus_1 &
+                    * (10.0d0**eint_nh - eos%eion_per_nH) / Rfactor_FI
+                return
+            end if
+            call saha_T_from_nH_eint(10.0d0**nH, 10.0d0**eint_nh, T_loc, y_loc)
+            result_val = T_loc
+        else
+            result_val = dexp(ln10 * interp_clamped_monotone_bicubic_table(nH, eint_nh,&
+                eos%T%table, eos%T%dim1, eos%T%dim2, &
+                eos%T%var1_min, eos%T%var1_max, &
+                eos%T%var2_min, eos%T%var2_max))
+        end if
     end function T_from_nH_eint
 
+    !> Pressure-to-eint ratio from (log10 nH, log10 p/nH) in code units.
+    !> Dispatches: analytic -> Saha solve for eint/p, tables -> PCHIP interpolation.
     double precision function p2eint_from_nH_p(nH, ponH) result(result_val)
         double precision, intent(in) :: nH, ponH
-        result_val = interp_clamped_monotone_bicubic_table(nH, ponH, &
-            eos%p2eint%table, eos%p2eint%dim1, eos%p2eint%dim2, &
-            eos%p2eint%var1_min, eos%p2eint%var1_max, &
-            eos%p2eint%var2_min, eos%p2eint%var2_max)
+        double precision :: nH_code, p_code, T_loc, y_loc, eint_nH_loc, p_rho
+
+        if (eos%method == 'analytic') then
+            nH_code = 10.0d0**nH
+            p_code = nH_code * 10.0d0**ponH
+            ! FI bypass: skip Saha solve for fully ionized cells
+            p_rho = p_code / (nH_code * eos%nH2rhoFactor)
+            if (p_rho > eos%p_rho_FI_threshold) then
+                result_val = eos%inv_gamma_minus_1 &
+                    + eos%eion_per_nH * nH_code / p_code
+                return
+            end if
+            call saha_p_to_T(nH_code, p_code, T_loc, y_loc, eint_nH_loc)
+            result_val = eint_nH_loc * nH_code / p_code
+        else
+            result_val = interp_clamped_monotone_bicubic_table(nH, ponH, &
+                eos%p2eint%table, eos%p2eint%dim1, eos%p2eint%dim2, &
+                eos%p2eint%var1_min, eos%p2eint%var1_max, &
+                eos%p2eint%var2_min, eos%p2eint%var2_max)
+        end if
     end function p2eint_from_nH_p
 
     double precision function gamma1_from_nH_eint(log_nH, log_eint_nH) result(g1)
@@ -815,6 +969,294 @@ contains
             eos%log_p%var1_min, eos%log_p%var1_max, &
             eos%log_p%var2_min, eos%log_p%var2_max)
     end function log_p_from_nH_eint
+
+    ! =========================================================================
+    ! Analytical H-only Saha solver routines
+    ! =========================================================================
+    !
+    ! Ground-state Saha equation for pure hydrogen (no He):
+    !   X(T) = saha_pf * T_cgs^{3/2} * exp(-chi_kB / T_cgs)
+    !   y^2 * nH_cgs / (1 - y) = X(T)
+    !   => y = [-X + sqrt(X^2 + 4*nH_cgs*X)] / (2*nH_cgs)
+    !
+    ! All public routines accept and return CODE UNITS.
+    ! CGS conversion happens internally using unit_numberdensity, unit_temperature.
+
+    !> Ionization fraction from Saha in CGS (no unit conversions).
+    !> Use this inside bisection loops where nH_cgs is constant.
+    double precision function saha_y_cgs(nH_cgs, T_cgs) result(y)
+        double precision, intent(in) :: nH_cgs, T_cgs
+        double precision :: X_saha, disc
+
+        X_saha = saha_pf * T_cgs * dsqrt(T_cgs) * dexp(-saha_chi_kB / T_cgs)
+        disc = dsqrt(X_saha * X_saha + 4.0d0 * nH_cgs * X_saha)
+        ! Use numerically stable form to avoid catastrophic cancellation:
+        ! When X >> nH (high ionization): standard form loses precision in -X + sqrt(...)
+        ! Stable form: y = 2*X / (X + sqrt(X^2 + 4*nH*X)) -> 1 as X -> inf
+        y = 2.0d0 * X_saha / (X_saha + disc)
+
+    end function saha_y_cgs
+
+    !> Ionization fraction y = ne/nH from analytical Saha at given (nH, T) in CODE UNITS
+    double precision function saha_y_from_nH_T(nH_code, T_code) result(y)
+        double precision, intent(in) :: nH_code, T_code
+
+        y = saha_y_cgs(nH_code * unit_numberdensity, T_code * unit_temperature)
+
+    end function saha_y_from_nH_T
+
+    !> Internal energy per nH from analytical Saha, in CODE UNITS.
+    !> eint_nH = 1.5*(1+y)*kB*T [+ y*chi_H] in CGS, converted to code units
+    double precision function saha_eint_from_nH_T(nH_code, T_code) result(eint_nH_code)
+        double precision, intent(in) :: nH_code, T_code
+        double precision :: y, T_cgs, eint_nH_cgs
+
+        y = saha_y_from_nH_T(nH_code, T_code)
+        T_cgs = T_code * unit_temperature
+
+        eint_nH_cgs = 1.5d0 * (1.0d0 + y) * saha_kB_cgs * T_cgs
+        if (eos%ionE) then
+            eint_nH_cgs = eint_nH_cgs + y * saha_chi_H_cgs
+        end if
+
+        eint_nH_code = eint_nH_cgs * unit_numberdensity / unit_pressure
+
+    end function saha_eint_from_nH_T
+
+    !> Pressure per nH from analytical Saha, in CODE UNITS.
+    !> p/nH = (1+y)*kB*T in CGS, converted to code units.
+    !> In code units with kB absorbed: p/nH = (1+y)*T_code
+    double precision function saha_p_from_nH_T_y(nH_code, T_code, y) result(p_nH_code)
+        double precision, intent(in) :: nH_code, T_code, y
+
+        p_nH_code = (1.0d0 + y) * T_code
+
+    end function saha_p_from_nH_T_y
+
+    !> Given (nH, p) in CODE UNITS, find T and y by solving p = nH*(1+y(T))*T_code.
+    !> Uses bisection on T. In code units, kB is absorbed: p = nH*(1+y)*T.
+    !> Given (nH, p) in CODE UNITS, find T, y, and eint/nH.
+    !> Bisects on p = nH*(1+y(T))*T_code, then computes eint from final T,y.
+    !> Returns eint_nH in code units (avoids redundant Saha re-evaluation).
+    subroutine saha_p_to_T(nH_code, p_code, T_out, y_out, eint_nH_out)
+        double precision, intent(in)  :: nH_code, p_code
+        double precision, intent(out) :: T_out, y_out
+        double precision, intent(out), optional :: eint_nH_out
+
+        double precision :: nH_cgs, uT, eint_nH_cgs
+        double precision :: T_lo, T_hi, T_mid, y_mid, p_eval
+        integer :: iter
+        integer, parameter :: max_iter = 30
+        double precision, parameter :: tol = 1.0d-8
+
+        ! Hoist CGS conversion out of loop
+        nH_cgs = nH_code * unit_numberdensity
+        uT = unit_temperature
+
+        ! Brackets in code units: y=0 => T = p/nH, y=1 => T = p/(2*nH)
+        T_hi = p_code / nH_code
+        T_lo = p_code / (2.0d0 * nH_code)
+        T_lo = max(T_lo, 100.0d0 / uT)
+
+        do iter = 1, max_iter
+            T_mid = 0.5d0 * (T_lo + T_hi)
+            y_mid = saha_y_cgs(nH_cgs, T_mid * uT)
+            p_eval = nH_code * (1.0d0 + y_mid) * T_mid
+
+            if (p_eval < p_code) then
+                T_lo = T_mid
+            else
+                T_hi = T_mid
+            end if
+
+            if (dabs(T_hi - T_lo) < tol * T_mid) exit
+        end do
+
+        T_out = T_mid
+        y_out = y_mid
+
+        ! Optionally return eint/nH directly (avoids redundant Saha re-evaluation)
+        if (present(eint_nH_out)) then
+            eint_nH_cgs = 1.5d0 * (1.0d0 + y_mid) * saha_kB_cgs * (T_mid * uT)
+            if (eos%ionE) eint_nH_cgs = eint_nH_cgs + y_mid * saha_chi_H_cgs
+            eint_nH_out = eint_nH_cgs * unit_numberdensity / unit_pressure
+        end if
+
+    end subroutine saha_p_to_T
+
+    !> Temperature inversion: given (nH, eint/nH) in CODE UNITS, find T in CODE UNITS.
+    !> Dispatches to bisection or Newton based on eos%inversion.
+    subroutine saha_T_from_nH_eint(nH_code, eint_nH_code, T_out, y_out)
+        double precision, intent(in)  :: nH_code, eint_nH_code
+        double precision, intent(out) :: T_out, y_out
+
+        select case (trim(eos%inversion))
+        case ('bisect')
+            call saha_T_bisection(nH_code, eint_nH_code, T_out, y_out)
+        case ('newton')
+            call saha_T_newton(nH_code, eint_nH_code, T_out, y_out)
+        case default
+            call saha_T_bisection(nH_code, eint_nH_code, T_out, y_out)
+        end select
+
+    end subroutine saha_T_from_nH_eint
+
+    !> Bisection solver for T(nH, eint/nH). Guaranteed convergence.
+    !> Brackets: T_lo from fully ionized (y=1), T_hi from neutral (y=0).
+    !> Handles the non-monotonic eint(T) when ionE is included by
+    !> checking the FI limit first: if y~1 at T_lo, use T_lo directly.
+    subroutine saha_T_bisection(nH_code, eint_nH_code, T_out, y_out)
+        double precision, intent(in)  :: nH_code, eint_nH_code
+        double precision, intent(out) :: T_out, y_out
+
+        double precision :: nH_cgs, eint_nH_cgs, T_lo, T_hi, T_mid
+        double precision :: eint_mid, y_mid, y_lo
+        integer :: iter
+        integer, parameter :: max_iter = 30
+        double precision, parameter :: tol = 1.0d-8
+
+        ! Hoist CGS conversions out of loop
+        nH_cgs = nH_code * unit_numberdensity
+        eint_nH_cgs = eint_nH_code * unit_pressure / unit_numberdensity
+
+        ! Temperature bounds in CGS from energy equation limits
+        if (eos%ionE) then
+            ! T_lo: assume y=1 (fully ionized) -> eint = 3*kB*T + chi_H
+            T_lo = max((eint_nH_cgs - saha_chi_H_cgs) / (3.0d0 * saha_kB_cgs), 100.0d0)
+            ! T_hi: assume y=0 (neutral) -> eint = 1.5*kB*T
+            T_hi = eint_nH_cgs / (1.5d0 * saha_kB_cgs)
+        else
+            T_lo = eint_nH_cgs / (3.0d0 * saha_kB_cgs)
+            T_hi = eint_nH_cgs / (1.5d0 * saha_kB_cgs)
+        end if
+        T_lo = max(T_lo, 100.0d0)
+        T_hi = max(T_hi, T_lo + 1.0d0)
+
+        ! Guard against non-monotonic eint(T) when ionE is active:
+        ! At low nH, hydrogen is fully ionized (y=1) across a wide T range,
+        ! making the Saha equation degenerate. The eint function has two roots:
+        ! one at low T (ionized, eint ~ chi_H + small thermal) and one at
+        ! high T (neutral, eint ~ thermal only). The bisection must stay on
+        ! the correct branch.
+        ! Fix: check y at T_lo. If y~1, use the FI analytical formula directly.
+        if (eos%ionE) then
+            y_lo = saha_y_cgs(nH_cgs, T_lo)
+            if (y_lo > 0.999d0) then
+                ! Fully ionized: eint = 3*kB*T + chi_H => T = (eint - chi_H)/(3*kB)
+                T_out = max((eint_nH_cgs - saha_chi_H_cgs) &
+                    / (3.0d0 * saha_kB_cgs), 100.0d0) / unit_temperature
+                y_out = 1.0d0
+                return
+            end if
+        end if
+
+        ! Bisect in CGS (no unit conversions inside loop)
+        do iter = 1, max_iter
+            T_mid = 0.5d0 * (T_lo + T_hi)
+            y_mid = saha_y_cgs(nH_cgs, T_mid)
+
+            eint_mid = 1.5d0 * (1.0d0 + y_mid) * saha_kB_cgs * T_mid
+            if (eos%ionE) eint_mid = eint_mid + y_mid * saha_chi_H_cgs
+
+            if (eint_mid < eint_nH_cgs) then
+                T_lo = T_mid
+            else
+                T_hi = T_mid
+            end if
+
+            if (dabs(T_hi - T_lo) < tol * T_mid) exit
+        end do
+
+        T_out = T_mid / unit_temperature
+        y_out = y_mid
+
+    end subroutine saha_T_bisection
+
+    !> Newton-Raphson solver for T(nH, eint/nH).
+    !> Uses analytical d(eint)/d(T) from the Saha equation.
+    subroutine saha_T_newton(nH_code, eint_nH_code, T_out, y_out)
+        double precision, intent(in)  :: nH_code, eint_nH_code
+        double precision, intent(out) :: T_out, y_out
+
+        double precision :: eint_nH_cgs, nH_cgs, T_cgs, X_saha, y
+        double precision :: eint_eval, f_val, df_dT
+        double precision :: dX_dT, dy_dT, denom
+        double precision :: T_lo, T_hi
+        integer :: iter
+        integer, parameter :: max_iter = 15
+        double precision, parameter :: tol = 1.0d-8
+        logical :: converged
+
+        eint_nH_cgs = eint_nH_code * unit_pressure / unit_numberdensity
+        nH_cgs = nH_code * unit_numberdensity
+
+        ! Bracket bounds for safety clamping
+        if (eos%ionE) then
+            T_lo = max((eint_nH_cgs - saha_chi_H_cgs) &
+                / (3.0d0 * saha_kB_cgs), 100.0d0)
+        else
+            T_lo = eint_nH_cgs / (3.0d0 * saha_kB_cgs)
+        end if
+        T_hi = eint_nH_cgs / (1.5d0 * saha_kB_cgs)
+        T_lo = max(T_lo, 100.0d0)
+        T_hi = max(T_hi, T_lo + 1.0d0)
+
+        ! Initial guess: midpoint of bracket
+        T_cgs = 0.5d0 * (T_lo + T_hi)
+        converged = .false.
+
+        do iter = 1, max_iter
+            ! Saha RHS and ionization fraction
+            X_saha = saha_pf * T_cgs * dsqrt(T_cgs) * dexp(-saha_chi_kB / T_cgs)
+            denom = dsqrt(X_saha * X_saha + 4.0d0 * nH_cgs * X_saha)
+            y = 2.0d0 * X_saha / (X_saha + denom)
+
+            ! dX/dT = X * (1.5/T + chi_kB/T^2)
+            dX_dT = X_saha * (1.5d0 / T_cgs + saha_chi_kB / (T_cgs * T_cgs))
+
+            ! dy/dT from differentiating the quadratic solution
+            ! y = [-X + sqrt(X^2 + 4*nH*X)] / (2*nH)
+            ! dy/dT = dX/dT * [(-1 + (X + 2*nH) / sqrt(X^2 + 4*nH*X))] / (2*nH)
+            if (denom > 0.0d0) then
+                dy_dT = dX_dT * (-1.0d0 + (X_saha + 2.0d0 * nH_cgs) / denom) &
+                        / (2.0d0 * nH_cgs)
+            else
+                dy_dT = 0.0d0
+            end if
+
+            ! f(T) = eint(T) - eint_target
+            eint_eval = 1.5d0 * (1.0d0 + y) * saha_kB_cgs * T_cgs
+            if (eos%ionE) eint_eval = eint_eval + y * saha_chi_H_cgs
+            f_val = eint_eval - eint_nH_cgs
+
+            ! df/dT = 1.5*(1+y)*kB + (1.5*kB*T + chi_H*ionE_flag) * dy/dT
+            df_dT = 1.5d0 * (1.0d0 + y) * saha_kB_cgs &
+                  + (1.5d0 * saha_kB_cgs * T_cgs) * dy_dT
+            if (eos%ionE) df_dT = df_dT + saha_chi_H_cgs * dy_dT
+
+            if (dabs(df_dT) < 1.0d-30) exit
+
+            T_cgs = T_cgs - f_val / df_dT
+            ! Clamp to bracket to prevent divergence
+            T_cgs = max(T_cgs, T_lo)
+            T_cgs = min(T_cgs, T_hi)
+
+            if (dabs(f_val) < tol * eint_nH_cgs) then
+                converged = .true.
+                exit
+            end if
+        end do
+
+        ! Fallback to bisection if Newton didn't converge
+        if (.not. converged) then
+            call saha_T_bisection(nH_code, eint_nH_code, T_out, y_out)
+            return
+        end if
+
+        T_out = T_cgs / unit_temperature
+        y_out = saha_y_cgs(nH_cgs, T_cgs)
+
+    end subroutine saha_T_newton
 
     !> Cached bisection on the log_p table for WB p→eint inversion.
     !> Precomputes nH-direction indices and table values once, then
@@ -966,13 +1408,20 @@ contains
 
     end subroutine log_p_bisect_cached
 
+    !> Internal energy per nH from (log10 nH, log10 T) in code units.
+    !> Dispatches: analytic -> Saha forward, tables -> PCHIP interpolation.
     double precision function eint_nH_from_T(log_nH, log_T) result(eint_nH)
         double precision, intent(in) :: log_nH, log_T
         double precision, parameter :: ln10 = 2.302585092994046d0
-        eint_nH = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_T, &
-            eos%eint_from_T%table, eos%eint_from_T%dim1, eos%eint_from_T%dim2, &
-            eos%eint_from_T%var1_min, eos%eint_from_T%var1_max, &
-            eos%eint_from_T%var2_min, eos%eint_from_T%var2_max))
+
+        if (eos%method == 'analytic') then
+            eint_nH = saha_eint_from_nH_T(10.0d0**log_nH, 10.0d0**log_T)
+        else
+            eint_nH = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_T, &
+                eos%eint_from_T%table, eos%eint_from_T%dim1, eos%eint_from_T%dim2, &
+                eos%eint_from_T%var1_min, eos%eint_from_T%var1_max, &
+                eos%eint_from_T%var2_min, eos%eint_from_T%var2_max))
+        end if
     end function eint_nH_from_T
 
     !> Build the first adiabatic index Gamma_1 table from T and neOnH tables.
@@ -1047,7 +1496,7 @@ contains
                 eint_vol = 10.0d0**x2  !> eint/nH in code units
                 p_val = T_val * (1.0d0 + eos%He_abundance + y_val)
 
-                if (eos%gamma1_approx) then
+                if (eos%gamma1_method == 'approx_table') then
                     !> Approximate: gamma_eff = 1 + p/eint_vol
                     g1_val = 1.0d0 + p_val / eint_vol
                 else
@@ -1072,13 +1521,9 @@ contains
         deallocate(log_p)
 
         if (mype == 0) then
-            if (eos%gamma1_approx) then
-                write(*, '(A,F8.4,A,F8.4)') &
-                    ' Gamma1 table built (gamma_eff approx): min = ', g1_min, ', max = ', g1_max
-            else
-                write(*, '(A,F8.4,A,F8.4)') &
-                    ' Gamma1 table built (full formula): min = ', g1_min, ', max = ', g1_max
-            endif
+            write(*, '(A,A,A,F8.4,A,F8.4)') &
+                ' Gamma1 table built (', trim(eos%gamma1_method), '): min = ', &
+                g1_min, ', max = ', g1_max
         end if
 
     end subroutine build_gamma1_table
@@ -1178,6 +1623,108 @@ contains
         end if
 
     end subroutine build_gamma1_p_table
+
+    !> Build 2D Gamma1(nH, T) table from analytical Saha for the 'analytic' EoS method.
+    !> Grid: uniform in (log10 nH, log10 T) with 256x256 points.
+    !> Gamma1 = 1 + (1+y)*kB / Cv, where Cv = d(eint)/d(T) at constant rho.
+    !> Stored in eos%gamma1_p for reuse by the existing csound2 routines
+    !> (re-indexed: axis 2 = log10(T) instead of log10(p/nH)).
+    subroutine build_gamma1_analytic_table()
+        integer, parameter :: ng = 256
+        integer :: i, j
+        double precision :: log_nH_min, log_nH_max, log_T_min, log_T_max
+        double precision :: dx1, dx2, log_nH, log_T
+        double precision :: nH_code, T_code, y, yp, ym
+        double precision :: Cv, g1_val, g1_min, g1_max
+        double precision :: T_cgs, dT_cgs
+        double precision :: eint_p, eint_m
+
+        ! Range: log10(nH [CGS]) from 5 to 19, log10(T [K]) from 2.8 to 6.3
+        ! Convert to code-unit ranges
+        log_nH_min = 5.0d0  - dlog10(unit_numberdensity)
+        log_nH_max = 19.0d0 - dlog10(unit_numberdensity)
+        log_T_min  = 2.8d0  - dlog10(unit_temperature)
+        log_T_max  = 6.3d0  - dlog10(unit_temperature)
+
+        eos%gamma1_p%dim1 = ng
+        eos%gamma1_p%dim2 = ng
+        eos%gamma1_p%var1_min = log_nH_min
+        eos%gamma1_p%var1_max = log_nH_max
+        eos%gamma1_p%var2_min = log_T_min
+        eos%gamma1_p%var2_max = log_T_max
+        eos%gamma1_p%filename = 'computed_gamma1_analytic'
+
+        allocate(eos%gamma1_p%table(ng, ng))
+
+        dx1 = (log_nH_max - log_nH_min) / dble(ng - 1)
+        dx2 = (log_T_max  - log_T_min)  / dble(ng - 1)
+
+        g1_min = 1.0d30
+        g1_max = -1.0d30
+
+        do j = 1, ng
+            log_T = log_T_min + (j - 1) * dx2
+            T_code = 10.0d0**log_T
+            T_cgs = T_code * unit_temperature
+            ! Central difference step: 0.1% of T
+            dT_cgs = 1.0d-3 * T_cgs
+
+            do i = 1, ng
+                log_nH = log_nH_min + (i - 1) * dx1
+                nH_code = 10.0d0**log_nH
+
+                y = saha_y_from_nH_T(nH_code, T_code)
+
+                ! Compute Cv = d(eint/nH)/d(T) via central difference
+                yp = saha_y_from_nH_T(nH_code, (T_cgs + dT_cgs) / unit_temperature)
+                ym = saha_y_from_nH_T(nH_code, (T_cgs - dT_cgs) / unit_temperature)
+
+                eint_p = 1.5d0 * (1.0d0 + yp) * saha_kB_cgs * (T_cgs + dT_cgs)
+                eint_m = 1.5d0 * (1.0d0 + ym) * saha_kB_cgs * (T_cgs - dT_cgs)
+                if (eos%ionE) then
+                    eint_p = eint_p + yp * saha_chi_H_cgs
+                    eint_m = eint_m + ym * saha_chi_H_cgs
+                end if
+
+                Cv = (eint_p - eint_m) / (2.0d0 * dT_cgs)
+
+                ! Gamma1 = 1 + (1+y)*kB / Cv
+                if (Cv > 0.0d0) then
+                    g1_val = 1.0d0 + (1.0d0 + y) * saha_kB_cgs / Cv
+                else
+                    g1_val = eos%gamma
+                end if
+
+                eos%gamma1_p%table(i, j) = g1_val
+                g1_min = min(g1_min, g1_val)
+                g1_max = max(g1_max, g1_val)
+            end do
+        end do
+
+        call precompute_step_inv(eos%gamma1_p)
+
+        if (mype == 0) then
+            write(*, '(A,F8.4,A,F8.4)') &
+                ' Gamma1 analytic table built (nH x T): min = ', g1_min, ', max = ', g1_max
+        end if
+
+    end subroutine build_gamma1_analytic_table
+
+    !> Look up Gamma1 from the analytical 2D table (nH, T axes in code units).
+    !> For use when eos%method == 'analytic' and gamma1_method == 'exact'.
+    double precision function gamma1_from_nH_T_analytic(nH_code, T_code) result(g1)
+        double precision, intent(in) :: nH_code, T_code
+        double precision :: log_nH, log_T
+
+        log_nH = dlog10(nH_code)
+        log_T  = dlog10(T_code)
+
+        g1 = interp_clamped_monotone_bicubic_table(log_nH, log_T, &
+            eos%gamma1_p%table, eos%gamma1_p%dim1, eos%gamma1_p%dim2, &
+            eos%gamma1_p%var1_min, eos%gamma1_p%var1_max, &
+            eos%gamma1_p%var2_min, eos%gamma1_p%var2_max)
+
+    end function gamma1_from_nH_T_analytic
 
     !> Build p2eint table at runtime by inverting the forward (T, neOnH) tables.
     !> For each (nH, p/nH) grid point, find eint/nH by bisection such that
