@@ -301,7 +301,7 @@ module mod_hd_eos
             use mod_global_parameters
             use mod_dust, only: dust_to_primitive
             use mod_eos, only: T_from_nH_eint, y_from_nH_eint, &
-                saha_T_from_nH_eint, saha_y_from_nH_T
+                saha_T_from_nH_eint, saha_y_from_nH_T, p_nH_from_eint
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -341,19 +341,11 @@ module mod_hd_eos
                             ! FI bypass: p = (gamma-1)*(eint - eion*nH)
                             w(ix^D,p_) = eos%gamma_minus_1 &
                                 * (eint_val - eos%eion_per_nH * nH(ix^D))
-                        else if (eos%method == 'analytic') then
-                            ! Analytical Saha: solve for T and y from eint
-                            call saha_T_from_nH_eint(nH(ix^D), &
-                                eint_val / nH(ix^D), T_loc, y_loc)
-                            w(ix^D,p_) = nH(ix^D) &
-                                * (1.0d0 + eos%He_abundance + y_loc) * T_loc
                         else
-                            ! Ionisation zone: table lookup for T and y
+                            ! Ionisation zone: single p/nH lookup
                             eint_in = dlog10(eint_val) - log_nH(ix^D)
-                            T_loc = T_from_nH_eint(log_nH(ix^D), eint_in)
-                            y_loc = y_from_nH_eint(log_nH(ix^D), eint_in)
                             w(ix^D,p_) = nH(ix^D) &
-                                * (1.0d0 + eos%He_abundance + y_loc) * T_loc
+                                * p_nH_from_eint(log_nH(ix^D), eint_in)
                         end if
                     else
                         w(ix^D,p_)=(eos%gamma_minus_1)*(w(ix^D,e_)&

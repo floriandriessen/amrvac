@@ -92,6 +92,7 @@ module mod_eos_container
         type(eos_table_container) :: gamma1_p  !> First adiabatic index Gamma_1(nH, p/nH) for fast csound2
         type(eos_table_container) :: eint_from_T  !> Inverse T table: eint/nH(nH, T)
         type(eos_table_container) :: log_p        !> Merged log10(p/nH)(nH, eint/nH) for WB bisection
+        type(eos_table_container) :: p_over_nH   !> (1+He+y)*T for direct p lookup in to_primitive
 
         procedure (convert_condition), pointer, nopass :: to_conserved => null()
         procedure (convert_condition), pointer, nopass :: to_primitive => null()

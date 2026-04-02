@@ -59,6 +59,7 @@ module mod_eos
     public :: y_from_nH_eint, T_from_nH_eint, p2eint_from_nH_p, p_from_eint_IonE
     public :: gamma1_from_nH_eint, gamma1_from_nH_p
     public :: log_p_from_nH_eint
+    public :: p_nH_from_eint
     public :: log_p_bisect_cached
     public :: eint_nH_from_T
     public :: saha_y_from_nH_T, saha_eint_from_nH_T, saha_p_from_nH_T_y
@@ -269,6 +270,7 @@ contains
 
                         call build_gamma1_p_table()
                         call build_log_p_table()
+                        call build_p_over_nH_table()
 
                         if (allocated(eos%p2eint%table)) deallocate(eos%p2eint%table)
                         call build_p2eint_table()
@@ -285,6 +287,7 @@ contains
                         call precompute_step_inv(eos%gamma1_p)
                         call precompute_step_inv(eos%eint_from_T)
                         call precompute_step_inv(eos%log_p)
+                        call precompute_step_inv(eos%p_over_nH)
                     end if
 
                     call precompute_FI_bypass_constants()
@@ -1565,6 +1568,73 @@ contains
         end if
 
     end subroutine build_log_p_table
+
+    !> Build p/nH table: (1+He+y)*T at each (nH, eint/nH) grid point.
+    !> Shares axes with the T and neOnH tables (Group A).
+    !> Used by to_primitive_LTE for single-lookup pressure computation.
+    subroutine build_p_over_nH_table()
+        integer :: n1, n2, i, j
+        double precision :: T_val, y_val, p_nH_val
+        double precision :: p_min, p_max
+
+        n1 = eos%T%dim1
+        n2 = eos%T%dim2
+
+        eos%p_over_nH%dim1 = n1
+        eos%p_over_nH%dim2 = n2
+        eos%p_over_nH%var1_min = eos%T%var1_min
+        eos%p_over_nH%var1_max = eos%T%var1_max
+        eos%p_over_nH%var2_min = eos%T%var2_min
+        eos%p_over_nH%var2_max = eos%T%var2_max
+        eos%p_over_nH%filename = 'computed_p_over_nH'
+
+        allocate(eos%p_over_nH%table(n1, n2))
+
+        p_min = 1.0d30
+        p_max = -1.0d30
+
+        do j = 1, n2
+            do i = 1, n1
+                !> T table stores log10(T_code), neOnH stores log10(y)
+                T_val = 10.0d0**eos%T%table(i, j)
+                y_val = 10.0d0**eos%neOnH%table(i, j)
+                !> p/nH = (1 + He + y) * T in code units
+                p_nH_val = (1.0d0 + eos%He_abundance + y_val) * T_val
+                !> Store as log10 for PCHIP interpolation consistency
+                eos%p_over_nH%table(i, j) = dlog10(p_nH_val)
+                p_min = min(p_min, p_nH_val)
+                p_max = max(p_max, p_nH_val)
+            end do
+        end do
+
+        call precompute_step_inv(eos%p_over_nH)
+
+        if (mype == 0) then
+            write(*, '(A,ES10.3,A,ES10.3)') &
+                ' p/nH table built: min = ', p_min, ', max = ', p_max
+        end if
+
+    end subroutine build_p_over_nH_table
+
+    !> p/nH from (log10 nH, log10 eint/nH) in code units.
+    !> Returns (1+He+y)*T directly -- single lookup replaces T + y lookups.
+    double precision function p_nH_from_eint(log_nH, log_eint_nH) result(p_nH)
+        double precision, intent(in) :: log_nH, log_eint_nH
+        double precision, parameter :: ln10 = 2.302585092994046d0
+
+        if (eos%method == 'analytic') then
+            block
+                double precision :: T_loc, y_loc
+                call saha_T_from_nH_eint(10.0d0**log_nH, 10.0d0**log_eint_nH, T_loc, y_loc)
+                p_nH = (1.0d0 + eos%He_abundance + y_loc) * T_loc
+            end block
+        else
+            p_nH = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
+                eos%p_over_nH%table, eos%p_over_nH%dim1, eos%p_over_nH%dim2, &
+                eos%p_over_nH%var1_min, eos%p_over_nH%var1_max, &
+                eos%p_over_nH%var2_min, eos%p_over_nH%var2_max))
+        end if
+    end function p_nH_from_eint
 
     !> Build pressure-indexed Gamma_1 table: Gamma_1(nH, p/nH).
     !> Re-indexes the eint-based gamma1 table into pressure space,
