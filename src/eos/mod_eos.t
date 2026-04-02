@@ -60,6 +60,7 @@ module mod_eos
     public :: gamma1_from_nH_eint, gamma1_from_nH_p
     public :: log_p_from_nH_eint
     public :: p_nH_from_eint
+    public :: T_and_y_from_nH_eint
     public :: log_p_bisect_cached
     public :: eint_nH_from_T
     public :: saha_y_from_nH_T, saha_eint_from_nH_T, saha_p_from_nH_T_y
@@ -597,15 +598,18 @@ contains
                         w(ix^D,iw_te), yy)
                     new_y(ix^D) = yy
                 else
-                    !> Table lookups
-                    new_y(ix^D) = y_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
+                    !> Table lookups: fused T+y for shared index computation
                     if (.not. eos%ionE) then
+                        new_y(ix^D) = y_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
                         w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)))
                     else
                         if (eint_in(ix^D) < eos%T%var2_max) then
-                            w(ix^D,iw_te) = T_from_nH_eint(nH_in(ix^D),eint_in(ix^D))
+                            call T_and_y_from_nH_eint(nH_in(ix^D), eint_in(ix^D), &
+                                w(ix^D,iw_te), yy)
+                            new_y(ix^D) = yy
                         else
                             !> Above-table fallback with ionisation energy correction
+                            new_y(ix^D) = eos%neOnH_FI
                             w(ix^D,iw_te) = eos%gamma_minus_1 &
                                 * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
                                 / (Rfactor(ix^D) * w(ix^D,iw_rho))
@@ -918,6 +922,28 @@ contains
                 eos%T%var2_min, eos%T%var2_max))
         end if
     end function T_from_nH_eint
+
+    !> Fused T+y lookup from (log10 nH, log10 eint/nH) in code units.
+    !> Computes grid indices once, evaluates both T and y tables.
+    !> Saves one index computation + better cache utilisation vs separate calls.
+    subroutine T_and_y_from_nH_eint(log_nH, log_eint_nH, T_out, y_out)
+        double precision, intent(in) :: log_nH, log_eint_nH
+        double precision, intent(out) :: T_out, y_out
+        double precision, parameter :: ln10 = 2.302585092994046d0
+
+        if (eos%method == 'analytic') then
+            call saha_T_from_nH_eint(10.0d0**log_nH, 10.0d0**log_eint_nH, T_out, y_out)
+        else
+            T_out = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
+                eos%T%table, eos%T%dim1, eos%T%dim2, &
+                eos%T%var1_min, eos%T%var1_max, &
+                eos%T%var2_min, eos%T%var2_max))
+            y_out = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
+                eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
+                eos%neOnH%var1_min, eos%neOnH%var1_max, &
+                eos%neOnH%var2_min, eos%neOnH%var2_max))
+        end if
+    end subroutine T_and_y_from_nH_eint
 
     !> Pressure-to-eint ratio from (log10 nH, log10 p/nH) in code units.
     !> Dispatches: analytic -> Saha solve for eint/p, tables -> PCHIP interpolation.
