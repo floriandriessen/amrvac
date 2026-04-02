@@ -93,6 +93,9 @@ module mod_eos_container
         type(eos_table_container) :: eint_from_T  !> Inverse T table: eint/nH(nH, T)
         type(eos_table_container) :: log_p        !> Merged log10(p/nH)(nH, eint/nH) for WB bisection
         type(eos_table_container) :: p_over_nH   !> (1+He+y)*T for direct p lookup in to_primitive
+        !> Interleaved Group A table: T, neOnH, p_over_nH at same (nH, eint/nH) grid
+        double precision, allocatable :: table_eint_il(:,:,:)  !> (3, dim1, dim2)
+        integer :: il_nq = 3  !> number of interleaved quantities
 
         procedure (convert_condition), pointer, nopass :: to_conserved => null()
         procedure (convert_condition), pointer, nopass :: to_primitive => null()

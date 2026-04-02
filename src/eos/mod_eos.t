@@ -289,6 +289,9 @@ contains
                         call precompute_step_inv(eos%eint_from_T)
                         call precompute_step_inv(eos%log_p)
                         call precompute_step_inv(eos%p_over_nH)
+
+                        ! Build interleaved Group A table: T, neOnH, p_over_nH
+                        call build_interleaved_eint_table()
                     end if
 
                     call precompute_FI_bypass_constants()
@@ -930,10 +933,20 @@ contains
         double precision, intent(in) :: log_nH, log_eint_nH
         double precision, intent(out) :: T_out, y_out
         double precision, parameter :: ln10 = 2.302585092994046d0
+        double precision :: results(3)
 
         if (eos%method == 'analytic') then
             call saha_T_from_nH_eint(10.0d0**log_nH, 10.0d0**log_eint_nH, T_out, y_out)
+        else if (allocated(eos%table_eint_il)) then
+            ! Interleaved PCHIP: one kernel call gets T, y, and p/nH
+            call interp_pchip_interleaved(log_nH, log_eint_nH, &
+                eos%table_eint_il, 3, eos%T%dim2, eos%T%dim1, &
+                eos%T%var1_min, eos%T%var1_max, &
+                eos%T%var2_min, eos%T%var2_max, results)
+            T_out = dexp(ln10 * results(1))
+            y_out = dexp(ln10 * results(2))
         else
+            ! Fallback: separate table lookups
             T_out = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
                 eos%T%table, eos%T%dim1, eos%T%dim2, &
                 eos%T%var1_min, eos%T%var1_max, &
@@ -1662,6 +1675,35 @@ contains
         end if
     end function p_nH_from_eint
 
+    !> Build interleaved Group A table from existing T, neOnH, p_over_nH tables.
+    !> Layout: table_eint_il(3, ny, nx) where:
+    !>   slot 1 = T (log10), slot 2 = neOnH (log10), slot 3 = p_over_nH (log10)
+    !> All three are on the same (nH, eint/nH) axes.
+    subroutine build_interleaved_eint_table()
+        integer :: n1, n2, i, j
+
+        n1 = eos%T%dim1
+        n2 = eos%T%dim2
+
+        if (allocated(eos%table_eint_il)) deallocate(eos%table_eint_il)
+        allocate(eos%table_eint_il(3, n1, n2))
+
+        do j = 1, n2
+            do i = 1, n1
+                eos%table_eint_il(1, i, j) = eos%T%table(i, j)
+                eos%table_eint_il(2, i, j) = eos%neOnH%table(i, j)
+                eos%table_eint_il(3, i, j) = eos%p_over_nH%table(i, j)
+            end do
+        end do
+
+        if (mype == 0) then
+            write(*, '(A,I0,A,I0,A,I0,A,F6.1,A)') &
+                ' Interleaved Group A table built: ', 3, ' x ', n1, ' x ', n2, &
+                ' (', 3.0d0*n1*n2*8.0d0/1024.0d0, ' KB)'
+        end if
+
+    end subroutine build_interleaved_eint_table
+
     !> Build pressure-indexed Gamma_1 table: Gamma_1(nH, p/nH).
     !> Re-indexes the eint-based gamma1 table into pressure space,
     !> sharing the same grid axes as the p2eint table.
@@ -2348,6 +2390,125 @@ contains
     end function y_interp_from4
 
     end function interp_clamped_monotone_bicubic_table
+
+    !> Interleaved PCHIP: evaluate N quantities at the same (vary, varx) point.
+    !> Table layout: table_il(nq, ny, nx) where nq quantities share the same grid.
+    !> All nq values at each grid point are contiguous in memory (cache-optimal).
+    subroutine interp_pchip_interleaved(vary, varx, table_il, nq, nx, ny, &
+        vmin_y, vmax_y, vmin_x, vmax_x, results)
+        double precision, intent(in) :: vary, varx
+        integer, intent(in)          :: nq, nx, ny
+        double precision, intent(in) :: table_il(nq, ny, nx)
+        double precision, intent(in) :: vmin_y, vmax_y, vmin_x, vmax_x
+        double precision, intent(out) :: results(nq)
+
+        double precision :: fx, fy, rx, ry, tx, ty, xstep_inv, ystep_inv
+        integer :: ix, iy, q
+        integer :: i0, i1, i2, i3, j0, j1, j2, j3
+        double precision :: g0(nq), g1(nq), g2(nq), g3(nq)
+        double precision :: p0, p1, p2, p3
+        double precision :: d0, d1, d2, m1, m2, s, a1, a2, lim
+        double precision :: tt, ttt, h00, h10, h01, h11
+
+        xstep_inv = dble(nx-1) / (vmax_x - vmin_x)
+        ystep_inv = dble(ny-1) / (vmax_y - vmin_y)
+
+        fx = (varx - vmin_x) * xstep_inv
+        fy = (vary - vmin_y) * ystep_inv
+
+        rx = max(0.0d0, min(fx, dble(nx-1)))
+        ry = max(0.0d0, min(fy, dble(ny-1)))
+
+        ix = int(rx); iy = int(ry)
+        tx = rx - dble(ix); ty = ry - dble(iy)
+
+        ! Clamped column indices (shared across all rows and quantities)
+        i0 = max(0, min(nx-1, ix-1))
+        i1 = max(0, min(nx-1, ix))
+        i2 = max(0, min(nx-1, ix+1))
+        i3 = max(0, min(nx-1, ix+2))
+
+        ! For each of 4 y-rows, interpolate in x for ALL quantities
+        do j0 = 0, 3
+            j1 = max(0, min(ny-1, iy - 1 + j0))
+            do q = 1, nq
+                p0 = table_il(q, j1+1, i0+1)
+                p1 = table_il(q, j1+1, i1+1)
+                p2 = table_il(q, j1+1, i2+1)
+                p3 = table_il(q, j1+1, i3+1)
+
+                ! Inline PCHIP
+                d0 = p1 - p0; d1 = p2 - p1; d2 = p3 - p2
+                if (d1 == 0.0d0) then
+                    m1 = 0.0d0; m2 = 0.0d0
+                else
+                    if (d0*d1 <= 0.0d0) then
+                        m1 = 0.0d0
+                    else
+                        m1 = 2.0d0*d0*d1/(d0+d1)
+                    end if
+                    if (d1*d2 <= 0.0d0) then
+                        m2 = 0.0d0
+                    else
+                        m2 = 2.0d0*d1*d2/(d1+d2)
+                    end if
+                    s = sign(1.0d0, d1)
+                    a1 = s*m1; a2 = s*m2
+                    if (a1 < 0.0d0) a1 = 0.0d0
+                    if (a2 < 0.0d0) a2 = 0.0d0
+                    lim = 3.0d0*abs(d1)
+                    if (a1 > lim) a1 = lim
+                    if (a2 > lim) a2 = lim
+                    m1 = s*a1; m2 = s*a2
+                end if
+                tt = tx*tx; ttt = tt*tx
+                h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
+                h10 = ttt - 2.0d0*tt + tx
+                h01 = -2.0d0*ttt + 3.0d0*tt
+                h11 = ttt - tt
+                select case(j0)
+                case(0); g0(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                case(1); g1(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                case(2); g2(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                case(3); g3(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                end select
+            end do
+        end do
+
+        ! Final PCHIP interpolation in y for each quantity
+        do q = 1, nq
+            d0 = g1(q) - g0(q); d1 = g2(q) - g1(q); d2 = g3(q) - g2(q)
+            if (d1 == 0.0d0) then
+                m1 = 0.0d0; m2 = 0.0d0
+            else
+                if (d0*d1 <= 0.0d0) then
+                    m1 = 0.0d0
+                else
+                    m1 = 2.0d0*d0*d1/(d0+d1)
+                end if
+                if (d1*d2 <= 0.0d0) then
+                    m2 = 0.0d0
+                else
+                    m2 = 2.0d0*d1*d2/(d1+d2)
+                end if
+                s = sign(1.0d0, d1)
+                a1 = s*m1; a2 = s*m2
+                if (a1 < 0.0d0) a1 = 0.0d0
+                if (a2 < 0.0d0) a2 = 0.0d0
+                lim = 3.0d0*abs(d1)
+                if (a1 > lim) a1 = lim
+                if (a2 > lim) a2 = lim
+                m1 = s*a1; m2 = s*a2
+            end if
+            tt = ty*ty; ttt = tt*ty
+            h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
+            h10 = ttt - 2.0d0*tt + ty
+            h01 = -2.0d0*ttt + 3.0d0*tt
+            h11 = ttt - tt
+            results(q) = h00*g1(q) + h10*m1 + h01*g2(q) + h11*m2
+        end do
+
+    end subroutine interp_pchip_interleaved
 
     !> Root-finding inversion of the p2eint table for IonE mode.
     !> Given eint (internal energy, code units), nH (code units), and log10(nH),
