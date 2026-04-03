@@ -583,6 +583,7 @@ contains
     use mod_global_parameters
     use mod_geometry, only: coordinate
     use mod_dust, only: dust_check_params, dust_implicit_update, dust_evaluate_implicit
+    use mod_fld
 
     if (.not. hd_energy) then
        if (hd_gamma <= 0.0d0) call mpistop ("Error: hd_gamma <= 0")
@@ -613,12 +614,21 @@ contains
         if(use_multigrid)then
            call phys_set_mg_bounds()
         else
-           call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
+           if(.not.fld_no_mg)call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
         endif
         if(mype==0)then
            write(*,*)'========================'
            write(*,*)'Using FLD with settings:'
            write(*,*)'Using FLD with settings: hd_radiation_fld=',hd_radiation_fld
+           write(*,*)'Using FLD with settings: fld_fluxlimiter=',fld_fluxlimiter
+           write(*,*)'Using FLD with settings: fld_interaction_method=',fld_interaction_method
+           write(*,*)'Using FLD with settings: fld_opacity_law=',fld_opacity_law
+           write(*,*)'Using FLD with settings: fld_kappa0=',fld_kappa0
+           write(*,*)'Using FLD with settings: fld_opal_table=',fld_opal_table
+           write(*,*)'Using FLD with settings: fld_Radforce_split=',fld_Radforce_split
+           write(*,*)'Using FLD with settings: fld_bisect_tol=',fld_bisect_tol
+           write(*,*)'Using FLD with settings: fld_diff_tol=',fld_diff_tol
+           write(*,*)'Using FLD with settings: nth_for_diff_mg=',nth_for_diff_mg
            write(*,*)'      FLD has use_imex_scheme and use_multigrid=',use_imex_scheme,use_multigrid
            write(*,*)'========================'
         endif

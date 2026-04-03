@@ -23,8 +23,8 @@ module mod_fld
     double precision, public :: fld_bisect_tol = 1.d-4
     !> Tolerance for radiative Energy diffusion
     double precision, public :: fld_diff_tol = 1.d-4
-    !> switch for local debug purposes
-    logical :: fld_debug
+    !> switches for local debug purposes
+    logical :: fld_debug,fld_no_mg
     !> switches for opacity
     character(len=8)  :: fld_opacity_law = 'const'
     character(len=50) :: fld_opal_table = 'Y09800' 
@@ -62,7 +62,7 @@ module mod_fld
 
     namelist /fld_list/ fld_kappa0, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_tol, fld_opacity_law, fld_fluxlimiter, &
-    fld_interaction_method, fld_opal_table, nth_for_diff_mg, fld_debug
+    fld_interaction_method, fld_opal_table, nth_for_diff_mg, fld_debug, fld_no_mg
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -85,26 +85,30 @@ module mod_fld
     double precision :: sigma_thomson
 
     nth_for_diff_mg=1
+    fld_debug=.false.
+    fld_no_mg=.false.
     call fld_params_read(par_files)
-    select case(nth_for_diff_mg)
-     case(1)
-      ! no need for stencil extension
-     case(2)
-      ! need for stencil extension
-      phys_wider_stencil=1 
-     case default
-      call mpistop("nth_for_diff_mg must be 1 or 2")
-    end select
-    phys_implicit_update   => fld_implicit_update
-    phys_evaluate_implicit => fld_evaluate_implicit
-    phys_set_mg_bounds     => fld_set_mg_bounds
-    ! store the diffusion coefficient as extra variable (needed in mg vhelmholtz)
-    i_diff_mg = var_set_extravar("D", "D")
-    use_multigrid = .true.
-    ! use multigrid to solve a helmholtz equation with variable coefficient
-    mg%n_extra_vars = 1
-    mg%operator_type = mg_vhelmholtz
-    mg%smoother_type = mg_smoother_gs
+    if(.not.fld_no_mg)then
+      select case(nth_for_diff_mg)
+        case(1)
+         ! no need for stencil extension
+        case(2)
+         ! need for stencil extension
+         phys_wider_stencil=1 
+       case default
+         call mpistop("nth_for_diff_mg must be 1 or 2")
+       end select
+       phys_implicit_update   => fld_implicit_update
+       phys_evaluate_implicit => fld_evaluate_implicit
+       phys_set_mg_bounds     => fld_set_mg_bounds
+       ! store the diffusion coefficient as extra variable (needed in mg vhelmholtz)
+       i_diff_mg = var_set_extravar("D", "D")
+       use_multigrid = .true.
+       ! use multigrid to solve a helmholtz equation with variable coefficient
+       mg%n_extra_vars = 1
+       mg%operator_type = mg_vhelmholtz
+       mg%smoother_type = mg_smoother_gs
+    endif
     !> set gamma
     fld_gamma = r_gamma
     !> Read in opacity table if necesary
@@ -675,7 +679,7 @@ module mod_fld
       if(res < max_residual) exit
       call mg_fas_vcycle(mg, max_res=res)
     end do
-    if((res .le. 0.d0) .or. (res .ge. max_residual)) then
+    if((res .lt. 0.d0) .or. (res .ge. max_residual)) then
       if (mg%my_rank == 0) then 
         write(*,*) it, ' residual from MG ', res
         write(*,*) it, ' max_residual in MG ', max_residual
@@ -684,6 +688,9 @@ module mod_fld
       endif
       call mpistop("no convergence in MG")
     end if
+    if(res .eq. 0.d0) then
+      if (mg%my_rank == 0) write(*,*) it, 'ZERO  residual from MG ', res
+    endif
     ! copy back the Erad variable in iw_r_e
     call mg_copy_from_tree_gc(mg_iphi, iw_r_e, state_to=psa)
 
@@ -800,13 +807,17 @@ module mod_fld
     if(fld_debug)then
       print *,'setting diffcoefs with data on',ixI^L
       print *,'min diffcoef=',minval(w(ixO^S,i_diff_mg))
+      print *,'min lambda kappa rho fld_R'
       print *,minval(lambda(ixO^S))
       print *,minval(kappa(ixO^S))
       print *,minval(wprim(ixO^S,iw_rho))
+      print *,minval(fld_R(ixO^S))
       print *,'max diffcoef=',maxval(w(ixO^S,i_diff_mg))
+      print *,'max lambda kappa rho fld_R'
       print *,maxval(lambda(ixO^S))
       print *,maxval(kappa(ixO^S))
       print *,maxval(wprim(ixO^S,iw_rho))
+      print *,maxval(fld_R(ixO^S))
       print *,'done setting diffcoefs in slot',i_diff_mg,' on range',ixO^L
     endif
 

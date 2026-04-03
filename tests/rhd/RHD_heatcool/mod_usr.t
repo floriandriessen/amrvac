@@ -11,6 +11,10 @@ module mod_usr
   double precision :: t0
   double precision :: e0
   double precision :: E_r0
+  double precision :: fld_mu
+  ! Storing additional var in the dat file
+  integer :: delta_e_, amr_
+
 
 contains
 
@@ -28,8 +32,15 @@ contains
     ! A routine for initial conditions is always required
     usr_init_one_grid => initial_conditions
 
+   ! to add selected variables to the .dat file
+    usr_modify_output => set_output_vars
+
     ! Active the physics module
     call hd_activate()
+
+    ! to add selected variables to the .dat file
+    delta_e_ = var_set_extravar("delta_e", "delta_e")
+    !amr_ = var_set_extravar("amr", "amr")
 
   end subroutine usr_init
 
@@ -50,6 +61,7 @@ subroutine initglobaldata_usr
   unit_opacity = one/(unit_density*unit_length)
 
   call usr_params_read(par_files)
+  fld_mu=(1.0d0+4.0d0*He_abundance)/(2.0d0+3.0d0*He_abundance)
 
   e_eq = (E_r0/(const_rad_a))**(1.d0/4.d0) &
         *one/(hd_gamma-one)*const_kB*rho0 &
@@ -82,9 +94,7 @@ end subroutine usr_params_read
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: x(ixI^S, ndim)
     double precision, intent(inout) :: w(ixI^S, nw)
-
-    double precision :: kappa(ixO^S), lambda(ixO^S), fld_R(ixO^S)
-
+    logical, save:: first=.true.
 
     ! Set initial values for w
     w(ixI^S, rho_) = rho0
@@ -92,8 +102,27 @@ end subroutine usr_params_read
     w(ixI^S,r_e) = E_r0
     w(ixI^S, e_) = t0*e_eq
 
+  if(mype==0.and.first)then
+    write(*,*)'fld_mu mean molecular weight=',fld_mu
+    write(*,*)'initial density=',rho0
+    write(*,*)'initial E0=',E_r0
+    write(*,*)'initial e=',t0*e_eq
+    write(*,*)'equilibrium e=',e_eq
+    write(*,*)'forced deviation of factor t0=',t0
+    first=.false.
+  endif
   end subroutine initial_conditions
 
-end module mod_usr
+  subroutine set_output_vars(ixI^L,ixO^L,qt,w,x)
+    use mod_global_parameters
+    integer, intent(in)             :: ixI^L,ixO^L
+    double precision, intent(in)    :: qt,x(ixI^S,1:ndim)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
 
-!==========================================================================================
+    w(ixO^S,delta_e_)=w(ixO^S,e_)/e_eq
+    ! output the AMR level (assuming uniform grid blocks)
+    !w(ixO^S,amr_)=dlog(((xprobmax1-xprobmin1)/domain_nx1)/dxlevel(1))/dlog(2.0d0)+1.0d0
+
+  end subroutine set_output_vars
+
+end module mod_usr
