@@ -26,8 +26,6 @@ module mod_mhd_phys
   double precision, public                :: mhd_etah = 0.0d0
   !> The MHD ambipolar coefficient
   double precision, public                :: mhd_eta_ambi = 0.0d0
-  !> The small_est allowed energy
-  double precision, protected             :: small_e
   !> Height of the mask used in the TRAC method
   double precision, public, protected     :: mhd_trac_mask = 0.d0
   !> GLM-MHD parameter: ratio of the diffusive and advective time scales for div b

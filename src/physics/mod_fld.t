@@ -23,6 +23,8 @@ module mod_fld
     double precision, public :: fld_bisect_tol = 1.d-4
     !> Tolerance for radiative Energy diffusion
     double precision, public :: fld_diff_tol = 1.d-4
+    !> switch for local debug purposes
+    logical :: fld_debug
     !> switches for opacity
     character(len=8)  :: fld_opacity_law = 'const'
     character(len=50) :: fld_opal_table = 'Y09800' 
@@ -60,7 +62,7 @@ module mod_fld
 
     namelist /fld_list/ fld_kappa0, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_tol, fld_opacity_law, fld_fluxlimiter, &
-    fld_interaction_method, fld_opal_table, nth_for_diff_mg
+    fld_interaction_method, fld_opal_table, nth_for_diff_mg, fld_debug
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -140,9 +142,17 @@ module mod_fld
        case (bc_periodic)
           ! Nothing to do here
        case (bc_noinflow)
-          call usr_special_mg_bc(iB)
+          if (.not. associated(usr_special_mg_bc)) then 
+             call mpistop("special BC for MG not defined")
+          else
+             call usr_special_mg_bc(iB)
+          endif
        case (bc_special)
-          call usr_special_mg_bc(iB)
+          if (.not. associated(usr_special_mg_bc)) then 
+             call mpistop("special BC for MG not defined")
+          else
+             call usr_special_mg_bc(iB)
+          endif
        case default
           call mpistop("divE_multigrid warning: unknown b.c. ")
        end select
@@ -195,6 +205,7 @@ module mod_fld
       enddo
 
       !> Photon tiring : calculate tensor grad v (named div_v here)
+      ! NOTE: This is ok for uniform Cartesian only!!!!!
       do idir = 1,ndim
         do jdir = 1,ndim
           call gradient(wCTprim(ixI^S,iw_mom(jdir)),ixI^L,ixO^L,idir,tmp)
@@ -231,12 +242,17 @@ module mod_fld
       if(allocated(iw_mag)) then
         e_gas(ixO^S) = e_gas(ixO^S)-half*sum(w(ixO^S,iw_mag(:))**2,dim=ndim+1)
       endif
-      {do ix^D = ixOmin^D,ixOmax^D\ }
-        e_gas(ix^D) = max(e_gas(ix^D),small_pressure/(fld_gamma-1.d0))
-      {enddo\}
       E_rad(ixO^S) = w(ixO^S,iw_r_e)
-      call phys_get_Rfactor(wCT,x,ixI^L,ixO^L,tmp)
+
+      if(fix_small_values)then
+        {do ix^D = ixOmin^D,ixOmax^D\ }
+          e_gas(ix^D) = max(e_gas(ix^D),small_e)
+          E_rad(ix^D) = max(E_rad(ix^D),small_r_e)
+        {enddo\}
+      endif
+
       !> Coefficients for the polynomial in Moens et al. 2022, eq 37. but with photon tiring (a3)
+      call phys_get_Rfactor(wCT,x,ixI^L,ixO^L,tmp)
       a1(ixO^S) = 4.d0*sigma_b*qdt*kappa(ixO^S)*(fld_gamma-one)**4/(wCT(ixO^S,iw_rho)**3*tmp(ixO^S)**4)
       a2(ixO^S) = cc*kappa(ixO^S)*wCT(ixO^S,iw_rho)*qdt
       a3(ixO^S) = a3(ixO^S)*qdt
@@ -260,10 +276,9 @@ module mod_fld
 
       E_rad(ixO^S) = (a1(ixO^S)*e_gas(ixO^S)**4.d0+E_rad(ixO^S))/(one+a2(ixO^S)+a3(ixO^S))
 
-      
       if(fix_small_values)then
         {do ix^D = ixOmin^D,ixOmax^D\ }
-          e_gas(ix^D) = max(e_gas(ix^D),small_pressure/(fld_gamma-1.d0))
+          e_gas(ix^D) = max(e_gas(ix^D),small_e)
           E_rad(ix^D) = max(E_rad(ix^D),small_r_e)
         {enddo\}
       endif
@@ -297,6 +312,7 @@ module mod_fld
     double precision :: tmp(ixI^S)
     double precision :: cmax(ixI^S),cmaxtot(ixI^S),courantmaxtots
 
+    if(fld_debug)print *,'DT limit on entry to radforce_get_dt=',dtnew
     nth_for_fld=2
     call fld_get_fluxlimiter_prim(w,x,ixI^L,ixO^L,lambda,fld_R,nth_for_fld)
     if(slab_uniform) then
@@ -316,7 +332,7 @@ module mod_fld
       end do
     endif
 
-    print *,'DT limit RADFORCE eff grav=',dtnew
+    if(fld_debug)print *,'DT limit after RADFORCE eff grav=',dtnew
 
     ! here we interface back to fld_get_radpress
     call phys_get_csrad2(w,x,ixI^L,ixO^L,tmp)
@@ -343,7 +359,7 @@ module mod_fld
     ! courantmaxtots='max(summed c/dx)'
     courantmaxtots=maxval(cmaxtot(ixO^S))
     if(courantmaxtots>smalldouble) dtnew=min(dtnew,courantpar/courantmaxtots)
-    print *,'DT limit RADFORCE CSRAD=',dtnew
+    if(fld_debug)print *,'DT limit RADFORCE CSRAD=',dtnew
 
   end subroutine fld_radforce_get_dt
 
@@ -400,7 +416,7 @@ module mod_fld
 
     nth=2
     call fld_get_eddington(w, x, ixI^L, ixO^L, eddington_tensor, lambda, fld_R, nth)
-    if(.true.)then
+    if(fld_debug)then
        print *,'In get_radPress with nth=',nth,' on ixO=',ixO^L
        print *,'Max and Min value of fe'
        print *,maxval(eddington_tensor(ixO^S,1:ndim,1:ndim))
@@ -543,7 +559,6 @@ module mod_fld
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
 
     cc = const_c/unit_velocity
-    ! NOTE: assuming opacity is local, not ok with cak line force
     call fld_get_opacity_prim(wprim, x, ixI^L, ixO^L, kappa)
     nth_for_fld=2
     call fld_get_fluxlimiter_prim(wprim, x, ixI^L, ixO^L, lambda, fld_R, nth_for_fld)
@@ -781,16 +796,19 @@ module mod_fld
         call mpistop("too small diffusion coefficient")
     endif
     if(maxval(w(ixO^S,i_diff_mg))>bigdouble)  call mpistop("too large diffusion coefficient")
-    print *,'setting diffcoefs with data on',ixI^L
-    print *,'min diffcoef=',minval(w(ixO^S,i_diff_mg))
-    print *,minval(lambda(ixO^S))
-    print *,minval(kappa(ixO^S))
-    print *,minval(wprim(ixO^S,iw_rho))
-    print *,'max diffcoef=',maxval(w(ixO^S,i_diff_mg))
-    print *,maxval(lambda(ixO^S))
-    print *,maxval(kappa(ixO^S))
-    print *,maxval(wprim(ixO^S,iw_rho))
-    print *,'done setting diffcoefs in slot',i_diff_mg,' on range',ixO^L
+
+    if(fld_debug)then
+      print *,'setting diffcoefs with data on',ixI^L
+      print *,'min diffcoef=',minval(w(ixO^S,i_diff_mg))
+      print *,minval(lambda(ixO^S))
+      print *,minval(kappa(ixO^S))
+      print *,minval(wprim(ixO^S,iw_rho))
+      print *,'max diffcoef=',maxval(w(ixO^S,i_diff_mg))
+      print *,maxval(lambda(ixO^S))
+      print *,maxval(kappa(ixO^S))
+      print *,maxval(wprim(ixO^S,iw_rho))
+      print *,'done setting diffcoefs in slot',i_diff_mg,' on range',ixO^L
+    endif
 
   end subroutine fld_get_diffcoef_central
 
@@ -843,8 +861,8 @@ module mod_fld
       else
         bisect_a = e_gas
         bisect_b = e_gas
-        print*, "IGNORING GAS-RAD ENERGY EXCHANGE ", c0, c1
-        print*, Polynomial_Bisection(bisect_a, c0, c1), Polynomial_Bisection(bisect_b, c0, c1)
+        if(fld_debug)print*, "IGNORING GAS-RAD ENERGY EXCHANGE ", c0, c1
+        if(fld_debug)print*, Polynomial_Bisection(bisect_a, c0, c1), Polynomial_Bisection(bisect_b, c0, c1)
         call mpistop('issues in bisection scheme')
         if(Polynomial_Bisection(bisect_a, c0, c1) .le. smalldouble) then
           bisect_b = bisect_a
@@ -879,7 +897,7 @@ module mod_fld
       xval = xval + deltax
       ii = ii + 1
       if(ii .gt. 1d3) then
-        print*, 'skip to bisection algorithm'
+        if(fld_debug)print*, 'skip to bisection algorithm'
         call Bisection_method(e_gas, E_rad, c0, c1)
         return
       endif
@@ -911,7 +929,7 @@ module mod_fld
       xval = xval + deltax
       ii = ii + 1
       if(ii .gt. 1d3) then
-        print*, 'skip to Newton algorithm'
+        if(fld_debug)print*, 'skip to Newton algorithm'
         !call mpistop("iterates to 1000, entering Newton method")
         call Newton_method(e_gas, E_rad, c0, c1)
         return

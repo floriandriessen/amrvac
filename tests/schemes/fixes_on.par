@@ -1,0 +1,10 @@
+ &filelist
+        base_filename  = '_fixes_on'
+ /
+
+ &methodlist
+   fix_small_values=.true.
+   small_values_method = 'replace'
+   small_pressure = 1.d-12
+   small_density = 1.d-10
+ /

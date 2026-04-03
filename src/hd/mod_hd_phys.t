@@ -86,9 +86,6 @@ module mod_hd_phys
   !> The adiabatic constant
   double precision, public                :: hd_adiab = 1.0d0
 
-  !> The small_est allowed energy
-  double precision, protected             :: small_e
-
   !> Whether TRAC method is used
   logical, public, protected              :: hd_trac = .false.
   integer, public, protected              :: hd_trac_type = 1

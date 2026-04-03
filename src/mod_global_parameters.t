@@ -108,7 +108,7 @@ module mod_global_parameters
   double precision :: unit_radflux=1.d0
 
   !> error handling
-  double precision :: small_temperature,small_pressure,small_density,small_r_e
+  double precision :: small_temperature,small_pressure,small_density,small_e,small_r_e
   double precision :: phys_trac_mask
 
   !> amplitude of background dipolar, quadrupolar, octupolar, user's field

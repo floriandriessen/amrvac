@@ -161,9 +161,6 @@ module mod_twofl_phys
   !> The MHD Hall coefficient
   double precision, public                :: twofl_etah = 0.0d0
 
-  !> The small_est allowed energy
-  double precision, protected             :: small_e
-
   !> Method type to clean divergence of B
   character(len=std_len), public, protected :: typedivbfix  = 'linde'
 

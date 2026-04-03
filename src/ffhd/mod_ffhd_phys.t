@@ -76,9 +76,6 @@ module mod_ffhd_phys
   !> The adiabatic constant
   double precision, public                :: ffhd_adiab = 1.0d0
 
-  !> The small_est allowed energy
-  double precision, protected             :: small_e
-
   !> The thermal conductivity kappa in hyperbolic thermal conduction
   double precision, public                :: hypertc_kappa
 

@@ -40,8 +40,6 @@ module mod_srhd_phys
   double precision, public                :: srhd_gamma = 5.d0/3.0d0
   double precision, public                :: gamma_1,inv_gamma_1,gamma_to_gamma_1
 
-  !> The smallest allowed energy
-  double precision, public             :: small_e
   !> The smallest allowed inertia
   double precision, public             :: small_xi
 
@@ -965,7 +963,7 @@ contains
 
   !> Compute the small value limits
   subroutine srhd_get_smallvalues_eos
-    use mod_global_parameters, only: small_pressure, small_density
+    use mod_global_parameters, only: small_pressure, small_density, small_e
     implicit none
     ! local small values
     double precision :: LsmallE,Lsmallp,Lsmallrho
