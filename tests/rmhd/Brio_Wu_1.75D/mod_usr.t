@@ -7,8 +7,8 @@ contains
   subroutine usr_init()
     usr_set_parameters=> initglobaldata_usr
     usr_init_one_grid => initonegrid_usr
-    usr_aux_output      => specialvar_output
-    usr_add_aux_names   => specialvarnames_output
+!    usr_aux_output      => specialvar_output
+!    usr_add_aux_names   => specialvarnames_output
 
     call set_coordinate_system('Cartesian_1.75D')
 
@@ -66,7 +66,7 @@ contains
        w(ixG^S,mag(1) )  = bx
        w(ixG^S,mag(2) )  = byleft
        w(ixG^S,mag(3) )  = bzleft
-       w(ix^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
+       w(ixG^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
     elsewhere
        w(ixG^S,rho_)     = rhoright
        w(ixG^S,mom(1))   = vright(1)
@@ -76,10 +76,10 @@ contains
        w(ixG^S,mag(1) )  = bx
        w(ixG^S,mag(2) )  = byright
        w(ixG^S,mag(3) )  = bzright
-       w(ix^S,r_e) = const_rad_a*(0.8*unit_temperature)**4.d0/unit_pressure
+       w(ixG^S,r_e) = const_rad_a*(0.8*unit_temperature)**4.d0/unit_pressure
     endwhere
 
-    call mhd_to_conserved(ixG^L,ix^L,w,x)
+    call mhd_to_conserved(ixG^L,ixG^L,w,x)
   
   end subroutine initonegrid_usr
 

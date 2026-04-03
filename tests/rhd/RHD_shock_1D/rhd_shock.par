@@ -10,13 +10,17 @@
 /
 
  &savelist
-   dtsave_log     = 5.d-1
+   itsave(1,1)=0
+   itsave(1,2)=0
+   ditsave_log     = 1
+   ditsave_dat     = 100
 /
 
  &stoplist
-   time_max = 10.d0
+   it_max=10
    dtmin = 1.0d-20
 /
+   time_max = 10.d0
 
  &methodlist
    time_stepper = 'onestep'

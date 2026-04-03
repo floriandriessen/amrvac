@@ -221,7 +221,6 @@ mod_fld.o: mod_comm_lib.mod
 mod_fld.o: mod_constants.mod
 mod_fld.o: mod_forest.mod
 mod_fld.o: mod_geometry.mod
-mod_fld.o: mod_ghostcells_update.mod
 mod_fld.o: mod_global_parameters.mod
 mod_fld.o: mod_multigrid_coupling.mod
 mod_fld.o: mod_opal_opacity.mod
@@ -279,7 +278,6 @@ mod_hd_phys.o: mod_geometry.mod
 mod_hd_phys.o: mod_global_parameters.mod
 mod_hd_phys.o: mod_gravity.mod
 mod_hd_phys.o: mod_ionization_degree.mod
-mod_hd_phys.o: mod_multigrid_coupling.mod
 mod_hd_phys.o: mod_particles.mod
 mod_hd_phys.o: mod_physics.mod
 mod_hd_phys.o: mod_radiative_cooling.mod

@@ -29,9 +29,6 @@ module mod_hd_phys
   !> Whether radiation-gas interaction is handled using flux limited diffusion
   logical, public, protected              :: hd_radiation_fld = .false.
 
-  !> control over stencil to use for (diagnostic) info on fld
-  integer, public, protected              :: nth_for_fld
-
   !> Whether viscosity is added
   logical, public, protected              :: hd_viscosity = .false.
 
@@ -92,9 +89,6 @@ module mod_hd_phys
   !> The small_est allowed energy
   double precision, protected             :: small_e
 
-  !> The smallest allowed radiation energy (when fld active)
-  double precision, public, protected     :: small_r_e
-
   !> Whether TRAC method is used
   logical, public, protected              :: hd_trac = .false.
   integer, public, protected              :: hd_trac_type = 1
@@ -147,8 +141,6 @@ module mod_hd_phys
   ! the following used in FLD modules
   !    as pointer phys_get_tgas
   public :: hd_get_temperature_from_prim
-  !    as pointer phys_set_mg_bounds
-  public :: hd_set_mg_bounds
   ! End: following relevant for radiative hydro using FLD
 
 contains
@@ -164,7 +156,7 @@ contains
     hd_gravity, He_abundance,H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
     hd_trac_type, hd_cak_force, hd_partial_ionization, &
-    hd_radiation_fld,nth_for_fld
+    hd_radiation_fld
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -284,10 +276,6 @@ contains
             write(*,*)'Warning: Optically thin cooling together with FLD radiation'
           endif
        endif
-       nth_for_fld=2
-       if(mype==0) then
-            write(*,*)'Initializing nth_for_fld=2'
-       endif
        if(hd_dust.and.hd_dust_implicit)then
           call mpistop('implicit dust addition not compatible with FLD radiation')
        endif
@@ -299,7 +287,6 @@ contains
        else
           !> set added variable and equation for radiation energy
           r_e = var_set_radiation_energy()
-          phys_set_mg_bounds       => hd_set_mg_bounds
           phys_get_tgas            => hd_get_temperature_from_prim
           phys_get_csrad2          => hd_get_csrad2_prim
           !> Initiate radiation-closure module
@@ -597,6 +584,7 @@ contains
 
   subroutine hd_check_params
     use mod_global_parameters
+    use mod_geometry, only: coordinate
     use mod_dust, only: dust_check_params, dust_implicit_update, dust_evaluate_implicit
 
     if (.not. hd_energy) then
@@ -626,7 +614,7 @@ contains
            call mpistop('select IMEX scheme for FLD radiation use')
         endif
         if(use_multigrid)then
-           call hd_set_mg_bounds()
+           call phys_set_mg_bounds()
         else
            call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
         endif
@@ -634,48 +622,46 @@ contains
            write(*,*)'========================'
            write(*,*)'Using FLD with settings:'
            write(*,*)'Using FLD with settings: hd_radiation_fld=',hd_radiation_fld
-           write(*,*)'Using FLD with settings:      nth_for_fld=',nth_for_fld
+           write(*,*)'      FLD has use_imex_scheme and use_multigrid=',use_imex_scheme,use_multigrid
            write(*,*)'========================'
         endif
     endif
+    if(mype==0)then
+           write(*,*)'====HD run with settings===================='
+           write(*,*)'Using mod_hd_phys with settings:'
+           write(*,*)'SI_unit=',SI_unit
+           write(*,*)'Dimensionality   :',ndim
+           write(*,*)'vector components:',ndir
+           write(*,*)'coordinate set to type,slab:',coordinate,slab
+           write(*,*)'number of variables          nw=',nw
+           write(*,*)'    start index         iwstart=',iwstart
+           write(*,*)'number of      vector variables=',nvector
+           write(*,*)'number of stagger variables nws=',nws
+           write(*,*)'number of    variables with BCs=',nwgc
+           write(*,*)'number of      vars with fluxes=',nwflux
+           write(*,*)'number of   vars with flux + BC=',nwfluxbc
+           write(*,*)'number of   auxiliary variables=',nwaux
+           write(*,*)'number of extra vars without flux=',nwextra
+           write(*,*)'number of extra vars   for wextra=',nw_extra
+           write(*,*)'number of auxiliary I/O variables=',nwauxio
+           write(*,*)'number of             hd_n_tracer=',hd_n_tracer
+           write(*,*)'    hd_energy=',hd_energy
+           write(*,*)'    hd_gravity=',hd_gravity
+           write(*,*)'    hd_viscosity=',hd_viscosity
+           write(*,*)'    hd_radiative_cooling=',hd_radiative_cooling
+           write(*,*)'    hd_cak_force=',hd_cak_force
+           write(*,*)'    hd_radiation_fld=',hd_radiation_fld
+           write(*,*)'    hd_thermal_conduction=',hd_thermal_conduction
+           write(*,*)'    hd_trac=',hd_trac
+           write(*,*)'    hd_dust=',hd_dust
+           write(*,*)'    hd_rotating_frame=',hd_rotating_frame
+           write(*,*)'    hd_particles=',hd_particles
+           write(*,*)'number of             ghostcells=',nghostcells
+           write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
+           write(*,*)'==========================================='
+    endif
 
   end subroutine hd_check_params
-
-  !> Set the boundaries for the diffusion of E
-  subroutine hd_set_mg_bounds
-    use mod_global_parameters
-    use mod_multigrid_coupling
-    use mod_usr_methods
-
-    integer :: iB
-
-    ! Set boundary conditions for the multigrid solver
-    do iB = 1, 2*ndim
-       select case (typeboundary(r_e, iB))
-       case (bc_symm)
-          ! d/dx u = 0
-          mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
-          mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
-       case (bc_asymm)
-          ! u = 0
-          mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
-          mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
-       case (bc_cont)
-          ! d/dx u = 0
-          ! mg%bc(iB, mg_iphi)%bc_type = mg_bc_continuous
-          mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
-          mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
-       case (bc_periodic)
-          ! Nothing to do here
-       case (bc_noinflow)
-          call usr_special_mg_bc(iB)
-       case (bc_special)
-          call usr_special_mg_bc(iB)
-       case default
-          call mpistop("divE_multigrid warning: unknown b.c. ")
-       end select
-    end do
-  end subroutine hd_set_mg_bounds
 
   subroutine hd_physical_units
     use mod_global_parameters
@@ -1214,18 +1200,25 @@ contains
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(out):: csound(ixI^S)
 
-    double precision :: inv_rho
-    double precision :: prad_tensor(ixO^S, 1:ndim, 1:ndim)
-    double precision :: prad_max(ixO^S)
     integer :: ix^D
+    double precision :: inv_rho
+    double precision :: prad_tensor(ixI^S, 1:ndim, 1:ndim)
+    double precision :: prad_max(ixI^S)
 
     call hd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad_tensor)
 
    {do ix^DB=ixOmin^DB,ixOmax^DB \}
       inv_rho=1.d0/w(ix^D,rho_)
       prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
-      csound(ix^D)=max(hd_gamma,4.d0/3.d0)*(w(ix^D,p_)+prad_max(ix^D))*inv_rho
+      csound(ix^D)=(hd_gamma*w(ix^D,p_)+prad_max(ix^D))*inv_rho
    {end do\}
+
+   if(minval(csound(ixO^S))<smalldouble)then
+     print *,'issue with squared speed and rad pressure'
+     print *,minval(csound(ixO^S))
+     print *,minval(prad_max(ixO^S))
+     call mpistop("negative squared speed in get_csrad2 for dt")
+   endif
 
   end subroutine hd_get_csrad2_prim
 
@@ -1238,9 +1231,9 @@ contains
     integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: prad(ixO^S, 1:ndim, 1:ndim)
+    double precision, intent(out):: prad(ixI^S, 1:ndim, 1:ndim)
 
-    call fld_get_radpress(w, x, ixI^L, ixO^L, prad, nth_for_fld)
+    call fld_get_radpress(w, x, ixI^L, ixO^L, prad)
 
   end subroutine hd_get_pradiation_from_prim
 
@@ -1254,8 +1247,8 @@ contains
     double precision, intent(out):: pth_plus_prad(ixI^S)
 
     double precision             :: wprim(ixI^S, 1:nw)
-    double precision             :: prad_tensor(ixO^S, 1:ndim, 1:ndim)
-    double precision             :: prad_max(ixO^S)
+    double precision             :: prad_tensor(ixI^S, 1:ndim, 1:ndim)
+    double precision             :: prad_max(ixI^S)
     integer :: ix^D
 
     wprim(ixI^S,1:nw)=w(ixI^S,1:nw)

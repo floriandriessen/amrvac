@@ -10,7 +10,9 @@
  /
 
  &savelist
-        dtsave_log=0.001d0
+        itsave(1,1)=0
+        itsave(1,2)=0
+        ditsave_log=1
  /
 
  &stoplist
@@ -56,6 +58,7 @@
      mhd_energy = .true.
      mhd_gamma = 1.6666667d0
      mhd_radiation_fld = .true.
+     nth_for_fld=1
  /
 
  &fld_list
