@@ -1,6 +1,7 @@
 !> Magnetofriction module
 module mod_mf_phys
   use mod_global_parameters, only: std_len
+  use mod_physics
   use mod_functions_bfield, only: get_divb,mag
   use mod_comm_lib, only: mpistop
 
@@ -159,7 +160,6 @@ contains
 
   subroutine mf_phys_init()
     use mod_global_parameters
-    use mod_physics
     {^NOONED
     use mod_multigrid_coupling
     }
@@ -313,6 +313,8 @@ contains
     use mod_global_parameters
     use mod_geometry, only: coordinate
     use mod_particles, only: particles_init, particles_eta, particles_etah
+    use mod_particles, only: npayload,nusrpayload, &
+                ngridvars,num_particles,physics_type_particles
 
     ! Initialize particles module
     if(mf_particles) then
@@ -339,8 +341,8 @@ contains
            write(*,*)'number of extra vars without flux=',nwextra
            write(*,*)'number of extra vars   for wextra=',nw_extra
            write(*,*)'number of auxiliary I/O variables=',nwauxio
-           write(*,*)'    mhd_eta=',mhd_eta,' nonzero implies resistivity'
-           write(*,*)'    mhd_eta_hyper=',mhd_eta_hyper
+           write(*,*)'    mf_eta=',mf_eta,' nonzero implies resistivity'
+           write(*,*)'    mf_eta_hyper=',mf_eta_hyper
            write(*,*)'    mf_particles=',mf_particles
            if(mf_particles) then
               write(*,*) '*****Using particles:     with mf_eta, mf_eta_hyper :', mf_eta, mf_eta_hyper
