@@ -405,12 +405,10 @@ contains
     call get_current(wlocal,ixI^L,ixO^L,idirmin,current)
     w(ixO^S,nw+5)=current(ixO^S,3)
 
-    print *,'enter with ixI and ixO=',ixI^L,ixO^L
     call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2)
     w(ixO^S,nw+6)=lamb(ixO^S)
     w(ixO^S,nw+7)=R(ixO^S)
     call fld_get_radflux(wlocal,x,ixI^L,ixO^L,radflux)
-    print *,'done with ixI and ixO=',ixI^L,ixO^L
     w(ixO^S,nw+8)=radflux(ixO^S,1)
     w(ixO^S,nw+9)=radflux(ixO^S,2)
 

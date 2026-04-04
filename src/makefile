@@ -81,10 +81,12 @@ mod_ard.o: mod_amrvac.mod
 mod_ard.o: mod_ard_phys.mod
 mod_ard_phys.o: mod_comm_lib.mod
 mod_ard_phys.o: mod_forest.mod
+mod_ard_phys.o: mod_geometry.mod
 mod_ard_phys.o: mod_global_parameters.mod
 mod_ard_phys.o: mod_multigrid_coupling.mod
 mod_ard_phys.o: mod_particles.mod
 mod_ard_phys.o: mod_physics.mod
+mod_ard_phys.o: mod_usr_methods.mod
 mod_ard_phys.o: mod_variables.mod
 mod_b0.o: mod_geometry.mod
 mod_b0.o: mod_global_parameters.mod
@@ -516,6 +518,7 @@ mod_rd.o: mod_amrvac.mod
 mod_rd.o: mod_rd_phys.mod
 mod_rd_phys.o: mod_comm_lib.mod
 mod_rd_phys.o: mod_forest.mod
+mod_rd_phys.o: mod_geometry.mod
 mod_rd_phys.o: mod_global_parameters.mod
 mod_rd_phys.o: mod_multigrid_coupling.mod
 mod_rd_phys.o: mod_particles.mod
