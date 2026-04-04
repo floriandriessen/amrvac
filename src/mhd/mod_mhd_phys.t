@@ -309,7 +309,6 @@ contains
     use mod_radiative_cooling
     use mod_viscosity, only: viscosity_init
     use mod_gravity, only: gravity_init
-    use mod_particles, only: particles_init, particles_eta, particles_etah
     use mod_magnetofriction, only: magnetofriction_init
     use mod_rotating_frame, only: rotating_frame_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
@@ -997,16 +996,6 @@ contains
       call rotating_frame_init()
     endif
 
-    ! Initialize particles module
-    if(mhd_particles) then
-      call particles_init()
-      if (particles_eta  < zero) particles_eta = mhd_eta
-      if (particles_etah < zero) particles_eta = mhd_etah
-      if(mype==0) then
-         write(*,*) '*****Using particles:        with mhd_eta, mhd_etah :', mhd_eta, mhd_etah
-         write(*,*) '*****Using particles: particles_eta, particles_etah :', particles_eta, particles_etah
-      end if
-    end if
 
     ! initialize magnetofriction module
     if(mhd_magnetofriction) then
@@ -1340,6 +1329,17 @@ contains
     use mod_usr_methods
     use mod_geometry, only: coordinate 
     use mod_convert, only: add_convert_method
+    use mod_particles, only: particles_init, particles_eta, particles_etah
+    use mod_particles, only: npayload,nusrpayload, &
+                ngridvars,num_particles,physics_type_particles
+    use mod_fld
+
+    ! Initialize particles module here, so all extra and user vars are sample
+    if(mhd_particles) then
+      call particles_init()
+      if (particles_eta  < zero) particles_eta = mhd_eta
+      if (particles_etah < zero) particles_eta = mhd_etah
+    end if
 
     ! after user parameter setting
     gamma_1=mhd_gamma-1.d0
@@ -1380,6 +1380,15 @@ contains
            write(*,*)'========================'
            write(*,*)'Using FLD with settings:'
            write(*,*)'Using FLD with settings: mhd_radiation_fld=',mhd_radiation_fld
+           write(*,*)'Using FLD with settings: fld_fluxlimiter=',fld_fluxlimiter
+           write(*,*)'Using FLD with settings: fld_interaction_method=',fld_interaction_method
+           write(*,*)'Using FLD with settings: fld_opacity_law=',fld_opacity_law
+           write(*,*)'Using FLD with settings: fld_kappa0=',fld_kappa0
+           write(*,*)'Using FLD with settings: fld_opal_table=',fld_opal_table
+           write(*,*)'Using FLD with settings: fld_Radforce_split=',fld_Radforce_split
+           write(*,*)'Using FLD with settings: fld_bisect_tol=',fld_bisect_tol
+           write(*,*)'Using FLD with settings: fld_diff_tol=',fld_diff_tol
+           write(*,*)'Using FLD with settings: nth_for_diff_mg=',nth_for_diff_mg
            write(*,*)'      FLD has use_imex_scheme and use_multigrid=',use_imex_scheme,use_multigrid
            write(*,*)'========================'
         endif
@@ -1422,6 +1431,14 @@ contains
            write(*,*)'    mhd_eta_hyper=',mhd_eta_hyper
            write(*,*)'    mhd_rotating_frame=',mhd_rotating_frame
            write(*,*)'    mhd_particles=',mhd_particles
+           if(mhd_particles) then
+              write(*,*) '*****Using particles:        with mhd_eta, mhd_etah :', mhd_eta, mhd_etah
+              write(*,*) '*****Using particles: particles_eta, particles_etah :', particles_eta, particles_etah
+              write(*,*) '*****Using particles: npayload,ngridvars :', npayload,ngridvars
+              write(*,*) '*****Using particles:        nusrpayload :', nusrpayload
+              write(*,*) '*****Using particles:      num_particles :', num_particles
+              write(*,*) '*****Using particles: physics_type_particles=',physics_type_particles
+           end if
            write(*,*)'number of             ghostcells=',nghostcells
            write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
            write(*,*)'==========================================='

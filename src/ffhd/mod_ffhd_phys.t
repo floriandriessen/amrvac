@@ -141,7 +141,6 @@ contains
 
   subroutine ffhd_read_params(files)
     use mod_global_parameters
-    use mod_particles, only: particles_eta, particles_etah
     character(len=*), intent(in) :: files(:)
     integer                      :: n
 
@@ -563,6 +562,8 @@ contains
     use mod_global_parameters
     use mod_usr_methods
     use mod_convert, only: add_convert_method
+    use mod_geometry, only: coordinate
+
 
     gamma_1=ffhd_gamma-1.d0
     if (.not. ffhd_energy) then
@@ -579,6 +580,35 @@ contains
     if (number_equi_vars > 0 .and. .not. associated(usr_set_equi_vars)) then
       call mpistop("usr_set_equi_vars has to be implemented in the user file")
     end if
+
+
+    if(mype==0)then
+           write(*,*)'====FFHD run with settings===================='
+           write(*,*)'Using mod_ffhd_phys with settings:'
+           write(*,*)'SI_unit=',SI_unit
+           write(*,*)'Dimensionality   :',ndim
+           write(*,*)'vector components:',ndir
+           write(*,*)'coordinate set to type,slab:',coordinate,slab
+           write(*,*)'number of variables          nw=',nw
+           write(*,*)'    start index         iwstart=',iwstart
+           write(*,*)'number of      vector variables=',nvector
+           write(*,*)'number of stagger variables nws=',nws
+           write(*,*)'number of    variables with BCs=',nwgc
+           write(*,*)'number of      vars with fluxes=',nwflux
+           write(*,*)'number of   vars with flux + BC=',nwfluxbc
+           write(*,*)'number of   auxiliary variables=',nwaux
+           write(*,*)'number of extra vars without flux=',nwextra
+           write(*,*)'number of extra vars   for wextra=',nw_extra
+           write(*,*)'number of auxiliary I/O variables=',nwauxio
+           write(*,*)'    ffhd_energy=',ffhd_energy
+           write(*,*)'    ffhd_gravity=',ffhd_gravity
+           write(*,*)'    ffhd_radiative_cooling=',ffhd_radiative_cooling
+           write(*,*)'    ffhd_hyperbolic_thermal_conduction=',ffhd_hyperbolic_thermal_conduction
+           write(*,*)'    ffhd_trac=',ffhd_trac
+           write(*,*)'number of             ghostcells=',nghostcells
+           write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
+           write(*,*)'==========================================='
+    endif
   end subroutine ffhd_check_params
 
   subroutine ffhd_physical_units()

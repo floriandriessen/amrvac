@@ -189,7 +189,6 @@ contains
     use mod_dust, only: dust_init
     use mod_viscosity, only: viscosity_init
     use mod_gravity, only: gravity_init
-    use mod_particles, only: particles_init
     use mod_rotating_frame, only:rotating_frame_init
     use mod_cak_force, only: cak_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
@@ -407,10 +406,6 @@ contains
     ! Initialize CAK radiation force module
     if (hd_cak_force) call cak_init(hd_gamma)
 
-    ! Initialize particles module
-    if (hd_particles) then
-       call particles_init()
-    end if
 
     ! Check whether custom flux types have been defined
     if (.not. allocated(flux_type)) then
@@ -583,7 +578,14 @@ contains
     use mod_global_parameters
     use mod_geometry, only: coordinate
     use mod_dust, only: dust_check_params, dust_implicit_update, dust_evaluate_implicit
+    use mod_particles, only: particles_init
+    use mod_particles, only: npayload,nusrpayload,ngridvars,num_particles,physics_type_particles
     use mod_fld
+
+    ! Initialize particles module, put here so additional gridvars and user payloads are known
+    if (hd_particles) then
+       call particles_init()
+    end if
 
     if (.not. hd_energy) then
        if (hd_gamma <= 0.0d0) call mpistop ("Error: hd_gamma <= 0")
@@ -663,6 +665,12 @@ contains
            write(*,*)'    hd_dust=',hd_dust
            write(*,*)'    hd_rotating_frame=',hd_rotating_frame
            write(*,*)'    hd_particles=',hd_particles
+           if(hd_particles) then
+              write(*,*) '*****Using particles: npayload,ngridvars :', npayload,ngridvars
+              write(*,*) '*****Using particles:        nusrpayload :', nusrpayload
+              write(*,*) '*****Using particles:      num_particles :', num_particles
+              write(*,*) '*****Using particles: physics_type_particles=',physics_type_particles
+           end if
            write(*,*)'number of             ghostcells=',nghostcells
            write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
            write(*,*)'==========================================='
