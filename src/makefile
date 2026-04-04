@@ -191,7 +191,6 @@ mod_ffhd_phys.o: mod_geometry.mod
 mod_ffhd_phys.o: mod_global_parameters.mod
 mod_ffhd_phys.o: mod_gravity.mod
 mod_ffhd_phys.o: mod_ionization_degree.mod
-mod_ffhd_phys.o: mod_particles.mod
 mod_ffhd_phys.o: mod_physics.mod
 mod_ffhd_phys.o: mod_radiative_cooling.mod
 mod_ffhd_phys.o: mod_small_values.mod
@@ -435,6 +434,7 @@ mod_nonlinear.o: mod_amrvac.mod
 mod_nonlinear.o: mod_nonlinear_phys.mod
 mod_nonlinear.o: mod_nonlinear_roe.mod
 mod_nonlinear_phys.o: mod_comm_lib.mod
+mod_nonlinear_phys.o: mod_geometry.mod
 mod_nonlinear_phys.o: mod_global_parameters.mod
 mod_nonlinear_phys.o: mod_kdv.mod
 mod_nonlinear_phys.o: mod_particles.mod
