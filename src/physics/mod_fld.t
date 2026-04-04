@@ -452,7 +452,7 @@ module mod_fld
 
     double precision :: wprim(ixI^S,1:nw)
 
-    wprim=w
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
     call fld_get_fluxlimiter_prim(wprim,x,ixI^L,ixO^L,fld_lambda,fld_R,nth)
 
@@ -559,7 +559,7 @@ module mod_fld
     double precision :: grad_r_e(ixI^S)
     double precision :: kappa(ixI^S), lambda(ixI^S), fld_R(ixI^S)
 
-    wprim=w
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
 
     cc = const_c/unit_velocity

@@ -24,10 +24,6 @@
         time_integrator= 'IMEX_ARS3'
         flux_scheme=    20*'hll'
         limiter= 20*'weno3'
-        check_small_values=.false.
-        small_values_method = 'replace'
-        small_pressure = 1.d-12
-        small_density = 1.d-12
  /
 
  &boundlist
@@ -49,7 +45,7 @@
 
  &paramlist
         courantpar=0.6d0
-        slowsteps=20000
+        slowsteps=100
  /
 
  &mhd_list
@@ -58,7 +54,6 @@
      mhd_energy = .true.
      mhd_gamma = 1.6666667d0
      mhd_radiation_fld = .true.
-     nth_for_fld=1
  /
 
  &fld_list

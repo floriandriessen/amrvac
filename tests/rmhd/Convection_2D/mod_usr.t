@@ -235,8 +235,7 @@ contains
          w(ixOmin1:ixOmax1,ix2,mom(2)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mom(2))
          w(ixOmin1:ixOmax1,ix2,mag(1)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mag(1))
          w(ixOmin1:ixOmax1,ix2,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mag(2))
-         !case1
-         w(ixOmin1:ixOmax1,ix2,r_e)= w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,r_e) 
+         w(ixOmin1:ixOmax1,ix2,r_e)    = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,r_e) 
       enddo
       ! fill temperature array: extrapolate linearly with fixed dT/dy=-1, from bottom row
       do ix2=ixOmin2,ixOmax2
@@ -260,6 +259,7 @@ contains
          w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(1)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,mag(1))
          w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,mag(2))
          w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(3)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,mag(3))
+         w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,r_e)    = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,r_e) 
       enddo
       ! fill temperature array: extrapolate linearly with fixed dT/dy=-1, from bottom row
       do ix2=ixOmin2,ixOmax2
@@ -294,10 +294,6 @@ contains
           w(ixOmin1:ixOmax1,ix2,mag(1)) =-w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,mag(1))
           w(ixOmin1:ixOmax1,ix2,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,mag(2))
       enddo
-      w(ixO^S,p_)=w(ixO^S,rho_)*temptop
-      !case1
-      w(ixO^S,r_e)= const_rad_a*(temptop*unit_temperature)**4.d0/unit_pressure 
-    
       }
       {^IFTHREED
       ! in nghostcells rows below top boundary: switch to primitive
@@ -314,8 +310,10 @@ contains
           w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,ixOmin3:ixOmax3,mag(2))
           w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(3)) =-w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,ixOmin3:ixOmax3,mag(3))
       enddo
-      w(ixO^S,p_)=w(ixO^S,rho_)*temptop
       }
+      w(ixO^S,p_)=w(ixO^S,rho_)*temptop
+      w(ixO^S,r_e)= const_rad_a*(temptop*unit_temperature)**4.d0/unit_pressure 
+    
       ! now reset the inner mesh values to conservative
       call mhd_to_conserved(ixG^L,ixIM^L,w,x)
       ! now switch to conservative in full bottom ghost layer
@@ -388,8 +386,8 @@ contains
     double precision                   :: normconv(0:nw+nwauxio)
 
     double precision                   :: wlocal(ixI^S,1:nw)
-    double precision :: tmp(ixI^S),divb(ixI^S),current(ixI^S,7-2*ndir:3), lamb(ixO^S), R(ixO^S)
-    double precision :: radflux(ixO^S,1:ndim)
+    double precision :: tmp(ixI^S),divb(ixI^S),current(ixI^S,7-2*ndir:3), lamb(ixI^S), R(ixI^S)
+    double precision :: radflux(ixI^S,1:ndim)
     integer          :: idirmin
 
     ! output Te
@@ -407,10 +405,12 @@ contains
     call get_current(wlocal,ixI^L,ixO^L,idirmin,current)
     w(ixO^S,nw+5)=current(ixO^S,3)
 
-    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,1)
+    print *,'enter with ixI and ixO=',ixI^L,ixO^L
+    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2)
     w(ixO^S,nw+6)=lamb(ixO^S)
     w(ixO^S,nw+7)=R(ixO^S)
-    call fld_get_radflux(w,x,ixI^L,ixO^L,radflux)
+    call fld_get_radflux(wlocal,x,ixI^L,ixO^L,radflux)
+    print *,'done with ixI and ixO=',ixI^L,ixO^L
     w(ixO^S,nw+8)=radflux(ixO^S,1)
     w(ixO^S,nw+9)=radflux(ixO^S,2)
 

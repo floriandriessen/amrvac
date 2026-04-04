@@ -7,8 +7,8 @@ contains
   subroutine usr_init()
     usr_set_parameters=> initglobaldata_usr
     usr_init_one_grid => initonegrid_usr
-!    usr_aux_output      => specialvar_output
-!    usr_add_aux_names   => specialvarnames_output
+    usr_aux_output      => specialvar_output
+    usr_add_aux_names   => specialvarnames_output
 
     call set_coordinate_system('Cartesian_1.75D')
 
@@ -91,7 +91,7 @@ contains
     double precision                   :: normconv(0:nw+nwauxio)
 
     double precision                   :: wlocal(ixI^S,nw)
-    double precision :: lamb(ixO^S), R(ixO^S)
+    double precision :: lamb(ixI^S), R(ixI^S)
 
     wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
     call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2)
