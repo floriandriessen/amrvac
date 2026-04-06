@@ -210,7 +210,7 @@ contains
     double precision :: dtnew
 
     double precision :: mf(ixO^S,1:ndim),Te(ixI^S),rho(ixI^S),gradT(ixI^S)
-    double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndir)
+    double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndir),Bmag
     double precision :: dtdiff_tcond,maxtmp2
     integer          :: idims,ix^D
 
@@ -220,70 +220,13 @@ contains
       if(B0field) then
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
           ^C&blocal(^C)=w({ix^D},iw_mag(^C))+block%B0({ix^D},^C,0)\
-         {^IFTWOD
-          if(blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(^CE&(blocal(^CE)/blocal(1))**2+))
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(^CF&(blocal(^CF)/blocal(2))**2+))
-          else
-            mf(ix^D,2)=0.d0
-          end if
-         }
-         {^IFTHREED
-          if(blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2+(blocal(3)/blocal(1))**2)
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2+(blocal(3)/blocal(2))**2)
-          else
-            mf(ix^D,2)=0.d0
-          end if
-          if(blocal(3)/=0.d0) then
-            mf(ix^D,3)=sign(1.d0,blocal(3))/dsqrt(1.d0+(blocal(1)/blocal(3))**2+(blocal(2)/blocal(3))**2)
-          else
-            mf(ix^D,3)=0.d0
-          end if
-         }
+          Bmag=dsqrt(^C&blocal(^C)**2+)+smalldouble
+          ^C&mf(ix^D,^C)=blocal(^C)/Bmag\
        {end do\}
       else
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
-         {^IFTWOD
-          if(w(ix^D,iw_mag(1))/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(^CE&(w(ix^D,iw_mag(^CE))/w(ix^D,iw_mag(1)))**2+))
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(w(ix^D,iw_mag(2))/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(^CF&(w(ix^D,iw_mag(^CF))/w(ix^D,iw_mag(2)))**2+))
-          else
-            mf(ix^D,2)=0.d0
-          end if
-         }
-         {^IFTHREED
-          if(w(ix^D,iw_mag(1))/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(w(ix^D,iw_mag(2))/w(ix^D,iw_mag(1)))**2+&
-              (w(ix^D,iw_mag(3))/w(ix^D,iw_mag(1)))**2)
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(w(ix^D,iw_mag(2))/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(w(ix^D,iw_mag(1))/w(ix^D,iw_mag(2)))**2+&
-              (w(ix^D,iw_mag(3))/w(ix^D,iw_mag(2)))**2)
-          else
-            mf(ix^D,2)=0.d0
-          end if
-          if(w(ix^D,iw_mag(3))/=0.d0) then
-            mf(ix^D,3)=sign(1.d0,w(ix^D,iw_mag(3)))/dsqrt(1.d0+(w(ix^D,iw_mag(1))/w(ix^D,iw_mag(3)))**2+&
-              (w(ix^D,iw_mag(2))/w(ix^D,iw_mag(3)))**2)
-          else
-            mf(ix^D,3)=0.d0
-          end if
-         }
+          Bmag=dsqrt(^C&w(ix^D,iw_mag(^C))**2+)+smalldouble
+          ^C&mf(ix^D,^C)=w(ix^D,iw_mag(^C))/Bmag\
        {end do\}
       end if
     else
@@ -313,10 +256,10 @@ contains
           end if
         end do
         ! kappa=kappa_Spitzer/(1+4.2*l_mfpe/(T/|gradT.b|))
-        tmp(ixO^S)=fl%tc_k_para*dsqrt(Te(ixO^S)**5)/(1.d0+4.2d0*tmp(ixO^S)*dabs(hfs(ixO^S))/Te(ixO^S))
+        tmp(ixO^S)=fl%tc_k_para*Te(ixO^S)*Te(ixO^S)*dsqrt(Te(ixO^S))/(1.d0+4.2d0*tmp(ixO^S)*dabs(hfs(ixO^S))/Te(ixO^S))
       else
         ! kappa=kappa_Spitzer
-        tmp(ixO^S)=fl%tc_k_para*dsqrt(Te(ixO^S)**5)
+        tmp(ixO^S)=fl%tc_k_para*Te(ixO^S)*Te(ixO^S)*dsqrt(Te(ixO^S))
       end if
     end if
 
@@ -427,7 +370,7 @@ contains
     !! qdd store the heat conduction energy changing rate
     double precision, dimension(ixI^S,1:ndim) :: mf,Bc,Bcf,gradT
     double precision, dimension(ixI^S) :: ka,kaf,ke,kef,qdd,Bnorm
-    double precision :: minq,maxq,qd(ixI^S,2**(ndim-1)), blocal(ndir)
+    double precision :: minq,maxq,qd(ixI^S,2**(ndim-1)), blocal(ndir), Bmag
     integer :: idims,idir,ix^D,ix^L,ixC^L,ixA^L,ixB^L
 
     ix^L=ixO^L^LADD1;
@@ -438,70 +381,13 @@ contains
       if(B0field) then
        {do ix^DB=ixmin^DB,ixmax^DB\}
           ^C&blocal(^C)=w({ix^D},iw_mag(^C))+block%B0({ix^D},^C,0)\
-         {^IFTWOD
-          if(blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(^CE&(blocal(^CE)/blocal(1))**2+))
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(^CF&(blocal(^CF)/blocal(2))**2+))
-          else
-            mf(ix^D,2)=0.d0
-          end if
-         }
-         {^IFTHREED
-          if(blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2+(blocal(3)/blocal(1))**2)
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2+(blocal(3)/blocal(2))**2)
-          else
-            mf(ix^D,2)=0.d0
-          end if
-          if(blocal(3)/=0.d0) then
-            mf(ix^D,3)=sign(1.d0,blocal(3))/dsqrt(1.d0+(blocal(1)/blocal(3))**2+(blocal(2)/blocal(3))**2)
-          else
-            mf(ix^D,3)=0.d0
-          end if
-         }
+          Bmag=dsqrt(^C&blocal(^C)**2+)+smalldouble
+          ^C&mf(ix^D,^C)=blocal(^C)/Bmag\
        {end do\}
       else
        {do ix^DB=ixmin^DB,ixmax^DB\}
-         {^IFTWOD
-          if(w(ix^D,iw_mag(1))/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(^CE&(w(ix^D,iw_mag(^CE))/w(ix^D,iw_mag(1)))**2+))
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(w(ix^D,iw_mag(2))/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(^CF&(w(ix^D,iw_mag(^CF))/w(ix^D,iw_mag(2)))**2+))
-          else
-            mf(ix^D,2)=0.d0
-          end if
-         }
-         {^IFTHREED
-          if(w(ix^D,iw_mag(1))/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(w(ix^D,iw_mag(2))/w(ix^D,iw_mag(1)))**2+&
-              (w(ix^D,iw_mag(3))/w(ix^D,iw_mag(1)))**2)
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(w(ix^D,iw_mag(2))/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(w(ix^D,iw_mag(1))/w(ix^D,iw_mag(2)))**2+&
-              (w(ix^D,iw_mag(3))/w(ix^D,iw_mag(2)))**2)
-          else
-            mf(ix^D,2)=0.d0
-          end if
-          if(w(ix^D,iw_mag(3))/=0.d0) then
-            mf(ix^D,3)=sign(1.d0,w(ix^D,iw_mag(3)))/dsqrt(1.d0+(w(ix^D,iw_mag(1))/w(ix^D,iw_mag(3)))**2+&
-              (w(ix^D,iw_mag(2))/w(ix^D,iw_mag(3)))**2)
-          else
-            mf(ix^D,3)=0.d0
-          end if
-         }
+          Bmag=dsqrt(^C&w(ix^D,iw_mag(^C))**2+)+smalldouble
+          ^C&mf(ix^D,^C)=w(ix^D,iw_mag(^C))/Bmag\
        {end do\}
       end if
     else
@@ -547,13 +433,13 @@ contains
        {do ix^DB=ixmin^DB,ixmax^DB\}
           if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_) .and. &
              Te(ix^D) > fl%trac_T_floor) then
-            qdd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
+            qdd(ix^D)=fl%tc_k_para*block%wextra(ix^D,fl%Tcoff_)*block%wextra(ix^D,fl%Tcoff_)*dsqrt(block%wextra(ix^D,fl%Tcoff_))
           else
-            qdd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)
+            qdd(ix^D)=fl%tc_k_para*Te(ix^D)*Te(ix^D)*dsqrt(Te(ix^D))
           end if
        {end do\}
       else
-        qdd(ix^S)=fl%tc_k_para*dsqrt(Te(ix^S)**5)
+        qdd(ix^S)=fl%tc_k_para*Te(ix^S)*Te(ix^S)*dsqrt(Te(ix^S))
       end if
      ! cell corner parallel conductivity in ka
      {^IFTHREED
@@ -654,7 +540,7 @@ contains
           ! averaged b at face centers
           Bcf(ixA^S,idims)=Bcf(ixA^S,idims)*0.5d0**(ndim-1)
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bcf(ixA^S,idims))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*(0.5d0*(Te(ixA^S)+Te(ixB^S)))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))*dabs(Bcf(ixA^S,idims))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -927,7 +813,7 @@ contains
           ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
           ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))**3*dabs(Bnorm(ixA^S))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*(0.5d0*(Te(ixA^S)+Te(ixB^S)))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))*dabs(Bnorm(ixA^S))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -1007,9 +893,9 @@ contains
           hfs(ixO^S)=hfs(ixO^S)+gradT(ixO^S)**2
         end do
         ! kappa=kappa_Spitzer/(1+4.2*l_mfpe/(T/|gradT|))
-        tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/(rho(ixO^S)*(1.d0+4.2d0*tmp2(ixO^S)*dsqrt(hfs(ixO^S))/Te(ixO^S)))
+        tmp(ixO^S)=fl%tc_k_para*Te(ixO^S)*Te(ixO^S)*dsqrt(Te(ixO^S))/(rho(ixO^S)*(1.d0+4.2d0*tmp2(ixO^S)*dsqrt(hfs(ixO^S))/Te(ixO^S)))
       else
-        tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/rho(ixO^S)
+        tmp(ixO^S)=fl%tc_k_para*Te(ixO^S)*Te(ixO^S)*dsqrt(Te(ixO^S))/rho(ixO^S)
       end if
     end if
 
@@ -1155,13 +1041,13 @@ contains
        {do ix^DB=ixmin^DB,ixmax^DB\}
           if(Te(ix^D) < block%wextra(ix^D,fl%Tcoff_) .and. &
              Te(ix^D) > fl%trac_T_floor) then
-            qd(ix^D)=fl%tc_k_para*dsqrt(block%wextra(ix^D,fl%Tcoff_)**5)
+            qd(ix^D)=fl%tc_k_para*block%wextra(ix^D,fl%Tcoff_)*block%wextra(ix^D,fl%Tcoff_)*dsqrt(block%wextra(ix^D,fl%Tcoff_))
           else
-            qd(ix^D)=fl%tc_k_para*dsqrt(Te(ix^D)**5)
+            qd(ix^D)=fl%tc_k_para*Te(ix^D)*Te(ix^D)*dsqrt(Te(ix^D))
           end if
        {end do\}
       else
-        qd(ix^S)=fl%tc_k_para*dsqrt(Te(ix^S)**5)
+        qd(ix^S)=fl%tc_k_para*Te(ix^S)*Te(ix^S)*dsqrt(Te(ix^S))
       end if
     end if
      ! conductivity at cell corner
@@ -1231,7 +1117,7 @@ contains
           ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
           ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
           ixD^L=ixA^L+kr(idims,^D);
-          qd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixD^S))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixD^S)))**3
+          qd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixD^S))*(0.5d0*(Te(ixA^S)+Te(ixD^S)))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixD^S)))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)

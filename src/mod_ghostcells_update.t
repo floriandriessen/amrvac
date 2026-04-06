@@ -556,10 +556,10 @@ contains
 
     ! fill physical boundary ghost cells after internal ghost-cell values exchange
     if(bcphys) then
-      !$OMP PARALLEL DO SCHEDULE(dynamic) PRIVATE(igrid)
       if(associated(usr_prepare_boundary)) then
         call usr_prepare_boundary(time, qdt)
       endif
+      !$OMP PARALLEL DO SCHEDULE(dynamic) PRIVATE(igrid)
       do iigrid=1,igridstail; igrid=igrids(iigrid);
         if(.not.phyboundblock(igrid)) cycle
         call fill_boundary_after_gc(igrid)
