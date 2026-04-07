@@ -40,7 +40,7 @@ module mod_mhd_phys
   !> The thermal conductivity kappa in hyperbolic thermal conduction
   double precision, public                :: hypertc_kappa
   !> Coefficient of diffusive divB cleaning
-  double precision                        :: divbdiff     = 0.8d0
+  double precision, public                :: divbdiff     = 0.8d0
   !> Helium abundance over Hydrogen
   double precision, public, protected  :: He_abundance=0.1d0
   !> Ionization fraction of H
@@ -5203,6 +5203,7 @@ contains
 
     double precision :: R(ixI^S),Te(ixI^S),rho_loc(ixI^S),pth_loc(ixI^S)
     double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndir),bunitvec(ndim)
+    double precision :: cmax(ndim),c2,cfast2,AvMinCs2(ndim),inv_rho
     integer :: ix^D
 
     call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
@@ -5234,14 +5235,20 @@ contains
         sigma_T7=sigma_T5*Te(ix^D)
       end if
       sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
+      inv_rho=1.d0/rho_loc(ix1)
+      c2=mhd_gamma*pth_loc(ix1)*inv_rho
+      cfast2=(^C&bdir(^C)**2+)*inv_rho+c2
+      avMinCs2(1)=cfast2**2-4.0d0*c2*bdir(1)**2*inv_rho
+      ! local fast wave speed in each dimension
+      cmax(1)=sqrt(half*(cfast2+sqrt(dabs(AvMinCs2(1)))))\
       if(mhd_htc_sat) then
         ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
         f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax(1)**2))
         w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
       else
         w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-         max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+         max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax(1)**2))
       end if
     end do
     }
@@ -5278,14 +5285,20 @@ contains
         sigmaT5_bgradT=sigma_T5*(&
            bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
+        inv_rho=1.d0/rho_loc(ix^D)
+        c2=mhd_gamma*pth_loc(ix^D)*inv_rho
+        cfast2=(^C&bdir(^C)**2+)*inv_rho+c2
+        ^D&avMinCs2(^D)=cfast2**2-4.0d0*c2*bdir(^D)**2*inv_rho\
+        ! local fast wave speed in each dimension
+        ^D&cmax(^D)=sqrt(half*(cfast2+sqrt(dabs(AvMinCs2(^D)))))\
         if(mhd_htc_sat) then
           ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
           f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
           w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
         else
           w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-           max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+           max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
         end if
       end do
     end do
@@ -5330,14 +5343,20 @@ contains
              bunitvec(1)*((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)&
             +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
+          inv_rho=1.d0/rho_loc(ix^D)
+          c2=mhd_gamma*pth_loc(ix^D)*inv_rho
+          cfast2=(^C&bdir(^C)**2+)*inv_rho+c2
+          ^D&avMinCs2(^D)=cfast2**2-4.0d0*c2*bdir(^D)**2*inv_rho\
+          ! local fast wave speed in each dimension
+          ^D&cmax(^D)=sqrt(half*(cfast2+sqrt(dabs(AvMinCs2(^D)))))\
           if(mhd_htc_sat) then
             ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
             f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
             w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
           else
             w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-             max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax_global**2))
+             max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
           end if
         end do
       end do
