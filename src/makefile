@@ -660,5 +660,6 @@ mod_viscosity.o: mod_comm_lib.mod
 mod_viscosity.o: mod_geometry.mod
 mod_viscosity.o: mod_global_parameters.mod
 mod_viscosity.o: mod_physics.mod
+mod_viscosity.o: mod_usr_methods.mod
 mod_weno.o: mod_global_parameters.mod
 mod_weno.o: mod_physics.mod

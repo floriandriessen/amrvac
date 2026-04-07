@@ -50,7 +50,7 @@ module mod_usr_methods
   procedure(phys_dust_get_3d_dragforce), pointer :: usr_get_3d_dragforce => null()
 
   ! Usr defined space varying viscosity
-  procedure(phys_visco), pointer      :: usr_setvisco         => null()
+  procedure(set_viscosity), pointer   :: usr_set_viscosity    => null()
 
   ! Usr defined thermal pressure for hydro & energy=.False.
   procedure(hd_pthermal), pointer     :: usr_set_pthermal     => null()
@@ -274,13 +274,13 @@ module mod_usr_methods
     end subroutine phys_dust_get_dt
 
     !>Calculation anormal viscosity depending on space
-    subroutine phys_visco(ixI^L,ixO^L,x,w,mu)
+    subroutine set_viscosity(ixI^L,ixO^L,x,wp,mu)
       use mod_global_parameters
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(in)    :: x(ixI^S,1:ndim)
-      double precision, intent(in)    :: w(ixI^S,1:nw)
+      double precision, intent(in)    :: wp(ixI^S,1:nw) ! primitive w
       double precision, intent(out)   :: mu(ixI^S)
-    end subroutine phys_visco
+    end subroutine set_viscosity
 
     !>Calculation anormal pressure for hd & energy=.False.
     subroutine hd_pthermal(w,x,ixI^L,ixO^L,pth)
