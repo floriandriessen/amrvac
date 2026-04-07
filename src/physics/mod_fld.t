@@ -21,8 +21,10 @@ module mod_fld
     !> Tolerance for bisection method for Energy sourceterms
     !> This is a percentage of the minimum of gas- and radiation energy
     double precision, public :: fld_bisect_tol = 1.d-4
-    !> Tolerance for adi method for radiative Energy diffusion
+    !> Tolerance for radiative Energy diffusion
     double precision, public :: fld_diff_tol = 1.d-4
+    !> switches for local debug purposes
+    logical :: fld_debug,fld_no_mg
     !> switches for opacity
     character(len=8)  :: fld_opacity_law = 'const'
     character(len=50) :: fld_opal_table = 'Y09800' 
@@ -30,14 +32,13 @@ module mod_fld
     character(len=16) :: fld_fluxlimiter = 'Pomraning'
     !> diffusion coefficient for multigrid method
     integer :: i_diff_mg
+    !> diffusion coefficient stencil control
+    integer :: nth_for_diff_mg
     !> Which method to find the root for the energy interaction polynomial
     character(len=8) :: fld_interaction_method = 'Halley'
-    !> Resume run when multigrid returns error
-    logical :: diffcrash_resume = .true.
     !> A copy of (m)hd_gamma
     double precision, private, protected :: fld_gamma
-    !> running timestep for diffusion solver, initialised as zero
-    double precision :: dt_diff = 0.d0
+
     !> public methods
     !> these are called in mod_hd_phys or mod_mhd_phys
     public :: fld_init
@@ -61,7 +62,7 @@ module mod_fld
 
     namelist /fld_list/ fld_kappa0, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_tol, fld_opacity_law, fld_fluxlimiter, &
-    fld_interaction_method, diffcrash_resume, fld_opal_table
+    fld_interaction_method, fld_opal_table, nth_for_diff_mg, fld_debug, fld_no_mg
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -83,13 +84,31 @@ module mod_fld
     double precision, intent(in) :: He_abundance, r_gamma
     double precision :: sigma_thomson
 
+    nth_for_diff_mg=1
+    fld_debug=.false.
+    fld_no_mg=.false.
     call fld_params_read(par_files)
-    phys_implicit_update => fld_implicit_update
-    phys_evaluate_implicit => fld_evaluate_implicit
-    use_multigrid = .true.
-    mg%n_extra_vars = 1
-    mg%operator_type = mg_vhelmholtz
-    i_diff_mg = var_set_extravar("D", "D")
+    if(.not.fld_no_mg)then
+      select case(nth_for_diff_mg)
+        case(1)
+         ! no need for stencil extension
+        case(2)
+         ! need for stencil extension
+         phys_wider_stencil=1 
+       case default
+         call mpistop("nth_for_diff_mg must be 1 or 2")
+       end select
+       phys_implicit_update   => fld_implicit_update
+       phys_evaluate_implicit => fld_evaluate_implicit
+       phys_set_mg_bounds     => fld_set_mg_bounds
+       ! store the diffusion coefficient as extra variable (needed in mg vhelmholtz)
+       i_diff_mg = var_set_extravar("D", "D")
+       use_multigrid = .true.
+       ! use multigrid to solve a helmholtz equation with variable coefficient
+       mg%n_extra_vars = 1
+       mg%operator_type = mg_vhelmholtz
+       mg%smoother_type = mg_smoother_gs
+    endif
     !> set gamma
     fld_gamma = r_gamma
     !> Read in opacity table if necesary
@@ -100,6 +119,56 @@ module mod_fld
       fld_kappa0 = sigma_thomson/const_mp * (1.+2.*He_abundance)/(1.+4.*He_abundance)
     endif
   end subroutine fld_init
+
+  !> Set the boundaries for the diffusion of E
+  subroutine fld_set_mg_bounds
+    use mod_global_parameters
+    use mod_multigrid_coupling
+    use mod_usr_methods
+
+    integer :: iB
+
+    ! Set boundary conditions for the multigrid solver
+    do iB = 1, 2*ndim
+       select case (typeboundary(iw_r_e, iB))
+       case (bc_symm)
+          ! d/dx u = 0
+          mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
+          mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
+       case (bc_asymm)
+          ! u = 0
+          mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
+          mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
+       case (bc_cont)
+          ! d/dx u = 0
+          mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
+          mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
+       case (bc_periodic)
+          ! Nothing to do here
+       case (bc_noinflow)
+          if (.not. associated(usr_special_mg_bc)) then 
+             call mpistop("special BC for MG not defined")
+          else
+             call usr_special_mg_bc(iB)
+          endif
+       case (bc_special)
+          if (.not. associated(usr_special_mg_bc)) then 
+             call mpistop("special BC for MG not defined")
+          else
+             call usr_special_mg_bc(iB)
+          endif
+       case default
+          call mpistop("divE_multigrid warning: unknown b.c. ")
+       end select
+       ! Neumann on the diffusion coefficient
+       ! d/dx u = 0
+       mg%bc(iB, mg_iveps)%bc_type = mg_bc_neumann
+       mg%bc(iB, mg_iveps)%bc_value = 0.0_dp
+    end do
+
+  end subroutine fld_set_mg_bounds
+
+
 
   !> w[iw]=w[iw]+qdt*S[wCT,qtC,x] where S is the source based on wCT within ixO
   !> This subroutine handles the radiation force and its work added explicitly
@@ -118,8 +187,7 @@ module mod_fld
 
     integer :: idir,jdir,nth_for_fld,ix^D
     double precision :: sigma_b,cc
-    double precision :: grad_E(ixI^S)
-    double precision, dimension(ixO^S) :: a1,a2,a3,c0,c1,kappa
+    double precision, dimension(ixI^S) :: a1,a2,a3,c0,c1,kappa
     double precision, dimension(ixI^S) :: e_gas,E_rad,tmp
     double precision, dimension(ixI^S,1:ndim,1:ndim) :: div_v,edd
 
@@ -130,17 +198,18 @@ module mod_fld
       ! store here lambda in a1 and fld_R in a2
       call fld_get_eddington(wCTprim,x,ixI^L,ixO^L,edd,a1,a2,nth_for_fld)
       do idir = 1,ndim
-        call gradient(wCTprim(ixI^S,iw_r_e),ixI^L,ixO^L,idir,grad_E,nth_for_fld)
+        call gradient(wCTprim(ixI^S,iw_r_e),ixI^L,ixO^L,idir,tmp,nth_for_fld)
         ! Radiation force = kappa*rho/c *Flux = lambda gradE
         ! recycle grad E to store -lambda (grad E)_i
-        grad_E(ixO^S) = -a1(ixO^S)*grad_E(ixO^S)
+        tmp(ixO^S) = -a1(ixO^S)*tmp(ixO^S)
         !> Momentum equation source term
-        w(ixO^S,iw_mom(idir)) = w(ixO^S,iw_mom(idir))+ qdt*grad_E(ixO^S)
+        w(ixO^S,iw_mom(idir)) = w(ixO^S,iw_mom(idir))+ qdt*tmp(ixO^S)
         !> Energy equation source term 
-        w(ixO^S,iw_e) = w(ixO^S,iw_e) + qdt*wCTprim(ixO^S,iw_mom(idir))*grad_E(ixO^S)
+        w(ixO^S,iw_e) = w(ixO^S,iw_e) + qdt*wCTprim(ixO^S,iw_mom(idir))*tmp(ixO^S)
       enddo
 
       !> Photon tiring : calculate tensor grad v (named div_v here)
+      ! NOTE: This is ok for uniform Cartesian only!!!!!
       do idir = 1,ndim
         do jdir = 1,ndim
           call gradient(wCTprim(ixI^S,iw_mom(jdir)),ixI^L,ixO^L,idir,tmp)
@@ -177,12 +246,17 @@ module mod_fld
       if(allocated(iw_mag)) then
         e_gas(ixO^S) = e_gas(ixO^S)-half*sum(w(ixO^S,iw_mag(:))**2,dim=ndim+1)
       endif
-      {do ix^D = ixOmin^D,ixOmax^D\ }
-        e_gas(ix^D) = max(e_gas(ix^D),small_pressure/(fld_gamma-1.d0))
-      {enddo\}
       E_rad(ixO^S) = w(ixO^S,iw_r_e)
-      call phys_get_Rfactor(wCT,x,ixI^L,ixO^L,tmp)
+
+      if(fix_small_values)then
+        {do ix^D = ixOmin^D,ixOmax^D\ }
+          e_gas(ix^D) = max(e_gas(ix^D),small_e)
+          E_rad(ix^D) = max(E_rad(ix^D),small_r_e)
+        {enddo\}
+      endif
+
       !> Coefficients for the polynomial in Moens et al. 2022, eq 37. but with photon tiring (a3)
+      call phys_get_Rfactor(wCT,x,ixI^L,ixO^L,tmp)
       a1(ixO^S) = 4.d0*sigma_b*qdt*kappa(ixO^S)*(fld_gamma-one)**4/(wCT(ixO^S,iw_rho)**3*tmp(ixO^S)**4)
       a2(ixO^S) = cc*kappa(ixO^S)*wCT(ixO^S,iw_rho)*qdt
       a3(ixO^S) = a3(ixO^S)*qdt
@@ -205,6 +279,14 @@ module mod_fld
       {enddo\}
 
       E_rad(ixO^S) = (a1(ixO^S)*e_gas(ixO^S)**4.d0+E_rad(ixO^S))/(one+a2(ixO^S)+a3(ixO^S))
+
+      if(fix_small_values)then
+        {do ix^D = ixOmin^D,ixOmax^D\ }
+          e_gas(ix^D) = max(e_gas(ix^D),small_e)
+          E_rad(ix^D) = max(E_rad(ix^D),small_r_e)
+        {enddo\}
+      endif
+
       !> Update gas-energy in w, internal + kinetic
       w(ixO^S,iw_e) = e_gas(ixO^S)
       w(ixO^S,iw_e) = w(ixO^S,iw_e)+half*sum(w(ixO^S,iw_mom(:))**2,dim=ndim+1)/w(ixO^S,iw_rho)
@@ -230,10 +312,11 @@ module mod_fld
 
     integer          :: idim,idims,nth_for_fld
     double precision :: dxinv(1:ndim), max_grav
-    double precision :: lambda(ixO^S),fld_R(ixO^S)
+    double precision :: lambda(ixI^S),fld_R(ixI^S)
     double precision :: tmp(ixI^S)
     double precision :: cmax(ixI^S),cmaxtot(ixI^S),courantmaxtots
 
+    if(fld_debug)print *,'DT limit on entry to radforce_get_dt=',dtnew
     nth_for_fld=2
     call fld_get_fluxlimiter_prim(w,x,ixI^L,ixO^L,lambda,fld_R,nth_for_fld)
     if(slab_uniform) then
@@ -252,6 +335,8 @@ module mod_fld
         dtnew = min(dtnew, 1.0d0 / dsqrt(max_grav))
       end do
     endif
+
+    if(fld_debug)print *,'DT limit after RADFORCE eff grav=',dtnew
 
     ! here we interface back to fld_get_radpress
     call phys_get_csrad2(w,x,ixI^L,ixO^L,tmp)
@@ -278,6 +363,7 @@ module mod_fld
     ! courantmaxtots='max(summed c/dx)'
     courantmaxtots=maxval(cmaxtot(ixO^S))
     if(courantmaxtots>smalldouble) dtnew=min(dtnew,courantpar/courantmaxtots)
+    if(fld_debug)print *,'DT limit RADFORCE CSRAD=',dtnew
 
   end subroutine fld_radforce_get_dt
 
@@ -293,7 +379,7 @@ module mod_fld
     integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out) :: fld_kappa(ixO^S)
+    double precision, intent(out) :: fld_kappa(ixI^S)
 
     integer :: ix^D
     double precision :: rho0,Temp0,n
@@ -322,17 +408,28 @@ module mod_fld
 
   !> Returns Radiation Pressure as tensor
   !> NOTE: w is primitive on entry
-  subroutine fld_get_radpress(w, x, ixI^L, ixO^L, rad_pressure, nth)
+  subroutine fld_get_radpress(w, x, ixI^L, ixO^L, rad_pressure)
     use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L, nth
+    integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: rad_pressure(ixO^S,1:ndim,1:ndim)
-    integer :: i,j
+    double precision, intent(out):: rad_pressure(ixI^S,1:ndim,1:ndim)
+    integer :: i,j,nth
     double precision             :: eddington_tensor(ixI^S,1:ndim,1:ndim)
-    double precision             :: lambda(ixO^S),fld_R(ixO^S)
+    double precision             :: lambda(ixI^S),fld_R(ixI^S)
 
+    nth=2
     call fld_get_eddington(w, x, ixI^L, ixO^L, eddington_tensor, lambda, fld_R, nth)
+    if(fld_debug)then
+       print *,'In get_radPress with nth=',nth,' on ixO=',ixO^L
+       print *,'Max and Min value of fe'
+       print *,maxval(eddington_tensor(ixO^S,1:ndim,1:ndim))
+       print *,minval(eddington_tensor(ixO^S,1:ndim,1:ndim))
+       print *,'Max and Min value of Erad'
+       print *,maxval(w(ixO^S,iw_r_e))
+       print *,minval(w(ixO^S,iw_r_e))
+       print *,'End get_radPress'
+    endif
     do i=1,ndim
       do j=1,ndim
         rad_pressure(ixO^S,i,j) = eddington_tensor(ixO^S,i,j)*w(ixO^S,iw_r_e)
@@ -351,11 +448,11 @@ module mod_fld
     integer, intent(in)           :: ixI^L,ixO^L,nth
     double precision, intent(in)  :: w(ixI^S,1:nw)
     double precision, intent(in)  :: x(ixI^S,1:ndim)
-    double precision, intent(out) :: fld_R(ixO^S),fld_lambda(ixO^S)
+    double precision, intent(out) :: fld_R(ixI^S),fld_lambda(ixI^S)
 
     double precision :: wprim(ixI^S,1:nw)
 
-    wprim=w
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
     call fld_get_fluxlimiter_prim(wprim,x,ixI^L,ixO^L,fld_lambda,fld_R,nth)
 
@@ -372,10 +469,10 @@ module mod_fld
     integer, intent(in)           :: ixI^L,ixO^L,nth
     double precision, intent(in)  :: w(ixI^S,1:nw)
     double precision, intent(in)  :: x(ixI^S,1:ndim)
-    double precision, intent(out) :: fld_R(ixO^S),fld_lambda(ixO^S)
+    double precision, intent(out) :: fld_R(ixI^S),fld_lambda(ixI^S)
 
     integer :: idir, ix^D
-    double precision :: kappa(ixO^S),normgrad2(ixO^S)
+    double precision :: kappa(ixI^S),normgrad2(ixI^S)
     double precision :: grad_r_e(ixI^S)
 
     select case(fld_fluxlimiter)
@@ -454,21 +551,19 @@ module mod_fld
     integer, intent(in)          :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out) :: rad_flux(ixO^S, 1:ndim)
+    double precision, intent(out) :: rad_flux(ixI^S, 1:ndim)
 
     integer :: idir,nth_for_fld
     double precision :: cc
     double precision :: wprim(ixI^S,1:nw)
     double precision :: grad_r_e(ixI^S)
-    double precision :: kappa(ixO^S), lambda(ixO^S), fld_R(ixO^S)
+    double precision :: kappa(ixI^S), lambda(ixI^S), fld_R(ixI^S)
 
-    wprim=w
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
 
     cc = const_c/unit_velocity
-    ! NOTE: assuming opacity is local, not ok with cak line force
     call fld_get_opacity_prim(wprim, x, ixI^L, ixO^L, kappa)
-    ! CHECK ranges
     nth_for_fld=2
     call fld_get_fluxlimiter_prim(wprim, x, ixI^L, ixO^L, lambda, fld_R, nth_for_fld)
     !> Calculate the Flux using the fld closure relation
@@ -488,34 +583,43 @@ module mod_fld
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out) :: eddington_tensor(ixI^S,1:ndim,1:ndim)
-    double precision, intent(out) :: lambda(ixO^S),fld_R(ixO^S)
+    double precision, intent(out) :: lambda(ixI^S),fld_R(ixI^S)
 
     integer :: idir,jdir
-    double precision :: normgrad2(ixO^S), f(ixO^S)
-    double precision :: grad_r_e(ixI^S,1:ndim)
+    double precision :: normgrad2(ixI^S)
+    double precision :: tmp(ixI^S),grad_r_e(ixI^S,1:ndim)
+    double precision :: nn_regularized(ixI^S,1:ndim,1:ndim)
 
     normgrad2(ixO^S) = zero
     do idir = 1,ndim
-      call gradient(w(ixI^S, iw_r_e),ixI^L,ixO^L,idir,grad_r_e(ixI^S,idir),nth)
-      normgrad2(ixO^S)=normgrad2(ixO^S)+grad_r_e(ixO^S,idir)**2
+      call gradient(w(ixI^S, iw_r_e),ixI^L,ixO^L,idir,tmp,nth)
+      grad_r_e(ixO^S,idir)=tmp(ixO^S)
+      normgrad2(ixO^S)=normgrad2(ixO^S)+tmp(ixO^S)**2
     end do
+    do idir = 1,ndim
+      do jdir = 1,ndim
+       if(idir==jdir)then
+          nn_regularized(ixO^S,idir,jdir)=(grad_r_e(ixO^S,idir)*grad_r_e(ixO^S,jdir)+smalldouble**2)/(normgrad2(ixO^S)+smalldouble**2)
+       else
+          nn_regularized(ixO^S,idir,jdir)=(grad_r_e(ixO^S,idir)*grad_r_e(ixO^S,jdir))/(normgrad2(ixO^S)+smalldouble**2)
+       endif
+      enddo
+    enddo
     ! get lambda and R  
     call fld_get_fluxlimiter_prim(w,x,ixI^L,ixO^L,lambda,fld_R,nth)
     ! store f_e= lambda + lambda^2 R^2
-    f(ixO^S) = lambda(ixO^S)+(lambda(ixO^S)*fld_R(ixO^S))**2
+    tmp(ixO^S) = lambda(ixO^S)+(lambda(ixO^S)*fld_R(ixO^S))**2
     do idir = 1,ndim
       ! first compute the isotropic (diagonal) part
-      eddington_tensor(ixO^S,idir,idir) = half*(one-f(ixO^S))
+      eddington_tensor(ixO^S,idir,idir) = half*(one-tmp(ixO^S))
     enddo
     do idir = 1,ndim
       do jdir = 1,ndim
         ! initialize off-diagonal part here
         if(idir .ne. jdir) eddington_tensor(ixO^S,idir,jdir) = zero
         ! add part depending on unit vectors along gradient E
-        where(normgrad2(ixO^S) .gt. smalldouble**2)
-          eddington_tensor(ixO^S,idir,jdir) = eddington_tensor(ixO^S,idir,jdir)+&
-            half*(3.d0*f(ixO^S)-one)*grad_r_e(ixO^S,idir)*grad_r_e(ixO^S,jdir)/normgrad2(ixO^S)
-        endwhere
+        eddington_tensor(ixO^S,idir,jdir) = eddington_tensor(ixO^S,idir,jdir)+&
+            half*(3.d0*tmp(ixO^S)-one)*nn_regularized(ixO^S,idir,jdir)
       enddo
     enddo
   end subroutine fld_get_eddington
@@ -533,20 +637,12 @@ module mod_fld
     double precision, intent(in) :: qtC
     double precision, intent(in) :: dtfactor
 
-    integer                      :: n
-    double precision             :: res, max_residual, lambda
     integer, parameter           :: max_its = 100
-    integer                      :: iw_to,iw_from
-    integer                      :: iigrid, igrid, id
-    integer                      :: nc, lvl, i
-    type(tree_node), pointer     :: pnode
-    double precision             :: fac, facD
+    integer                      :: n,ixO^L,ix^D
+    double precision             :: res, max_residual, lambda, fac
+    integer :: iigrid, igrid
 
-    !> Set diffusion timestep, add previous timestep if mg did not converge:
-    if(it == 0) dt_diff = 0
-    dt_diff = dt_diff + qdt
-    ! Avoid setting a very restrictive limit to the residual when the time step
-    ! is small (as the operator is ~ 1/(D * qdt))
+    ! Avoid setting a very restrictive limit to residual when time step small
     if(qdt < dtmin) then
       if(mype==0)then
           print *,'skipping implicit solve: dt too small!'
@@ -555,98 +651,129 @@ module mod_fld
       return
     endif
     max_residual = fld_diff_tol
-    mg%operator_type = mg_vhelmholtz
-    mg%smoother_type = mg_smoother_gs
+
     call mg_set_methods(mg)
     if(.not. mg%is_allocated) call mpistop("multigrid tree not allocated yet")
-    lambda = 1.d0/(dtfactor * dt_diff)
-    call vhelmholtz_set_lambda(lambda)
-    call update_diffcoeff(psb)
+
+    ! Here we handle the global helmholtz problem with variable coefficient
+    ! The equation we solve is div(D nabla Erad^(n+1)) -(1/dt)Erad^(n+1)=-(1/dt)Erad^n
+    ! Helmholtz equation is div(eps nabla phi) -lambda phi = f
+    !    hence eps is our variable coefficient D=fld_lambda*c/(kappa*rho)
+    !    hence phi is Erad and lambda=1/dt
+    lambda = 1.d0/(dtfactor *qdt)
     fac = 1.d0
-    facD = 1.d0
-    call mg_copy_to_tree(i_diff_mg, mg_iveps, factor=facD, state_from=psb)
-    call mg_copy_to_tree(iw_r_e, mg_iphi, factor=fac, state_from=psb)
-    call mg_copy_to_tree(iw_r_e, mg_irhs, factor=-1/(dtfactor*dt_diff), state_from=psb)
+    call vhelmholtz_set_lambda(lambda)
+    call update_diffcoeff(psa)
+    ! copy in the (variable) diffusion coefficient in mg_iveps
+    call mg_copy_to_tree(i_diff_mg, mg_iveps, factor=fac, state_from=psa)
+    ! copy in the Erad variable in mg_iphi (the one we solve for)
+    call mg_copy_to_tree(iw_r_e, mg_iphi, factor=fac, state_from=psa)
+    ! copy in RHS f factor as Erad with factor -(1/dt)
+    call mg_copy_to_tree(iw_r_e, mg_irhs, factor=-lambda, state_from=psb)
     if(time_advance)then
-      call mg_restrict(mg, mg_iveps)
-      call mg_fill_ghost_cells(mg, mg_iveps)
+       call mg_restrict(mg, mg_iveps)
+       call mg_fill_ghost_cells(mg, mg_iveps)
     endif
     call mg_fas_fmg(mg, .true., max_res=res)
     do n = 1, max_its
       if(res < max_residual) exit
       call mg_fas_vcycle(mg, max_res=res)
     end do
-    if(res .le. 0.d0) then
-      if (diffcrash_resume) then
-        if (mg%my_rank == 0) &
-        write(*,*) it, ' residual zero ', res
-        return
+    if((res .lt. 0.d0) .or. (res .ge. max_residual)) then
+      if (mg%my_rank == 0) then 
+        write(*,*) it, ' residual from MG ', res
+        write(*,*) it, ' max_residual in MG ', max_residual
+        write(*,*) it, ' qdt in MG ', qdt, ' versus dtmin=',dtmin
+        write(*,*) it, ' dtfactor*qdt in MG ', qdt*dtfactor
       endif
-      if(mg%my_rank == 0) then
-        print*, res
-        error stop "Diffusion residual to zero"
-      endif
+      call mpistop("no convergence in MG")
+    end if
+    if(res .eq. 0.d0) then
+      if (mg%my_rank == 0) write(*,*) it, 'ZERO  residual from MG ', res
     endif
-!    if(n==max_its+1) then
-!       if(diffcrash_resume) then
-!         if(mg%my_rank == 0) &
-!         write(*,*) it, ' residual high ', res
-!         return
-!       endif
-!       if(mg%my_rank == 0) then
-!          print *, "Did you specify boundary conditions correctly?"
-!          print *, "Or is the variation in diffusion too large?"
-!          print*, n, res
-!          print *, mg%bc(1, mg_iphi)%bc_value, mg%bc(2, mg_iphi)%bc_value
-!       end if
-!       error stop "diffusion_solve: no convergence"
-!    end if
-    !> Reset dt_diff when diffusion worked out
-    dt_diff = 0.d0
+    ! copy back the Erad variable in iw_r_e
     call mg_copy_from_tree_gc(mg_iphi, iw_r_e, state_to=psa)
+
+    if(fix_small_values)then
+       ixO^L=ixM^LL;
+       do iigrid=1,igridstail; igrid=igrids(iigrid);
+         {do ix^D = ixOmin^D,ixOmax^D\ }
+           psa(igrid)%w(ix^D,iw_r_e)= max(psa(igrid)%w(ix^D,iw_r_e),small_r_e)
+         {enddo\}
+       end do
+    endif
+
   end subroutine fld_implicit_update
+
+  subroutine update_diffcoeff(psa)
+    use mod_global_parameters
+    type(state), target :: psa(max_blocks)
+
+    integer :: iigrid, igrid, ixO^L
+
+    ! we will need diffusion coefficients in i-1 i i+1
+    ixO^L=ixM^LL^LADD1;
+    !$OMP PARALLEL DO PRIVATE(igrid)
+    do iigrid=1,igridstail; igrid=igrids(iigrid);
+        call fld_get_diffcoef_central(psa(igrid)%w, psa(igrid)%x, ixG^LL, ixO^L)
+    end do
+    !$OMP END PARALLEL DO
+
+  end subroutine update_diffcoeff
 
   !> inplace update of psa==>F_im(psa)
   subroutine fld_evaluate_implicit(qtC,psa)
     use mod_global_parameters
-    use mod_ghostcells_update
     type(state), target :: psa(max_blocks)
     double precision, intent(in) :: qtC
-    integer :: iigrid, igrid, level
+    integer :: iigrid, igrid
     integer :: ixO^L
 
     call update_diffcoeff(psa)
-    ixO^L=ixM^LL^LADD1;
+
+    ixO^L=ixM^LL;
     !$OMP PARALLEL DO PRIVATE(igrid)
     do iigrid=1,igridstail; igrid=igrids(iigrid);
        ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
-       call put_diffterm_onegrid(ixG^LL,ixO^L,psa(igrid)%w)
+       call evaluate_diffterm_onegrid(ixG^LL,ixO^L,psa(igrid)%w)
     end do
     !$OMP END PARALLEL DO
-    ! enforce boundary conditions for psa
-    call getbc(qtC,0.d0,psa,1,nwflux+nwaux)
+
   end subroutine fld_evaluate_implicit
 
   !> inplace update of psa==>F_im(psa)
-  subroutine put_diffterm_onegrid(ixI^L,ixO^L,w)
+  subroutine evaluate_diffterm_onegrid(ixI^L,ixO^L,w)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: w(ixI^S, 1:nw)
-    double precision :: gradE(ixO^S),divF(ixO^S)
-    double precision :: divF_h(ixO^S),divF_j(ixO^S)
-    double precision :: diff_term(ixO^S)
+
+    double precision :: divF(ixI^S)
     integer :: idir, jxO^L, hxO^L
 
+    if(.not.slab)call mpistop("laplacian coded up for uniform cartesian grid")
+
+    ! Here we use diffusion coefficients in positions i-1 i i+1 and exploit harmonic means i.e. 2ab/(a+b)
+    ! since this is how the multigrid library handles the div(eps nabla phi) term in Helmholtz equation
+    !   div(eps nabla phi) - lambda phi = f
     divF(ixO^S) = 0.d0
     do idir = 1,ndim
-      hxO^L=ixO^L-kr(idir,^D);
-      jxO^L=ixO^L+kr(idir,^D);
-      divF_h(ixO^S) = w(ixO^S,i_diff_mg)*w(hxO^S,i_diff_mg)/(w(ixO^S,i_diff_mg) + w(hxO^S,i_diff_mg))*(w(hxO^S,iw_r_e) - w(ixO^S,iw_r_e))
-      divF_j(ixO^S) = w(ixO^S,i_diff_mg)*w(jxO^S,i_diff_mg)/(w(ixO^S,i_diff_mg) + w(jxO^S,i_diff_mg))*(w(jxO^S,iw_r_e) - w(ixO^S,iw_r_e))
-      divF(ixO^S) = divF(ixO^S) + 2.d0*(divF_h(ixO^S) + divF_j(ixO^S))/dxlevel(idir)**2
+       hxO^L=ixO^L-kr(idir,^D);
+       jxO^L=ixO^L+kr(idir,^D);
+       divF(ixO^S) = divF(ixO^S) + &
+           (w(jxO^S,iw_r_e)*two*w(ixO^S,i_diff_mg)*w(jxO^S,i_diff_mg)/(w(ixO^S,i_diff_mg) + w(jxO^S,i_diff_mg)) &
+          -w(ixO^S,iw_r_e)*(two*w(ixO^S,i_diff_mg)*w(jxO^S,i_diff_mg)/(w(ixO^S,i_diff_mg) + w(jxO^S,i_diff_mg)) &
+                           +two*w(ixO^S,i_diff_mg)*w(hxO^S,i_diff_mg)/(w(ixO^S,i_diff_mg) + w(hxO^S,i_diff_mg))) &
+           +w(hxO^S,iw_r_e)*two*w(ixO^S,i_diff_mg)*w(hxO^S,i_diff_mg)/(w(ixO^S,i_diff_mg) + w(hxO^S,i_diff_mg)))/dxlevel(idir)**2
+       ! below uses artihmetic mean, different from mg method
+       !divF(ixO^S) = divF(ixO^S) + &
+       !    (w(jxO^S,iw_r_e)*half*(w(ixO^S,i_diff_mg) + w(jxO^S,i_diff_mg)) &
+       !   -w(ixO^S,iw_r_e)*(half*(w(ixO^S,i_diff_mg) + w(jxO^S,i_diff_mg)) &
+       !                    +half*(w(ixO^S,i_diff_mg) + w(hxO^S,i_diff_mg))) &
+       !    +w(hxO^S,iw_r_e)*half*(w(ixO^S,i_diff_mg) + w(hxO^S,i_diff_mg)))/dxlevel(idir)**2
     enddo
     w(ixO^S,iw_r_e) = divF(ixO^S)
-  end subroutine put_diffterm_onegrid
+
+  end subroutine evaluate_diffterm_onegrid
 
   !> Calculates cell-centered diffusion coefficient to be used in multigrid
   subroutine fld_get_diffcoef_central(w, x, ixI^L, ixO^L)
@@ -655,40 +782,47 @@ module mod_fld
     use mod_usr_methods
     use mod_physics, only: phys_to_primitive
     integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
 
-    integer :: idir,i,j,ix^D
-    double precision :: wprim(ixI^S,1:nw)
     double precision :: cc
-    double precision :: kappa(ixO^S),lambda(ixO^S),fld_R(ixO^S)
-    double precision :: max_D(ixI^S),grad_r_e(ixI^S),rad_e(ixI^S)
+    double precision :: wprim(ixI^S,1:nw)
+    double precision :: kappa(ixI^S),lambda(ixI^S),fld_R(ixI^S)
 
     cc = const_c/unit_velocity
-    wprim=w
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
+    ! ensure entries in entire ixI range
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
     call fld_get_opacity_prim(wprim, x, ixI^L, ixO^L, kappa)
-    call fld_get_fluxlimiter_prim(wprim, x, ixI^L, ixO^L, lambda, fld_R, nghostcells-1)
+    ! note that we use central difference here (last argument is 1 or 2)
+    call fld_get_fluxlimiter_prim(wprim, x, ixI^L, ixO^L, lambda, fld_R, nth_for_diff_mg)
     w(ixO^S,i_diff_mg) = cc*lambda(ixO^S)/(kappa(ixO^S)*wprim(ixO^S,iw_rho))
-    where(w(ixO^S,i_diff_mg) .lt. 0.d0) w(ixO^S,i_diff_mg) = smalldouble
     if(associated(usr_special_diffcoef)) call usr_special_diffcoef(w, wprim, x, ixI^L, ixO^L)
+    if(minval(w(ixO^S,i_diff_mg))<smalldouble) then
+        print *,'min diffcoef=',minval(w(ixO^S,i_diff_mg))
+        call mpistop("too small diffusion coefficient")
+    endif
+    if(maxval(w(ixO^S,i_diff_mg))>bigdouble)  call mpistop("too large diffusion coefficient")
+
+    if(fld_debug)then
+      print *,'setting diffcoefs with data on',ixI^L
+      print *,'min diffcoef=',minval(w(ixO^S,i_diff_mg))
+      print *,'min lambda kappa rho fld_R'
+      print *,minval(lambda(ixO^S))
+      print *,minval(kappa(ixO^S))
+      print *,minval(wprim(ixO^S,iw_rho))
+      print *,minval(fld_R(ixO^S))
+      print *,'max diffcoef=',maxval(w(ixO^S,i_diff_mg))
+      print *,'max lambda kappa rho fld_R'
+      print *,maxval(lambda(ixO^S))
+      print *,maxval(kappa(ixO^S))
+      print *,maxval(wprim(ixO^S,iw_rho))
+      print *,maxval(fld_R(ixO^S))
+      print *,'done setting diffcoefs in slot',i_diff_mg,' on range',ixO^L
+    endif
 
   end subroutine fld_get_diffcoef_central
 
-  subroutine update_diffcoeff(psa)
-    use mod_global_parameters
-    type(state), target :: psa(max_blocks)
-    integer :: iigrid, igrid, level
-    integer :: ixO^L
-
-    ixO^L=ixM^LL^LADD1;
-    !$OMP PARALLEL DO PRIVATE(igrid)
-    do iigrid=1,igridstail; igrid=igrids(iigrid);
-       ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
-        call fld_get_diffcoef_central(psa(igrid)%w, psa(igrid)%x, ixG^LL, ixO^L)
-    end do
-    !$OMP END PARALLEL DO
-  end subroutine update_diffcoeff
 
   !> Find the root of the 4th degree polynomial using the bisection method
   subroutine Bisection_method(e_gas, E_rad, c0, c1)
@@ -702,7 +836,7 @@ module mod_fld
     n = 0
     max_its = 100
     bisect_a = zero
-    bisect_b = min(abs(c0/c1),abs(c0)**(1.d0/4.d0))+smalldouble
+    bisect_b = min(dabs(c0/c1),dabs(c0)**(1.d0/4.d0))+smalldouble
     do while(dabs(bisect_b-bisect_a) .ge. fld_bisect_tol*min(e_gas,E_rad))
       bisect_c = (bisect_a + bisect_b)/two
       n = n +1
@@ -738,8 +872,8 @@ module mod_fld
       else
         bisect_a = e_gas
         bisect_b = e_gas
-        print*, "IGNORING GAS-RAD ENERGY EXCHANGE ", c0, c1
-        print*, Polynomial_Bisection(bisect_a, c0, c1), Polynomial_Bisection(bisect_b, c0, c1)
+        if(fld_debug)print*, "IGNORING GAS-RAD ENERGY EXCHANGE ", c0, c1
+        if(fld_debug)print*, Polynomial_Bisection(bisect_a, c0, c1), Polynomial_Bisection(bisect_b, c0, c1)
         call mpistop('issues in bisection scheme')
         if(Polynomial_Bisection(bisect_a, c0, c1) .le. smalldouble) then
           bisect_b = bisect_a
@@ -774,7 +908,7 @@ module mod_fld
       xval = xval + deltax
       ii = ii + 1
       if(ii .gt. 1d3) then
-        print*, 'skip to bisection algorithm'
+        if(fld_debug)print*, 'skip to bisection algorithm'
         call Bisection_method(e_gas, E_rad, c0, c1)
         return
       endif
@@ -806,7 +940,7 @@ module mod_fld
       xval = xval + deltax
       ii = ii + 1
       if(ii .gt. 1d3) then
-        print*, 'skip to Newton algorithm'
+        if(fld_debug)print*, 'skip to Newton algorithm'
         !call mpistop("iterates to 1000, entering Newton method")
         call Newton_method(e_gas, E_rad, c0, c1)
         return

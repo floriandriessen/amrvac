@@ -63,9 +63,6 @@ module mod_usr
    ! Additional variables
   integer                     :: dr1_, dt1_, dp1_
 
-  integer :: i_sol,i_err ! indices for extra variables
-  integer :: isol   ! index for extra payload in gridvars for particles
-
 contains
 
   subroutine usr_params_read(files)
@@ -306,11 +303,8 @@ contains
     use mod_global_parameters
     integer, intent(inout) :: ngridvars
  
-    ! extra variable as payload: add the actual solution
-    print *, "gridvars ", ngridvars
-    isol = ngridvars+3
-    ngridvars = ngridvars+3
-    print *, "gridvars after", ngridvars
+    ! three extra variables defined above as dr1_ dt1_ dp1_ already accounted for
+    ! no need to raise ngridvars here, unless additional payload is created
 
   end subroutine define_additional_gridvars_usr
 
@@ -321,22 +315,15 @@ contains
     integer :: igrid, iigrid
     double precision :: pth(ixG^T)
     double precision :: w(ixG^T,1:nw)
-   ! print *, "igridstail", igridstail
-   !print *, dr1_, dp1_, dt1_
-    do iigrid=1,igridstail; igrid=igrids(iigrid);
-      !print *, igrid, gridvars(igrid)%w(ixG^T,10)
-      w(ixG^T,1:nw) = ps(igrid)%w(ixG^T,1:nw)
-      gridvars(igrid)%w(ixG^T,dr1_)=block%dx(ixG^T,1)
-      gridvars(igrid)%w(ixG^T,dt1_)=block%dx(ixG^T,2)
-      gridvars(igrid)%w(ixG^T,dp1_)=block%dx(ixG^T,3)
-     
-    end do
-    !print *, "in fill after", w(ixG^T,10)
 
-    !do iigrid=1,igridstail; igrid=igrids(iigrid);
-    !  call set_density_profile(ixG^LL,ixG^LL,global_time,ps(igrid)%x(ixG^T,1:ndim),rhoprofile)
-    !  gridvars(igrid)%w(ixG^T,isol) = rhoprofile(ixG^T)
-    !end do
+! No need for what follows anymore: extravars already accounted for in nw array
+! Here we would only add ADDITIONAL payloads beyond nw array
+!    do iigrid=1,igridstail; igrid=igrids(iigrid);
+!      w(ixG^T,1:nw) = ps(igrid)%w(ixG^T,1:nw)
+!      gridvars(igrid)%w(ixG^T,dr1_)=block%dx(ixG^T,1)
+!      gridvars(igrid)%w(ixG^T,dt1_)=block%dx(ixG^T,2)
+!      gridvars(igrid)%w(ixG^T,dp1_)=block%dx(ixG^T,3)
+!    end do
 
   end subroutine fill_additional_gridvars_usr
 
@@ -347,20 +334,15 @@ contains
     double precision, intent(out) :: mypayload(mynpayload)
     double precision              :: xgrid(ixG^T,1:ndim)
 
-    xgrid = ps(igrid)%x
-   ! print *, "in payload ", npayload
-
+! No need for what follows anymore: extravars already accounted for in nw array
+! Here we would only handle ADDITIONAL payloads beyond nw array
+    !xgrid = ps(igrid)%x
     ! put the solution at particle_time for comparison
-    
-    if (npayload > 0) then
-      call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dr1_),xgrid,xpart,mypayload(1))
-      call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dt1_),xgrid,xpart,mypayload(2))
-      call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dp1_),xgrid,xpart,mypayload(3))
-      !gridvars(igrid)%w(ixG^T,dr1_) = block%dx(ixG^T,1)
-      !gridvars(igrid)%w(ixG^T,dt1_) = block%dx(ixG^T,2)
-      !gridvars(igrid)%w(ixG^T,dp1_) = block%dx(ixG^T,3)
-      
-    end if
+    !if (npayload > 0) then
+    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dr1_),xgrid,xpart,mypayload(1))
+    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dt1_),xgrid,xpart,mypayload(2))
+    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dp1_),xgrid,xpart,mypayload(3))
+    !end if
 
   end subroutine update_payload_usr
 

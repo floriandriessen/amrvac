@@ -148,7 +148,6 @@ contains
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     double precision :: press(ixI^S), temp(ixI^S)
-    double precision :: kappa(ixO^S), lambda(ixO^S), fld_R(ixO^S)
 
     ! Set initial values for w
     w(ixI^S, rho_) = rho0

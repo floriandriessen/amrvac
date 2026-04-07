@@ -161,9 +161,6 @@ module mod_twofl_phys
   !> The MHD Hall coefficient
   double precision, public                :: twofl_etah = 0.0d0
 
-  !> The small_est allowed energy
-  double precision, protected             :: small_e
-
   !> Method type to clean divergence of B
   character(len=std_len), public, protected :: typedivbfix  = 'linde'
 
@@ -822,7 +819,6 @@ contains
        call grav_params_read(par_files)
     end if
 
-    ! Initialize particles module
     ! For Hall, we need one more reconstructed layer since currents are computed
     ! in getflux: assuming one additional ghost layer (two for FOURTHORDER) was
     ! added in nghostcells.
@@ -1433,7 +1429,7 @@ contains
         unit_temperature=unit_pressure/(b*unit_numberdensity*kB)
       end if
     end if
-    ! Additional units needed for the particles
+    ! Additional units needed for particles
     c_norm=c_lightspeed/unit_velocity
     unit_charge=unit_magneticfield*unit_length**2/unit_velocity/miu0
     if (.not. SI_unit) unit_charge = unit_charge*const_c

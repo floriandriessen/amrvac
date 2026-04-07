@@ -43,7 +43,7 @@
 
  &paramlist
         courantpar=0.8d0
-        slowsteps=20000
+        slowsteps=200
  /
 
  &mhd_list

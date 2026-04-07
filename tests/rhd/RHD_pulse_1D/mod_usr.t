@@ -84,7 +84,7 @@ contains
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     double precision :: temp(ixI^S), pth(ixI^S)
-    double precision :: kappa(ixO^S), fld_R(ixO^S), lambda(ixO^S)
+    double precision :: kappa(ixI^S), fld_R(ixI^S), lambda(ixI^S)
 
     ! v0 = 0.d0
 

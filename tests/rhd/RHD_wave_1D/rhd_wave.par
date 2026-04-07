@@ -17,7 +17,6 @@
  &stoplist
    time_max = 1.d-2
    dtmin = 2.0d-20
-   !it_max = 50
 /
 
  &methodlist
@@ -25,11 +24,6 @@
    time_integrator = 'IMEX_SP'
    flux_scheme     = 20*'hll'
    limiter         = 20*'weno5'
-   typesourcesplit = 'sfs'
-   check_small_values = .true.
-   small_values_method = 'replace'
-   small_pressure = 1.d-8
-   small_density = 1.d-8
 /
 
 &boundlist
@@ -47,8 +41,7 @@
  /
 
  &paramlist
-  courantpar       = 1.d-2
-  !dtpar           = 1.d-4
+  courantpar       = 0.2d0
  /
 
  &hd_list

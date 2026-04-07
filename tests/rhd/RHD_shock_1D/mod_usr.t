@@ -153,10 +153,6 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
-    double precision :: rho(ixI^S), Temp(ixI^S), press(ixI^S), vel(ixI^S)
-
-    double precision :: kappa(ixO^S), fld_R(ixO^S), lambda(ixO^S)
-
     w(ixI^S,rho_) = rho1
     w(ixI^S,mom(:)) = 0.d0
     w(ixI^S,mom(1)) = rho1*v1

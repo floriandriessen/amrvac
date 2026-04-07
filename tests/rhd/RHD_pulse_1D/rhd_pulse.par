@@ -22,15 +22,10 @@
 /
 
  &methodlist
-   time_stepper = 'twostep'
-   time_integrator = 'IMEX_Trapezoidal'
+   time_stepper    = 'twostep'
+   time_integrator = 'IMEX_222'
    flux_scheme     = 20*'hll'
    limiter         = 20*'weno5'
-   source_split_usr = .false.
-   typesourcesplit = 'sfs'
-   small_values_method = 'replace'
-   small_pressure = 1.d-8
-   small_density = 1.d-8
 /
 
 &boundlist
@@ -67,5 +62,5 @@
   fld_kappa0 = 100.d0
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
-  fld_diff_tol = 1.d-4
+  fld_diff_tol = 1.d-8
   /

@@ -40,8 +40,6 @@ module mod_srhd_phys
   double precision, public                :: srhd_gamma = 5.d0/3.0d0
   double precision, public                :: gamma_1,inv_gamma_1,gamma_to_gamma_1
 
-  !> The smallest allowed energy
-  double precision, public             :: small_e
   !> The smallest allowed inertia
   double precision, public             :: small_xi
 
@@ -110,7 +108,6 @@ contains
   !> Initialize the module
   subroutine srhd_phys_init()
     use mod_global_parameters
-    use mod_particles, only: particles_init
     integer :: itr,idir
 
     call srhd_read_params(par_files)
@@ -197,15 +194,19 @@ contains
     phys_write_info          => srhd_write_info
     phys_handle_small_values => srhd_handle_small_values
 
-    ! Initialize particles module
-    if (srhd_particles) then
-       call particles_init()
-    end if
 
   end subroutine srhd_phys_init
 
   subroutine srhd_check_params
     use mod_global_parameters
+    use mod_geometry, only: coordinate
+    use mod_particles, only: particles_init
+    use mod_particles, only: npayload,nusrpayload,ngridvars,num_particles,physics_type_particles
+
+    ! Initialize particles module
+    if (srhd_particles) then
+       call particles_init()
+    end if
 
     if (srhd_gamma <= 0.0d0 .or. srhd_gamma == 1.0d0) &
             call mpistop ("Error: srhd_gamma <= 0 or srhd_gamma == 1")
@@ -227,6 +228,38 @@ contains
        write(*,*)'Derived small values: xi and e ',small_xi,small_e
        write(*,*)'------------------------------------------------------------'
     endif
+
+    if(mype==0)then
+           write(*,*)'====SRHD run with settings===================='
+           write(*,*)'Using mod_srhd_phys with settings:'
+           write(*,*)'SI_unit=',SI_unit
+           write(*,*)'Dimensionality   :',ndim
+           write(*,*)'vector components:',ndir
+           write(*,*)'coordinate set to type,slab:',coordinate,slab
+           write(*,*)'number of variables          nw=',nw
+           write(*,*)'    start index         iwstart=',iwstart
+           write(*,*)'number of      vector variables=',nvector
+           write(*,*)'number of stagger variables nws=',nws
+           write(*,*)'number of    variables with BCs=',nwgc
+           write(*,*)'number of      vars with fluxes=',nwflux
+           write(*,*)'number of   vars with flux + BC=',nwfluxbc
+           write(*,*)'number of   auxiliary variables=',nwaux
+           write(*,*)'number of extra vars without flux=',nwextra
+           write(*,*)'number of extra vars   for wextra=',nw_extra
+           write(*,*)'number of auxiliary I/O variables=',nwauxio
+           write(*,*)'number of             srhd_n_tracer=',srhd_n_tracer
+           write(*,*)'    srhd_particles=',srhd_particles
+           if(srhd_particles) then
+              write(*,*) '*****Using particles: npayload,ngridvars :', npayload,ngridvars
+              write(*,*) '*****Using particles:        nusrpayload :', nusrpayload
+              write(*,*) '*****Using particles:      num_particles :', num_particles
+              write(*,*) '*****Using particles: physics_type_particles=',physics_type_particles
+           end if
+           write(*,*)'number of             ghostcells=',nghostcells
+           write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
+           write(*,*)'==========================================='
+    endif
+
 
   end subroutine srhd_check_params
 
@@ -965,7 +998,7 @@ contains
 
   !> Compute the small value limits
   subroutine srhd_get_smallvalues_eos
-    use mod_global_parameters, only: small_pressure, small_density
+    use mod_global_parameters, only: small_pressure, small_density, small_e
     implicit none
     ! local small values
     double precision :: LsmallE,Lsmallp,Lsmallrho

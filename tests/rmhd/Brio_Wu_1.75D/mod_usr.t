@@ -66,7 +66,7 @@ contains
        w(ixG^S,mag(1) )  = bx
        w(ixG^S,mag(2) )  = byleft
        w(ixG^S,mag(3) )  = bzleft
-       w(ix^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
+       w(ixG^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
     elsewhere
        w(ixG^S,rho_)     = rhoright
        w(ixG^S,mom(1))   = vright(1)
@@ -76,10 +76,10 @@ contains
        w(ixG^S,mag(1) )  = bx
        w(ixG^S,mag(2) )  = byright
        w(ixG^S,mag(3) )  = bzright
-       w(ix^S,r_e) = const_rad_a*(0.8*unit_temperature)**4.d0/unit_pressure
+       w(ixG^S,r_e) = const_rad_a*(0.8*unit_temperature)**4.d0/unit_pressure
     endwhere
 
-    call mhd_to_conserved(ixG^L,ix^L,w,x)
+    call mhd_to_conserved(ixG^L,ixG^L,w,x)
   
   end subroutine initonegrid_usr
 
@@ -91,7 +91,7 @@ contains
     double precision                   :: normconv(0:nw+nwauxio)
 
     double precision                   :: wlocal(ixI^S,nw)
-    double precision :: lamb(ixO^S), R(ixO^S)
+    double precision :: lamb(ixI^S), R(ixI^S)
 
     wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
     call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2)

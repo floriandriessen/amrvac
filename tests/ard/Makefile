@@ -1,4 +1,4 @@
-TEST_DIRS := schnakenberg_2d
+TEST_DIRS := schnakenberg_2d brusselator_2d analytic_test_1d
 
 # Directories with altered names (useful for cleaning)
 CLEAN_TEST := $(TEST_DIRS:%=clean-%)

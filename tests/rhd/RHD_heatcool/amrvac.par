@@ -3,31 +3,29 @@
 /
 
 &filelist
-  base_filename='test'
-  autoconvert      = T
-  convert_type     = 'vtuBCCmpi'
-  saveprim         = F
+  base_filename='test_heatcool_2D'
+  typefilelog='regression_test'
 /
 
  &savelist
    itsave(1,1)     = 0
    itsave(1,2)     = 0
+   ditsave_log=1
 /
 
  &stoplist
    dtmin = 1.0d-20
-   it_max = 10000
+   it_max = 500
 /
 
  &methodlist
-   time_stepper = 'onestep'
+   time_stepper    = 'onestep'
    time_integrator = 'IMEX_SP'
    flux_scheme     = 20*'hll'
    limiter         = 20*'koren'
 /
 
 &boundlist
-  nghostcells  =  2
   typeboundary_min1 = 5*'periodic'
   typeboundary_max1 = 5*'periodic'
   typeboundary_min2 = 5*'periodic'
@@ -53,20 +51,21 @@
  &hd_list
   hd_energy = .true.
   hd_gamma = 1.666667d0
-  hd_radiation_fld_formalism = 'fld'
   hd_radiation_fld = .true.
  /
 
  &fld_list
-  fld_Eint_split = .false.
   fld_Radforce_split = .false
   fld_opacity_law = 'const'
   fld_kappa0 = 0.4d0
   fld_interaction_method = 'Halley'
+  fld_debug=.true.
+  fld_no_mg=.true.
+  fld_bisect_tol=1.d-8
  /
 
  &test_list
   rho0 = 1.d-7
-  t0 = 1.d-2
+  t0 = 1.d2
   E_r0 = 1.d12
  /
