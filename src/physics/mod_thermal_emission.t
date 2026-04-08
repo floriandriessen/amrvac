@@ -378,11 +378,21 @@ module mod_thermal_emission
 
   end interface
 
+  abstract interface
+    subroutine get_2var_subr_te(ixI^L, ixO^L, w, val1, val2)
+      use mod_global_parameters
+      integer, intent(in)          :: ixI^L, ixO^L
+      double precision, intent(in) :: w(ixI^S, nw)
+      double precision, intent(out):: val1(ixI^S), val2(ixI^S)
+    end subroutine get_2var_subr_te
+  end interface
+
   type te_fluid
 
     procedure (get_subr1), pointer, nopass :: get_rho => null()
     procedure (get_subr1), pointer, nopass :: get_pthermal => null()
     procedure (get_subr1), pointer, nopass :: get_var_Rfactor => null()
+    procedure (get_2var_subr_te), pointer, nopass :: get_ne_nH => null()
 
   end type te_fluid
 
@@ -626,6 +636,11 @@ module mod_thermal_emission
       call fl%get_rho(w,x,ixI^L,ixO^L,Ne)
       call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Te)
       Te(ixO^S)=pth(ixO^S)/(Ne(ixO^S)*Te(ixO^S))*unit_temperature
+      ! get actual electron density from EoS (replaces rho with ne)
+      block
+        double precision :: nH_dummy(ixI^S)
+        call fl%get_ne_nH(ixI^L, ixO^L, w, Ne, nH_dummy)
+      end block
       if (SI_unit) then
         Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
         flux(ixO^S)=Ne(ixO^S)**2
@@ -711,6 +726,11 @@ module mod_thermal_emission
       call fl%get_rho(w,x,ixI^L,ixO^L,Ne)
       call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Te)
       Te(ixO^S)=pth(ixO^S)/(Ne(ixO^S)*Te(ixO^S))*unit_temperature
+      ! get actual electron density from EoS (replaces rho with ne)
+      block
+        double precision :: nH_dummy(ixI^S)
+        call fl%get_ne_nH(ixI^L, ixO^L, w, Ne, nH_dummy)
+      end block
       if (SI_unit) then
         Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
         EM(ixO^S)=(Ne(ixO^S))**2*1.d6 ! cm^-3 m^-3
@@ -805,6 +825,11 @@ module mod_thermal_emission
         call fl%get_rho(w,x,ixI^L,ixb^L,Ne)
         call fl%get_var_Rfactor(w,x,ixI^L,ixb^L,Te)
         Te(ixb^S)=pth(ixb^S)/(Ne(ixb^S)*Te(ixb^S))*unit_temperature
+        ! get actual electron density from EoS (replaces rho with ne)
+        block
+          double precision :: nH_dummy(ixI^S)
+          call fl%get_ne_nH(ixI^L, ixb^L, w, Ne, nH_dummy)
+        end block
         if (SI_unit) then
           Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
           EM(ixb^S)=(I0*(Ne(ixb^S))**2)*dV(ixb^S)*(unit_length*1.d2)**3 ! cm^-3
@@ -2754,6 +2779,7 @@ module mod_thermal_emission
     end subroutine integrate_emission_spherical
 
     subroutine integrate_whitelight_spherical(igrid,numXI1,numXI2,numWI,xI1,xI2,dxI,fl,datatype,WLB)
+
       integer, intent(in) :: igrid,numXI1,numXI2,numWI
       double precision, intent(in) :: xI1(numXI1),xI2(numXI2)
       double precision, intent(in) :: dxI
@@ -2798,6 +2824,11 @@ module mod_thermal_emission
       if (R_occultor>1.d0) R_occult=R_occultor
       R_occult=R_occult*const_Rsun/unit_length
       call fl%get_rho(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,Ne)
+      ! get actual electron density from EoS (replaces rho with ne)
+      block
+        double precision :: nH_dummy(ixI^S)
+        call fl%get_ne_nH(ixI^L, ixO^L, ps(igrid)%w, Ne, nH_dummy)
+      end block
       sigma_PSF=1.d0
       pixel=LASCO_rsl*arcsec
       sigma0=sigma_PSF*pixel

@@ -175,6 +175,8 @@ contains
           tc_fl%get_temperature_from_eint => eos%get_temperature_from_eint
         end if
         tc_fl%get_rho => eos%get_rho
+        tc_fl%get_ne_nH => eos%get_ne_nH
+        tc_fl%get_var_Rfactor => eos%get_Rfactor
         ! Equilibrium-specific pointers
         if(has_equi_pe0 .and. has_equi_rho0 .and. mhd_equi_thermal) then
           tc_fl%has_equi = .true.
@@ -190,6 +192,7 @@ contains
         rc_fl%get_pthermal     => eos%get_thermal_pressure
         rc_fl%get_var_Rfactor  => eos%get_Rfactor
         rc_fl%get_Te           => eos%get_Te
+        rc_fl%get_ne_nH        => eos%get_ne_nH
         ! Equilibrium-specific pointers
         if(has_equi_pe0 .and. has_equi_rho0 .and. mhd_equi_thermal) then
           rc_fl%has_equi = .true.

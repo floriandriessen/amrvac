@@ -49,7 +49,9 @@ module mod_hd_eos
             end if
 
             ! choose Rfactor in ideal gas law
-            if(hd_partial_ionization) then
+            if (eos%eos_type == 'LTE') then
+                eos%get_Rfactor => Rfactor_from_LTE
+            else if(hd_partial_ionization) then
                 eos%get_Rfactor=>Rfactor_from_PI_temperature !> defined in eos file
                 phys_update_temperature => update_PI_temperature !> defined in eos file
             else if(associated(usr_Rfactor)) then
@@ -71,6 +73,8 @@ module mod_hd_eos
                     tc_fl%get_temperature_from_eint => eos%get_temperature_from_eint
                 end if
                 tc_fl%get_rho => eos%get_rho
+                tc_fl%get_ne_nH => eos%get_ne_nH
+                tc_fl%get_var_Rfactor => eos%get_Rfactor
             end if
 
             if (allocated(rc_fl)) then
@@ -78,6 +82,7 @@ module mod_hd_eos
                 rc_fl%get_pthermal => eos%get_thermal_pressure
                 rc_fl%get_var_Rfactor => eos%get_Rfactor
                 rc_fl%get_Te => eos%get_Te
+                rc_fl%get_ne_nH => eos%get_ne_nH
             end if
         end subroutine bind_eos_to_source
 
@@ -531,6 +536,25 @@ module mod_hd_eos
             Rfactor(ixO^S)=RR
 
         end subroutine Rfactor_from_constant_ionization
+
+        !> Rfactor from LTE EOS: R = (1 + He + ne/nH) / nH2rhoFactor
+        !> Uses stored Ne_ wextra field from update_eos_LTE.
+        subroutine Rfactor_from_LTE(w,x,ixI^L,ixO^L,Rfactor)
+            use mod_global_parameters
+            integer, intent(in) :: ixI^L, ixO^L
+            double precision, intent(in) :: w(ixI^S,1:nw)
+            double precision, intent(in) :: x(ixI^S,1:ndim)
+            double precision, intent(out):: Rfactor(ixI^S)
+
+            double precision :: y_nH
+            integer :: ix^D
+
+            {do ix^DB=ixOmin^DB,ixOmax^DB\}
+              y_nH = w(ix^D, iw_ne) * eos%nH2rhoFactor / w(ix^D, iw_rho)
+              Rfactor(ix^D) = (1.0d0 + eos%He_abundance + y_nH) / eos%nH2rhoFactor
+            {end do\}
+
+        end subroutine Rfactor_from_LTE
 
     end module mod_hd_eos
 !> Needs a line after to pass the preprocesor

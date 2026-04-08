@@ -398,6 +398,7 @@ contains
     ! te_fl_hd%get_pthermal=> hd_get_pthermal
     te_fl_hd%get_pthermal=> eos%get_thermal_pressure
     te_fl_hd%get_var_Rfactor => eos%get_Rfactor
+    te_fl_hd%get_ne_nH => eos%get_ne_nH
 
 
 {^IFTHREED
@@ -672,6 +673,8 @@ contains
     else
        if (eos%gamma <= 0.0d0 .or. eos%gamma == 1.0d0) &
             call mpistop ("Error: eos%gamma <= 0 or eos%gamma == 1.0")
+       ! For LTE+ionE, this floor excludes ionisation energy. At tlow (~1000 K)
+       ! ionisation is negligible, so the thermal-only floor is adequate.
        small_e = small_pressure/(eos%gamma - 1.0d0)
        inv_gamma_1=1.d0/(eos%gamma-1.d0)
     end if
@@ -1004,6 +1007,7 @@ contains
     use mod_global_parameters
     use mod_usr_methods, only: usr_get_heating
     use mod_radiative_cooling, only: findL
+    use mod_eos, only: eos
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: x(ixI^S,1:ndim)
     ! in primitive form
@@ -1019,8 +1023,8 @@ contains
     ! Johnston 2021 type 7 variables
     double precision :: dTdx, L_T, a_coeff, L1, cooling, net_cool
     double precision :: kappa_par, disc, kappa_TRAC, kappa_eff, Tcoff_eff
-    double precision :: dx_over_delta, nH_loc, v_abs, v_thresh
-    double precision :: Q_heat(ixI^S), neOnH_corr(ixI^S)
+    double precision :: dx_over_delta, v_abs, v_thresh
+    double precision :: Q_heat(ixI^S), ne(ixI^S), nH_arr(ixI^S)
     integer :: ix1
 
     {^IFONED
@@ -1074,18 +1078,9 @@ contains
       ! Get background heating Q (once per block)
       call usr_get_heating(Q_heat, ixI^L, ixO^L, w, x)
 
-      ! Saha n_e/n_H correction for LTE cooling lookup
-      ! findL returns Lambda pre-scaled with neOnH_FI baked in.
-      ! For LTE partial ionisation, actual n_e/n_H < neOnH_FI.
-      ! Use w(Ne_) from EoS (already in primitive form).
-      if(eos%eos_type == 'LTE' .and. Ne_ > 0) then
-        do ix1=ixOmin1,ixOmax1
-          nH_loc = w(ix1,rho_) / eos%nH2rhoFactor
-          neOnH_corr(ix1) = (w(ix1,Ne_) / nH_loc) / eos%neOnH_FI
-        end do
-      else
-        neOnH_corr(ixO^S) = 1.0d0
-      end if
+      ! Get n_e and n_H for cooling rate: Q = n_e * n_H * Lambda(T)
+      ! For FI: n_e = n_H * neOnH_FI.  For LTE: n_e from Saha EoS.
+      call eos%get_ne_nH(ixI^L, ixO^L, w, ne, nH_arr)
 
       hxO^L=ixO^L-1;
       jxO^L=ixO^L+1;
@@ -1108,9 +1103,9 @@ contains
         v_thresh = hd_trac_v_thresh * dsqrt(hd_gamma * w(ix1,p_) / w(ix1,rho_))
         a_coeff = 2.5d0 * w(ix1,p_) * max(v_abs - v_thresh, 0.d0) / Te(ix1)
 
-        ! Radiative cooling: rho**2 * Lambda(T) with Saha correction
+        ! Radiative cooling: n_e * n_H * Lambda(T)
         call findL(Te(ix1), L1, rc_fl)
-        cooling = w(ix1,rho_)**2 * L1 * neOnH_corr(ix1)
+        cooling = ne(ix1) * nH_arr(ix1) * L1
 
         ! Net cooling - heating
         net_cool = abs(cooling - Q_heat(ix1))

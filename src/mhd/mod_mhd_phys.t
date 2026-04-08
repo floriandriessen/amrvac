@@ -885,6 +885,8 @@ contains
       end if
       call set_error_handling_to_head(mhd_tc_handle_small_e)
       tc_fl%get_rho => mhd_get_rho
+      tc_fl%get_ne_nH => eos%get_ne_nH
+      tc_fl%get_var_Rfactor => eos%get_Rfactor
       tc_fl%e_ = e_
       tc_fl%Tcoff_ = Tcoff_
     end if
@@ -925,6 +927,7 @@ contains
     te_fl_mhd%get_rho=> mhd_get_rho
     te_fl_mhd%get_pthermal=> mhd_get_pthermal
     te_fl_mhd%get_var_Rfactor => mhd_get_Rfactor
+    te_fl_mhd%get_ne_nH => eos%get_ne_nH
 {^IFTHREED
     phys_te_images => mhd_te_images
 }

@@ -42,6 +42,13 @@ module mod_eos_container
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
             double precision, intent(out)   :: res(ixI^S)
         end subroutine get_eos_variable_alt
+
+        subroutine get_ne_nH_iface(ixI^L, ixO^L, w, ne, nH)
+            use mod_global_parameters
+            integer, intent(in)             :: ixI^L, ixO^L
+            double precision, intent(in)    :: w(ixI^S, nw)
+            double precision, intent(out)   :: ne(ixI^S), nH(ixI^S)
+        end subroutine get_ne_nH_iface
     end interface
     
     type eos_table_container
@@ -108,6 +115,7 @@ module mod_eos_container
         procedure (get_eos_variable_alt), pointer, nopass :: get_Rfactor => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_rho => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_nH => null()
+        procedure (get_ne_nH_iface), pointer, nopass :: get_ne_nH => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_Te => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_csound2 => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_gamma1 => null()

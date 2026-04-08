@@ -62,6 +62,13 @@ module mod_radiative_cooling
       double precision, intent(in) :: x(ixI^S,1:ndim)
       double precision, intent(out):: res(ixI^S)
     end subroutine get_subr1
+
+    subroutine get_2var_subr(ixI^L, ixO^L, w, ne, nH)
+      use mod_global_parameters
+      integer, intent(in)          :: ixI^L, ixO^L
+      double precision, intent(in) :: w(ixI^S, nw)
+      double precision, intent(out):: ne(ixI^S), nH(ixI^S)
+    end subroutine get_2var_subr
   end interface
 
   type rc_fluid
@@ -162,6 +169,7 @@ module mod_radiative_cooling
     procedure (get_subr1), pointer, nopass :: get_pthermal => null()
     procedure (get_subr1), pointer, nopass :: get_pthermal_equi => null()
     procedure (get_subr1), pointer, nopass :: get_var_Rfactor => null()
+    procedure (get_2var_subr), pointer, nopass :: get_ne_nH => null()
 
   end type rc_fluid
 
@@ -1146,7 +1154,7 @@ module mod_radiative_cooling
 
          ! Make dimensionless
          fl%t_PPL(1:fl%n_PPL+1) = fl%t_PPL(1:fl%n_PPL+1) / unit_temperature
-         fl%l_PPL(1:fl%n_PPL) = fl%l_PPL(1:fl%n_PPL) * unit_numberdensity**2 * unit_time / unit_pressure * (1.d0+2.d0*He_abundance)        
+         fl%l_PPL(1:fl%n_PPL) = fl%l_PPL(1:fl%n_PPL) * unit_numberdensity**2 * unit_time / unit_pressure
 
          ! Set tref en lref
          fl%l_PPL(fl%n_PPL+1) = fl%l_PPL(fl%n_PPL) * ( fl%t_PPL(fl%n_PPL+1) / fl%t_PPL(fl%n_PPL) )**fl%a_PPL(fl%n_PPL)
@@ -1429,7 +1437,7 @@ module mod_radiative_cooling
 
          ! Scale both T and Lambda
          fl%tcool(1:fl%ncool) = fl%tcool(1:fl%ncool) / unit_temperature
-         fl%Lcool(1:fl%ncool) = fl%Lcool(1:fl%ncool) * unit_numberdensity**2 * unit_time / unit_pressure * (1.d0+2.d0*He_abundance) 
+         fl%Lcool(1:fl%ncool) = fl%Lcool(1:fl%ncool) * unit_numberdensity**2 * unit_time / unit_pressure
 
          fl%tcoolmin       = fl%tcool(1)+smalldouble  ! avoid pointless interpolation
          ! Convert tcoolmin_noDM from log10(K) to code units
@@ -1500,7 +1508,7 @@ module mod_radiative_cooling
 
     subroutine cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,fl)
       use mod_global_parameters
-
+      
       integer, intent(in) :: ixI^L, ixO^L
       double precision, intent(in) :: dx^D, x(ixI^S,1:ndim), w(ixI^S,1:nw)
       type(rc_fluid), intent(in) :: fl
@@ -1508,6 +1516,7 @@ module mod_radiative_cooling
 
       double precision :: etherm(ixI^S), rho(ixI^S), Rfactor(ixI^S)
       double precision :: L1,Te(ixI^S), pth(ixI^S), lum(ixI^S)
+      double precision :: ne(ixI^S), nH_arr(ixI^S)
       double precision :: taper
       integer :: ix^D
       !
@@ -1517,6 +1526,7 @@ module mod_radiative_cooling
         call fl%get_pthermal(w,x,ixI^L,ixO^L,pth)
         call fl%get_rho(w,x,ixI^L,ixO^L,rho)
         call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+        call fl%get_ne_nH(ixI^L, ixO^L, w, ne, nH_arr)
 
         ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
         {do ix^DB = ixO^LIM^DB\}
@@ -1529,10 +1539,10 @@ module mod_radiative_cooling
              L1 = zero
           else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1, fl)
-             L1 = L1*rho(ix^D)**2
+             L1 = L1*ne(ix^D)*nH_arr(ix^D)
           else
              call findL(Te(ix^D),L1,fl)
-             L1 = L1*rho(ix^D)**2
+             L1 = L1*ne(ix^D)*nH_arr(ix^D)
           end if
           call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
           L1 = L1 * taper
@@ -1545,11 +1555,11 @@ module mod_radiative_cooling
 
     subroutine getvar_cooling(ixI^L,ixO^L,w,x,coolrate,fl)
     ! Create extra variable to show cooling rate in the output
-    ! Uses a simple explicit scheme. 
-    ! N.B. Since there is no knowledge of the timestep size, 
+    ! Uses a simple explicit scheme.
+    ! N.B. Since there is no knowledge of the timestep size,
     ! there is no upper limit for the cooling rate.
       use mod_global_parameters
-
+      
       integer, intent(in)          :: ixI^L,ixO^L
       double precision, intent(in) :: x(ixI^S,1:ndim)
       double precision             :: w(ixI^S,1:nw)
@@ -1558,6 +1568,7 @@ module mod_radiative_cooling
 
       double precision :: pth(ixI^S),rho(ixI^S)
       double precision :: L1,Te(ixI^S),Rfactor(ixI^S)
+      double precision :: ne(ixI^S), nH_arr(ixI^S)
       double precision :: taper
       integer :: ix^D
 
@@ -1566,6 +1577,7 @@ module mod_radiative_cooling
       ! call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Rfactor)
       ! Te(ixO^S) = pth(ixO^S) / (rho(ixO^S)*Rfactor(ixO^S))
       call fl%get_Te(w,x,ixI^L,ixO^L,Te)
+      call fl%get_ne_nH(ixI^L, ixO^L, w, ne, nH_arr)
 
       {do ix^DB = ixO^LIM^DB\}
          ! Determine explicit cooling
@@ -1573,10 +1585,10 @@ module mod_radiative_cooling
            L1 = zero
          else if(Te(ix^D) >= fl%tcoolmax)then
            call calc_l_extended(Te(ix^D),L1,fl)
-           L1 = L1*rho(ix^D)**2
+           L1 = L1*ne(ix^D)*nH_arr(ix^D)
          else
            call findL(Te(ix^D),L1,fl)
-           L1 = L1*rho(ix^D)**2
+           L1 = L1*ne(ix^D)*nH_arr(ix^D)
          end if
          call radiative_cooling_taper(ix^D, x(ix^D,ndim), rho(ix^D), Te(ix^D), fl, taper)
          L1 = L1 * taper
@@ -1590,7 +1602,7 @@ module mod_radiative_cooling
     ! The TEF must be known, so this routine can only be used
     ! together with the "exact" cooling method.
       use mod_global_parameters
-      use mod_eos, only: eos, p2eint_from_nH_p
+      use mod_eos, only: eos, p2eint_from_nH_p, eint_nH_from_T
 
       integer, intent(in)           :: ixI^L, ixO^L
       double precision, intent(in)  :: qdt, x(ixI^S, 1:ndim), wCT(ixI^S, 1:nw)
@@ -1600,6 +1612,7 @@ module mod_radiative_cooling
       double precision              :: y1, y2, l1, tlocal2
       double precision              :: Te(ixI^S), pnew(ixI^S), rho(ixI^S), rhonew(ixI^S)
       double precision              :: emin, Lmax, fact, Rfactor(ixI^S), pth(ixI^S)
+      double precision              :: ne(ixI^S), nH_arr(ixI^S)
       double precision              :: taper
       ! LTE+IonE variables
       double precision              :: nH_val, log_nH, log_p_nH
@@ -1615,6 +1628,7 @@ module mod_radiative_cooling
       call fl%get_rho(wCT, x, ixI^L, ixO^L, rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
       call fl%get_Te(wCT, x, ixI^L, ixO^L, Te)
+      call fl%get_ne_nH(ixI^L, ixO^L, wCT, ne, nH_arr)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       call fl%get_pthermal(w, x, ixI^L, ixO^L, pnew)
@@ -1650,15 +1664,15 @@ module mod_radiative_cooling
            l1 = zero
          else if( Te(ix^D)>= fl%tcoolmax ) then
            call calc_l_extended(Te(ix^D), l1, fl)
-           l1 = l1 * rho(ix^D)**2
+           l1 = l1 * ne(ix^D)*nH_arr(ix^D)
            l1 = min(l1, lmax)
          else
            call findY(Te(ix^D), y1, fl)
            if (eos%ionE) then
              gamma_eff_m1 = pnew(ix^D) / eint_current
-             y2 = y1 + fact * rho(ix^D) * gamma_eff_m1
+             y2 = y1 + fact * ne(ix^D) * gamma_eff_m1
            else
-             y2 = y1 + fact * rho(ix^D)*rc_gamma_1
+             y2 = y1 + fact * ne(ix^D)*rc_gamma_1
            end if
            call findT(tlocal2, y2, fl)
            if( tlocal2 <= fl%tcoolmin ) then
@@ -1816,7 +1830,7 @@ module mod_radiative_cooling
     ! explicit cooling routine that depends on getdt to
     ! adjust the timestep. Accurate but incredibly slow
       use mod_global_parameters
-      use mod_eos, only: eos, p2eint_from_nH_p
+      use mod_eos, only: eos, p2eint_from_nH_p, eint_nH_from_T
 
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(in)    :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw)
@@ -1829,6 +1843,7 @@ module mod_radiative_cooling
       double precision :: emin, Lmax
       double precision :: Y1, Y2
       double precision :: de, emax,fact
+      double precision :: ne(ixI^S), nH_arr(ixI^S)
       double precision :: taper
       ! LTE+IonE variables
       double precision :: nH_val, log_nH, log_p_nH
@@ -1840,6 +1855,7 @@ module mod_radiative_cooling
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
       call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
+      call fl%get_ne_nH(ixI^L, ixO^L, wCT, ne, nH_arr)
 
       res=0d0
 
@@ -1878,7 +1894,7 @@ module mod_radiative_cooling
              ! res already initialised to 0d0 above; no cooling
            else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1,fl)
-             L1 = L1*rho(ix^D)**2
+             L1 = L1*ne(ix^D)*nH_arr(ix^D)
              if(phys_trac) then
                if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                  L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -1890,9 +1906,9 @@ module mod_radiative_cooling
              call findY(Te(ix^D),Y1,fl)
              if (eos%ionE) then
                gamma_eff_m1 = pth(ix^D) / eint_current
-               Y2 = Y1 + fact * rho(ix^D) * gamma_eff_m1
+               Y2 = Y1 + fact * ne(ix^D) * gamma_eff_m1
              else
-               Y2 = Y1 + fact * rho(ix^D)*rc_gamma_1
+               Y2 = Y1 + fact * ne(ix^D)*rc_gamma_1
              end if
              call findT(Tlocal2,Y2,fl)
              if(Tlocal2<=fl%tcoolmin) then
@@ -1945,7 +1961,7 @@ module mod_radiative_cooling
            else
              call findL(Te(ix^D),L1,fl)
            end if
-           L1 = L1*rho(ix^D)**2
+           L1 = L1*ne(ix^D)*nH_arr(ix^D)
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -1960,10 +1976,10 @@ module mod_radiative_cooling
     end subroutine get_cool_equi
 
     subroutine cool_explicit1(qdt,ixI^L,ixO^L,wCT,w,x,fl)
-    ! explicit cooling routine that depends on getdt to 
+    ! explicit cooling routine that depends on getdt to
     ! adjust the timestep. Accurate but incredibly slow
       use mod_global_parameters
-
+      
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(in)    :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw)
       double precision, intent(inout) :: w(ixI^S,1:nw)
@@ -1972,6 +1988,7 @@ module mod_radiative_cooling
       double precision :: L1,pth(ixI^S),pnew(ixI^S),rho(ixI^S),Rfactor(ixI^S)
       double precision :: Te(ixI^S)
       double precision :: emin, Lmax
+      double precision :: ne(ixI^S), nH_arr(ixI^S)
       double precision :: taper
       integer :: ix^D
 
@@ -1980,6 +1997,7 @@ module mod_radiative_cooling
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
       call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
+      call fl%get_ne_nH(ixI^L, ixO^L, wCT, ne, nH_arr)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
@@ -1994,7 +2012,7 @@ module mod_radiative_cooling
            L1 = zero
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), L1,fl)
-           L1 = L1*rho(ix^D)**2
+           L1 = L1*ne(ix^D)*nH_arr(ix^D)
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2003,7 +2021,7 @@ module mod_radiative_cooling
            L1 = min(L1,Lmax)
          else
            call findL(Te(ix^D),L1,fl)
-           L1 = L1*rho(ix^D)**2
+           L1 = L1*ne(ix^D)*nH_arr(ix^D)
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2018,8 +2036,8 @@ module mod_radiative_cooling
     end subroutine cool_explicit1
 
     subroutine cool_explicit2(qdt,ixI^L,ixO^L,wCT,w,x,fl)
-    ! explicit cooling routine that does a series 
-    ! of small forward integration steps, to make 
+    ! explicit cooling routine that does a series
+    ! of small forward integration steps, to make
     ! sure the amount of cooling remains correct
     ! Not as accurate as 'explicit1', but a lot faster
     ! tends to overestimate cooling
@@ -2033,6 +2051,7 @@ module mod_radiative_cooling
       double precision :: L1,pth(ixI^S),pnew(ixI^S),rho(ixI^S),Rfactor(ixI^S)
       double precision :: Tlocal1,plocal,Te(ixI^S)
       double precision :: emin, Lmax
+      double precision :: ne(ixI^S), nH_arr(ixI^S)
       double precision :: taper
       integer :: idt,ndtstep
       integer :: ix^D
@@ -2042,6 +2061,7 @@ module mod_radiative_cooling
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
       call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
+      call fl%get_ne_nH(ixI^L, ixO^L, wCT, ne, nH_arr)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
@@ -2059,7 +2079,7 @@ module mod_radiative_cooling
            Ltest = zero
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), Ltest,fl)
-           Ltest = L1*rho(ix^D)**2
+           Ltest = Ltest*ne(ix^D)*nH_arr(ix^D)
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                Ltest=Ltest*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2069,7 +2089,7 @@ module mod_radiative_cooling
            if( dtmax>fl%cfrac*etherm/Ltest) dtmax = fl%cfrac*etherm/Ltest
          else
            call findL(Te(ix^D),Ltest,fl)
-           Ltest = Ltest*rho(ix^D)**2
+           Ltest = Ltest*ne(ix^D)*nH_arr(ix^D)
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                Ltest=Ltest*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2095,7 +2115,7 @@ module mod_radiative_cooling
              exit
            else if( Tlocal1>=fl%tcoolmax )then
              call calc_l_extended(Tlocal1, L1,fl)
-             L1 = L1*rho(ix^D)**2
+             L1 = L1*ne(ix^D)*nH_arr(ix^D)
              if(phys_trac) then
                if(Tlocal1<block%wextra(ix^D,fl%Tcoff_)) then
                  L1=L1*sqrt((Tlocal1/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2104,7 +2124,7 @@ module mod_radiative_cooling
              L1 = min(L1,Lmax)
            else
              call findL(Tlocal1,L1,fl)
-             L1 = L1*rho(ix^D)**2
+             L1 = L1*ne(ix^D)*nH_arr(ix^D)
              if(phys_trac) then
                if(Tlocal1<block%wextra(ix^D,fl%Tcoff_)) then
                  L1=L1*sqrt((Tlocal1/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2133,6 +2153,7 @@ module mod_radiative_cooling
       double precision :: etemp
       double precision :: emin, Lmax
       double precision :: pth(ixI^S),pnew(ixI^S),rho(ixI^S),Rfactor(ixI^S),Te(ixI^S)
+      double precision :: ne(ixI^S), nH_arr(ixI^S)
       double precision :: taper
       integer :: ix^D
 
@@ -2141,6 +2162,7 @@ module mod_radiative_cooling
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
       call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
+      call fl%get_ne_nH(ixI^L, ixO^L, wCT, ne, nH_arr)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
@@ -2160,7 +2182,7 @@ module mod_radiative_cooling
            else
              call findL(Te(ix^D),L1,fl)
            end if
-           L1 = L1*rho(ix^D)**2
+           L1 = L1*ne(ix^D)*nH_arr(ix^D)
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2176,7 +2198,7 @@ module mod_radiative_cooling
            else
              call findL(Tlocal2,L2,fl)
            end if
-           L2 = L2*rho(ix^D)**2
+           L2 = L2*ne(ix^D)*nH_arr(ix^D)
            if(phys_trac) then
              if(Tlocal2<block%wextra(ix^D,fl%Tcoff_)) then
                L2=L2*sqrt((Tlocal2/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2201,6 +2223,7 @@ module mod_radiative_cooling
       double precision :: Ltemp,Tnew,f1,f2,pth(ixI^S), pnew(ixI^S), rho(ixI^S), Rfactor(ixI^S)
       double precision :: elocal, Te(ixI^S)
       double precision :: emin, Lmax, eold, enew, estep
+      double precision :: ne(ixI^S), nH_arr(ixI^S)
       double precision :: taper
       double precision, parameter :: e_error = 1.0D-6
       integer, parameter :: maxiter = 100
@@ -2211,6 +2234,7 @@ module mod_radiative_cooling
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
       call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
+      call fl%get_ne_nH(ixI^L, ixO^L, wCT, ne, nH_arr)
       ! Te(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Rfactor(ixO^S))
 
       {do ix^DB = ixO^LIM^DB\}
@@ -2240,7 +2264,7 @@ module mod_radiative_cooling
              else
                call findL(Tnew,Ltemp,fl)
              end if
-             Ltemp = Ltemp*rho(ix^D)**2
+             Ltemp = Ltemp*ne(ix^D)*nH_arr(ix^D)
              eold  = enew + Ltemp*qdt
              f1 = elocal -eold
              if(abs(half*f1/(elocal+eold)) < e_error) exit
@@ -2264,7 +2288,7 @@ module mod_radiative_cooling
     subroutine cool_exact(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,fl)
     !  Cooling routine using exact integration method from Townsend 2009
       use mod_global_parameters
-      use mod_eos, only: eos, p2eint_from_nH_p
+      use mod_eos, only: eos, p2eint_from_nH_p, eint_nH_from_T
       use mod_physics, only: phys_get_ei
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(in)    :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw), wCTprim(ixI^S,1:nw)
@@ -2275,6 +2299,7 @@ module mod_radiative_cooling
       double precision :: rho(ixI^S), Te(ixI^S), rhonew(ixI^S), Rfactor(ixI^S)
       double precision :: emin, Lmax, fact
       double precision :: de, emax
+      double precision :: ne(ixI^S), nH_arr(ixI^S)
       double precision :: taper
       ! LTE+IonE variables
       double precision :: nH_val, log_nH, log_p_nH
@@ -2285,6 +2310,7 @@ module mod_radiative_cooling
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
       call fl%get_Te(wCT,x,ixI^L,ixO^L,Te)
+      call fl%get_ne_nH(ixI^L, ixO^L, wCT, ne, nH_arr)
       call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
       call fl%get_rho(w,x,ixI^L,ixO^L,rhonew)
       if (eos%ionE) eint_w(ixO^S) = phys_get_ei(w, ixI^L, ixO^L)
@@ -2322,7 +2348,7 @@ module mod_radiative_cooling
            ! no cooling
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), L1,fl)
-           L1 = L1*rho(ix^D)**2
+           L1 = L1*ne(ix^D)*nH_arr(ix^D)
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2336,15 +2362,21 @@ module mod_radiative_cooling
            call findY(Te(ix^D),Y1,fl)
            if (eos%ionE) then
              gamma_eff_m1 = pnew(ix^D) / eint_current
-             Y2 = Y1 + fact*rho(ix^D)*gamma_eff_m1
+             Y2 = Y1 + fact*ne(ix^D)*gamma_eff_m1
            else
-             Y2 = Y1 + fact*rho(ix^D)*rc_gamma_1
+             Y2 = Y1 + fact*ne(ix^D)*rc_gamma_1
            end if
            call findT(Tlocal2,Y2,fl)
            if(Tlocal2<=fl%tcoolmin) then
              de = emax
            else
-             de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
+             if (eos%ionE .and. Te(ix^D) < eos%p_rho_FI_threshold &
+                 * eos%nH2rhoFactor / eos%n_per_nH_FI) then
+               de = eint_current - eint_nH_from_T(log_nH, dlog10(Tlocal2)) * nH_val
+               de = max(de, zero)
+             else
+               de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
+             end if
            end if
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then

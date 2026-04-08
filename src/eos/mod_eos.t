@@ -69,6 +69,7 @@ module mod_eos
     public :: interp_clamped_monotone_bicubic_table
     public :: Rfactor_from_PI_temperature, update_PI_temperature
     public :: get_temperature_from_eint_LTE_fast
+    public :: get_ne_nH
 
     ! Analytical H-only Saha constants (module-level parameters)
     ! Prefactor: (2*pi*m_e*k_B/h^2)^{3/2} in CGS (cm^-3)
@@ -212,6 +213,7 @@ contains
 
         eos%get_rho => get_rho
         eos%get_nH => get_nH
+        eos%get_ne_nH => get_ne_nH
 
     end subroutine eos_init
 
@@ -276,7 +278,6 @@ contains
                         if (allocated(eos%p2eint%table)) deallocate(eos%p2eint%table)
                         call build_p2eint_table()
 
-                        if (allocated(eos%eint_from_T%table)) deallocate(eos%eint_from_T%table)
                         call build_eint_from_T_table()
                     endif
 
@@ -659,6 +660,23 @@ contains
         nH(ixO^S) = w(ixO^S,iw_rho) / eos%nH2rhoFactor
 
     end subroutine get_nH
+
+    !> Return electron and hydrogen number densities in code units.
+    !> For LTE (iw_ne allocated): ne from Saha EoS, nH from rho/nH2rhoFactor.
+    !> For FI  (iw_ne not allocated): ne = nH * neOnH_FI (full ionisation).
+    subroutine get_ne_nH(ixI^L, ixO^L, w, ne, nH)
+        use mod_global_parameters
+        integer, intent(in)           :: ixI^L, ixO^L
+        double precision, intent(in)  :: w(ixI^S, 1:nw)
+        double precision, intent(out) :: ne(ixI^S), nH(ixI^S)
+
+        nH(ixO^S) = w(ixO^S, iw_rho) / eos%nH2rhoFactor
+        if (iw_ne > 0) then
+            ne(ixO^S) = w(ixO^S, iw_ne)
+        else
+            ne(ixO^S) = nH(ixO^S) * eos%neOnH_FI
+        end if
+    end subroutine get_ne_nH
 
     subroutine get_Te_LTE(w,x,ixI^L,ixO^L,T)
         use mod_global_parameters
@@ -1451,18 +1469,20 @@ contains
     end subroutine log_p_bisect_cached
 
     !> Internal energy per nH from (log10 nH, log10 T) in code units.
-    !> Dispatches: analytic -> Saha forward, tables -> PCHIP interpolation.
+    !> Uses the bisection-built inverse table (H+He, machine precision).
+    !> Fallback: H-only Saha if table not built.
     double precision function eint_nH_from_T(log_nH, log_T) result(eint_nH)
         double precision, intent(in) :: log_nH, log_T
         double precision, parameter :: ln10 = 2.302585092994046d0
 
-        if (eos%method == 'analytic') then
-            eint_nH = saha_eint_from_nH_T(10.0d0**log_nH, 10.0d0**log_T)
-        else
-            eint_nH = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_T, &
+        if (allocated(eos%eint_from_T%table)) then
+            eint_nH = dexp(ln10 * interp_clamped_monotone_bicubic_table( &
+                log_nH, log_T, &
                 eos%eint_from_T%table, eos%eint_from_T%dim1, eos%eint_from_T%dim2, &
                 eos%eint_from_T%var1_min, eos%eint_from_T%var1_max, &
                 eos%eint_from_T%var2_min, eos%eint_from_T%var2_max))
+        else
+            eint_nH = saha_eint_from_nH_T(10.0d0**log_nH, 10.0d0**log_T)
         end if
     end function eint_nH_from_T
 
@@ -2029,10 +2049,11 @@ contains
     subroutine build_eint_from_T_table()
         integer :: n1, n2_fwd, n2_inv, i, j, iter
         double precision :: dx2_inv
-        double precision :: T_global_min, T_global_max
+        double precision :: T_global_min, T_global_max, T_FI_threshold
         double precision :: log_nH_i, log_eint_lo, log_eint_hi, log_eint_mid
-        double precision :: T_target, T_eval
+        double precision :: T_target, T_eval, T_max_at_nH, eint_nH_FI
         double precision :: eint_nH_min, eint_nH_max, max_err, err
+        integer :: n_FI_filled
 
         n1 = eos%T%dim1
         n2_fwd = eos%T%dim2
@@ -2047,7 +2068,14 @@ contains
             end do
         end do
 
-        !> Set up inverse table with same nH axis, T axis spanning global T range
+        !> FI threshold temperature in code units (200,000 K)
+        T_FI_threshold = eos%p_rho_FI_threshold &
+            * (1.0d0 + 4.0d0*eos%He_abundance) / eos%n_per_nH_FI
+
+        !> Extend T axis to cover the FI regime up to 10 MK (or T_global_max if larger)
+        T_global_max = max(T_global_max, dlog10(10.0d0))  !> 10 MK in code units (unit_T=1MK)
+
+        !> Set up inverse table with same nH axis, extended T axis
         n2_inv = n2_fwd  !> Same resolution as forward table
         if (allocated(eos%eint_from_T%table)) deallocate(eos%eint_from_T%table)
         eos%eint_from_T%dim1 = n1
@@ -2065,49 +2093,68 @@ contains
         eint_nH_min =  1.0d30
         eint_nH_max = -1.0d30
         max_err = 0.0d0
+        n_FI_filled = 0
 
-        !> For each (nH_i, T_j), bisect on log10(eint/nH) using the PCHIP kernel
+        !> For each (nH_i, T_j): use bisection on the forward table where it
+        !> has coverage, and the analytic FI formula above the table range.
         do i = 1, n1
             log_nH_i = eos%T%var1_min + (i - 1) &
                 * (eos%T%var1_max - eos%T%var1_min) / dble(n1 - 1)
+
+            !> Find the maximum T in the forward table at this nH
+            T_max_at_nH = eos%T%table(i, n2_fwd)
+
             do j = 1, n2_inv
                 T_target = T_global_min + (j - 1) * dx2_inv
 
-                !> Bisection on log10(eint/nH)
-                log_eint_lo = eos%T%var2_min
-                log_eint_hi = eos%T%var2_max
+                if (10.0d0**T_target > T_FI_threshold .or. &
+                    T_target > T_max_at_nH) then
+                    !> Above table coverage or FI regime: use analytic formula
+                    !> eint/nH = n_per_nH_FI / (gamma-1) * T + neOnH_FI * eion_per_nH
+                    eint_nH_FI = eos%n_per_nH_FI * eos%inv_gamma_minus_1 &
+                        * 10.0d0**T_target
+                    if (eos%ionE) eint_nH_FI = eint_nH_FI &
+                        + eos%neOnH_FI * eos%eion_per_nH
+                    eos%eint_from_T%table(i, j) = dlog10(eint_nH_FI)
+                    n_FI_filled = n_FI_filled + 1
+                else
+                    !> Bisection on log10(eint/nH) using the forward T table
+                    log_eint_lo = eos%T%var2_min
+                    log_eint_hi = eos%T%var2_max
 
-                do iter = 1, 52
-                    log_eint_mid = 0.5d0 * (log_eint_lo + log_eint_hi)
+                    do iter = 1, 52
+                        log_eint_mid = 0.5d0 * (log_eint_lo + log_eint_hi)
 
-                    !> Evaluate T from forward table via PCHIP
-                    T_eval = interp_clamped_monotone_bicubic_table( &
-                        log_nH_i, log_eint_mid, &
-                        eos%T%table, eos%T%dim1, eos%T%dim2, &
-                        eos%T%var1_min, eos%T%var1_max, &
-                        eos%T%var2_min, eos%T%var2_max)
+                        T_eval = interp_clamped_monotone_bicubic_table( &
+                            log_nH_i, log_eint_mid, &
+                            eos%T%table, eos%T%dim1, eos%T%dim2, &
+                            eos%T%var1_min, eos%T%var1_max, &
+                            eos%T%var2_min, eos%T%var2_max)
 
-                    if (T_eval < T_target) then
-                        log_eint_lo = log_eint_mid
-                    else
-                        log_eint_hi = log_eint_mid
-                    end if
+                        if (T_eval < T_target) then
+                            log_eint_lo = log_eint_mid
+                        else
+                            log_eint_hi = log_eint_mid
+                        end if
 
-                    if (dabs(log_eint_hi - log_eint_lo) < 1.0d-14) exit
-                end do
+                        if (dabs(log_eint_hi - log_eint_lo) < 1.0d-14) exit
+                    end do
 
-                eos%eint_from_T%table(i, j) = log_eint_mid
+                    eos%eint_from_T%table(i, j) = log_eint_mid
 
-                err = dabs(T_eval - T_target)
-                max_err = max(max_err, err)
-                eint_nH_min = min(eint_nH_min, log_eint_mid)
-                eint_nH_max = max(eint_nH_max, log_eint_mid)
+                    err = dabs(T_eval - T_target)
+                    max_err = max(max_err, err)
+                end if
+
+                eint_nH_min = min(eint_nH_min, eos%eint_from_T%table(i, j))
+                eint_nH_max = max(eint_nH_max, eos%eint_from_T%table(i, j))
             end do
         end do
 
         if (mype == 0) then
-            write(*, '(A,ES10.3)') &
-                ' Inverse T table built (PCHIP bisection): max err = ', max_err
+            write(*, '(A,ES10.3,A,I0,A,I0)') &
+                ' Inverse T table built: max bisection err = ', max_err, &
+                ', FI-filled = ', n_FI_filled, ' / ', n1*n2_inv
             write(*, '(A,F8.4,A,F8.4)') &
                 '   log10(T) range = ', T_global_min, ' to ', T_global_max
             write(*, '(A,F8.4,A,F8.4)') &

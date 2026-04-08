@@ -59,6 +59,13 @@ module mod_thermal_conduction
       double precision, intent(in) :: x(ixI^S,1:ndim)
       double precision, intent(out):: res(ixI^S)
     end subroutine get_var_subr
+
+    subroutine get_2var_subr(ixI^L, ixO^L, w, ne, nH)
+      use mod_global_parameters
+      integer, intent(in)          :: ixI^L, ixO^L
+      double precision, intent(in) :: w(ixI^S, nw)
+      double precision, intent(out):: ne(ixI^S), nH(ixI^S)
+    end subroutine get_2var_subr
   end interface
 
   type tc_fluid
@@ -101,6 +108,8 @@ module mod_thermal_conduction
     procedure(get_var_subr), pointer,nopass :: get_temperature_from_eint => null()
     procedure(get_var_subr), pointer,nopass :: get_temperature_from_conserved => null()
     procedure(get_var_subr), pointer,nopass :: get_temperature_equi => null()
+    procedure(get_2var_subr), pointer,nopass :: get_ne_nH => null()
+    procedure(get_var_subr), pointer,nopass :: get_var_Rfactor => null()
   end type tc_fluid
 
   public :: tc_get_mhd_params
@@ -210,6 +219,7 @@ contains
     double precision :: dtnew
 
     double precision :: mf(ixO^S,1:ndim),Te(ixI^S),rho(ixI^S),gradT(ixI^S)
+    double precision :: ne(ixI^S), nH_arr(ixI^S)
     double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndir),Bmag
     double precision :: dtdiff_tcond,maxtmp2
     integer          :: idims,ix^D
@@ -237,6 +247,7 @@ contains
     !temperature
     call fl%get_temperature_from_conserved(w,x,ixI^L,ixI^L,Te)
     call fl%get_rho(w,x,ixI^L,ixO^L,rho)
+    if(associated(fl%get_ne_nH)) call fl%get_ne_nH(ixI^L, ixO^L, w, ne, nH_arr)
 
     !tc_k_para_i
     if(fl%tc_constant) then
@@ -244,9 +255,9 @@ contains
     else
       if(fl%tc_saturate) then
         ! Kannan 2016 MN 458, 410
-        ! 3^1.5*kB^2/(4*sqrt(pi)*e^4)
-        ! l_mfpe=3.d0**1.5d0*kB_cgs**2/(4.d0*sqrt(dpi)*e_cgs**4*37.d0)=7093.9239487765044d0
-        tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
+        ! l_mfpe = 3^1.5*kB^2/(4*sqrt(pi)*e^4*lnLambda) * T^2/n_e
+        ! 7093.9239487765044 = 3^1.5*kB_cgs^2/(4*sqrt(pi)*e_cgs^4*37)
+        tmp(ixO^S)=Te(ixO^S)**2/ne(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
         do idims=1,ndim
           call gradient(Te,ixI^L,ixO^L,idims,gradT)
           if(idims==1) then
@@ -370,10 +381,23 @@ contains
     !! qdd store the heat conduction energy changing rate
     double precision, dimension(ixI^S,1:ndim) :: mf,Bc,Bcf,gradT
     double precision, dimension(ixI^S) :: ka,kaf,ke,kef,qdd,Bnorm
+    double precision, dimension(ixI^S) :: ne, nH_arr, Rfactor_arr
     double precision :: minq,maxq,qd(ixI^S,2**(ndim-1)), blocal(ndir), Bmag
     integer :: idims,idir,ix^D,ix^L,ixC^L,ixA^L,ixB^L
 
     ix^L=ixO^L^LADD1;
+
+    ! Get electron density for perpendicular conductivity
+    if(fl%tc_perpendicular .and. associated(fl%get_ne_nH)) then
+      call fl%get_ne_nH(ixI^L, ixI^L, w, ne, nH_arr)
+    end if
+
+    ! Get Rfactor for saturation flux: F_sat = 5*phi*rho*(Rfactor*T)^(3/2)
+    if(fl%tc_saturate .and. associated(fl%get_var_Rfactor)) then
+      call fl%get_var_Rfactor(w, x, ixI^L, ixI^L, Rfactor_arr)
+    else
+      Rfactor_arr(ixI^S) = 1.0d0
+    end if
 
     ! T gradient at cell faces
     ! b unit vector mf: magnetic field direction vector
@@ -459,9 +483,9 @@ contains
       ! compensate with perpendicular conductivity
       if(fl%tc_perpendicular) then
         if(B0field) then
-          qdd(ix^S)=fl%tc_k_perp*rho(ix^S)**2/((^C&(w(ix^S,iw_mag(^C))+block%B0(ix^S,^C,0))**2+)*dsqrt(Te(ix^S))+smalldouble)
+          qdd(ix^S)=fl%tc_k_perp*ne(ix^S)**2/((^C&(w(ix^S,iw_mag(^C))+block%B0(ix^S,^C,0))**2+)*dsqrt(Te(ix^S))+smalldouble)
         else
-          qdd(ix^S)=fl%tc_k_perp*rho(ix^S)**2/((^C&w(ix^S,iw_mag(^C))**2+)*dsqrt(Te(ix^S))+smalldouble)
+          qdd(ix^S)=fl%tc_k_perp*ne(ix^S)**2/((^C&w(ix^S,iw_mag(^C))**2+)*dsqrt(Te(ix^S))+smalldouble)
         end if
        {^IFTHREED
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
@@ -540,7 +564,10 @@ contains
           ! averaged b at face centers
           Bcf(ixA^S,idims)=Bcf(ixA^S,idims)*0.5d0**(ndim-1)
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*(0.5d0*(Te(ixA^S)+Te(ixB^S)))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))*dabs(Bcf(ixA^S,idims))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S)) &
+            *(0.5d0*(Rfactor_arr(ixA^S)+Rfactor_arr(ixB^S))*0.5d0*(Te(ixA^S)+Te(ixB^S))) &
+            *dsqrt(0.5d0*(Rfactor_arr(ixA^S)+Rfactor_arr(ixB^S))*0.5d0*(Te(ixA^S)+Te(ixB^S))) &
+            *dabs(Bcf(ixA^S,idims))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -813,7 +840,10 @@ contains
           ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
           ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
           ixB^L=ixA^L+kr(idims,^D);
-          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S))*(0.5d0*(Te(ixA^S)+Te(ixB^S)))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixB^S)))*dabs(Bnorm(ixA^S))
+          qdd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixB^S)) &
+            *(0.5d0*(Rfactor_arr(ixA^S)+Rfactor_arr(ixB^S))*0.5d0*(Te(ixA^S)+Te(ixB^S))) &
+            *dsqrt(0.5d0*(Rfactor_arr(ixA^S)+Rfactor_arr(ixB^S))*0.5d0*(Te(ixA^S)+Te(ixB^S))) &
+            *dabs(Bnorm(ixA^S))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qdd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qdd(ix^D)
@@ -873,20 +903,22 @@ contains
     double precision :: dtnew
 
     double precision :: tmp(ixO^S),tmp2(ixO^S),Te(ixI^S),rho(ixI^S),hfs(ixO^S),gradT(ixI^S)
+    double precision :: ne(ixI^S), nH_arr(ixI^S)
     double precision :: dtdiff_tcond,maxtmp2
     integer          :: idim
 
     call fl%get_temperature_from_conserved(w,x,ixI^L,ixI^L,Te)
     call fl%get_rho(w,x,ixI^L,ixO^L,rho)
+    if(associated(fl%get_ne_nH)) call fl%get_ne_nH(ixI^L, ixO^L, w, ne, nH_arr)
 
     if(fl%tc_constant) then
       tmp(ixO^S)=fl%tc_k_para/rho(ixO^S)
     else
       if(fl%tc_saturate) then
         ! Kannan 2016 MN 458, 410
-        ! 3^1.5*kB^2/(4*sqrt(pi)*e^4)
-        ! l_mfpe=3.d0**1.5d0*kB_cgs**2/(4.d0*sqrt(dpi)*e_cgs**4*37.d0)=7093.9239487765044d0
-        tmp2(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
+        ! l_mfpe = 3^1.5*kB^2/(4*sqrt(pi)*e^4*lnLambda) * T^2/n_e
+        ! 7093.9239487765044 = 3^1.5*kB_cgs^2/(4*sqrt(pi)*e_cgs^4*37)
+        tmp2(ixO^S)=Te(ixO^S)**2/ne(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
         hfs=0.d0
         do idim=1,ndim
           call gradient(Te,ixI^L,ixO^L,idim,gradT)
@@ -986,9 +1018,17 @@ contains
     double precision, intent(in) :: Te(ixI^S),rho(ixI^S)
     double precision, intent(out) :: qvec(ixI^S,1:ndim)
     double precision :: gradT(ixI^S,1:ndim),ke(ixI^S),qd(ixI^S)
+    double precision :: Rfactor_arr(ixI^S)
     integer :: idims,ix^D,ix^L,ixC^L,ixA^L,ixB^L,ixD^L
 
     ix^L=ixO^L^LADD1;
+
+    ! Get Rfactor for saturation flux: F_sat = 5*phi*rho*(Rfactor*T)^(3/2)
+    if(fl%tc_saturate .and. associated(fl%get_var_Rfactor)) then
+      call fl%get_var_Rfactor(w, x, ixI^L, ixI^L, Rfactor_arr)
+    else
+      Rfactor_arr(ixI^S) = 1.0d0
+    end if
     ! ixC is cell-corner index
     ixCmax^D=ixOmax^D; ixCmin^D=ixOmin^D-1;
 
@@ -1117,7 +1157,9 @@ contains
           ! consider saturation (Cowie and Mckee 1977 ApJ, 211, 135)
           ! unsigned saturated TC flux = 5 phi rho c**3, c=sqrt(p/rho) is isothermal sound speed, phi=1.1
           ixD^L=ixA^L+kr(idims,^D);
-          qd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixD^S))*(0.5d0*(Te(ixA^S)+Te(ixD^S)))*dsqrt(0.5d0*(Te(ixA^S)+Te(ixD^S)))
+          qd(ixA^S)=0.75d0*(rho(ixA^S)+rho(ixD^S)) &
+            *(0.5d0*(Rfactor_arr(ixA^S)+Rfactor_arr(ixD^S))*0.5d0*(Te(ixA^S)+Te(ixD^S))) &
+            *dsqrt(0.5d0*(Rfactor_arr(ixA^S)+Rfactor_arr(ixD^S))*0.5d0*(Te(ixA^S)+Te(ixD^S)))
          {do ix^DB=ixAmin^DB,ixAmax^DB\}
             if(dabs(qvec(ix^D,idims))>qd(ix^D)) then
               qvec(ix^D,idims)=sign(1.d0,qvec(ix^D,idims))*qd(ix^D)
