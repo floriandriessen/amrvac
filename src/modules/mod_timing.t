@@ -28,4 +28,8 @@ module mod_timing
   integer                :: itTimeLast
   integer, parameter     :: timing_unit=55
   logical                :: timing_log_opened=.false.
+  !> Enable writing of detailed timing breakdown log (set via savelist)
+  logical                :: write_timing_log=.false.
+  !> Write timing log every N iterations (default 10)
+  integer                :: timing_log_interval=10
 end module mod_timing

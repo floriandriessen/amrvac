@@ -179,6 +179,7 @@ contains
     use mod_geometry
     use mod_source
     use mod_input_output_helper, only: get_names_from_string
+    use mod_timing, only: write_timing_log, timing_log_interval
 
     double precision, dimension(nsavehi) :: tsave_log, tsave_dat, tsave_slice, &
          tsave_collapsed, tsave_custom
@@ -246,7 +247,8 @@ contains
          dtsave_log, dtsave_dat, dtsave_slice, dtsave_collapsed, dtsave_custom, &
          ditsave_log, ditsave_dat, ditsave_slice, ditsave_collapsed, ditsave_custom,&
          tsavestart_log, tsavestart_dat, tsavestart_slice, tsavestart_collapsed,&
-         tsavestart_custom, tsavestart
+         tsavestart_custom, tsavestart, &
+         write_timing_log, timing_log_interval
 
     namelist /stoplist/ it_init,time_init,it_max,time_max,dtmin,reset_it,reset_time,&
          wall_time_max,final_dt_reduction

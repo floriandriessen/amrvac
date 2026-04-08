@@ -252,6 +252,21 @@ contains
     ! is active from the very first timestep (avoids IC transient)
     if(phys_escape_prob) call escape_prob_compute_colmass()
 
+    ! Open timing breakdown log if requested via savelist
+    if (write_timing_log .and. .not. timing_log_opened .and. mype==0) then
+      if (global_time > 1.0d-10) then
+        open(timing_unit,file=trim(base_filename)//'timing.log', &
+             status='unknown',position='append',action='write')
+        write(timing_unit,'(a,es12.5)') '# --- restart at t = ', global_time
+      else
+        open(timing_unit,file=trim(base_filename)//'timing.log', &
+             status='replace',action='write')
+        write(timing_unit,'(a)') '# MAIN: it t nleafs setdt advance tc' &
+             //' eos_hydro eos_tc regrid save process adv-tc'
+      end if
+      timing_log_opened = .true.
+    end if
+
     time_evol : do
 
        time_before_advance=MPI_WTIME()
@@ -366,7 +381,8 @@ contains
        tw_eos_hydro_prev = timeeos_conv + timeeos_pthermal + timeeos_update
        tw_eos_tc = timeeos_Tfromei + timeeos_csound - tw_eos_tc_prev
        tw_eos_tc_prev = timeeos_Tfromei + timeeos_csound
-       if (mype==0 .and. timing_log_opened) then
+       if (mype==0 .and. timing_log_opened .and. &
+           mod(it, timing_log_interval)==0) then
          write(timing_unit,'(a,i8,1x,es12.5,1x,i6,1x,9(f10.4,1x))') &
            '  MAIN ', it, global_time, nleafs_active, &
            tw_setdt, tw_advance, tw_tc_total, tw_eos_hydro, tw_eos_tc, &
