@@ -1132,8 +1132,12 @@ contains
     character(len=std_len)  :: coolcurve='JCcorona'
     !> Name of cooling method
     character(len=std_len)  :: coolmethod='exact'
+    !> Variable-c_V Townsend extension (Y_mod): quadrature and sub-intervals
+    character(len=8) :: rc_Y_mod_quadrature='boole'
+    integer :: rc_Y_mod_N_sub=16
 
-    namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split,rad_cut,rad_cut_hgt,rad_cut_dey
+    namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split,rad_cut,rad_cut_hgt,rad_cut_dey, &
+        rc_Y_mod_quadrature, rc_Y_mod_N_sub
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -1151,6 +1155,8 @@ contains
     fl%rad_cut=rad_cut
     fl%rad_cut_hgt=rad_cut_hgt
     fl%rad_cut_dey=rad_cut_dey
+    fl%Y_mod_quadrature=rc_Y_mod_quadrature
+    fl%Y_mod_N_sub=rc_Y_mod_N_sub
   end subroutine rc_params_read
 !! end rad cool
 

@@ -171,6 +171,39 @@ module mod_radiative_cooling
     procedure (get_subr1), pointer, nopass :: get_var_Rfactor => null()
     procedure (get_2var_subr), pointer, nopass :: get_ne_nH => null()
 
+    !> Variable-c_V Townsend extension (Y_mod). Built only when eos%ionE.
+    !>
+    !>   Y_mod(j, i) is the modified TEF (units of code time) at the
+    !>   (log10 nH index j, T index i) grid point. Indexing follows the
+    !>   existing AMRVAC convention: Y(ncool) = 0 at the top T = tcoolmax,
+    !>   and Y monotonically increases as T decreases. The j axis matches
+    !>   the eos%eint_from_T table's nH grid (var1_min..var1_max, dim1).
+    !>
+    !> Construction: change-of-variables u = e_int/n_H. The integrand
+    !>   1/(n_e Lambda) is sampled at composite Simpson or Boole nodes
+    !>   between [u(T_i), u(T_{i+1})]. See build_Y_mod_table.
+    !>
+    !> Lookups: findY_mod(T, nH, fl) returns Y by bilinear interpolation
+    !>   in (log_nH, log_T). findT_mod(Y, nH, fl) returns T by bisection
+    !>   on the row at the interpolated nH. (A precomputed inverse table
+    !>   variant was prototyped during development but proved unusable:
+    !>   at extreme nH the per-row Y_max varies so widely that bilinear
+    !>   blending between rows mixes physically saturated and unsaturated
+    !>   entries. The bisect path is O(log ncool) ≈ 12 iterations anyway.)
+    double precision, allocatable :: Y_mod(:,:)
+    double precision, allocatable :: Y_mod_max_per_row(:)
+    integer :: Y_mod_n_nH = 0
+    double precision :: Y_mod_lg_nH_min = 0.0d0
+    double precision :: Y_mod_lg_nH_max = 0.0d0
+    double precision :: Y_mod_lg_nH_step_inv = 0.0d0
+    !> Build flag — set to .true. only after the table has been populated
+    !> by build_Y_mod_table (called from bind_eos_to_source after eos_finalise).
+    logical :: Y_mod_built = .false.
+    !> Quadrature method: 'simpson' (3-point, O(h^4)) or 'boole' (5-point, O(h^6))
+    character(len=8) :: Y_mod_quadrature = 'boole'
+    !> Number of sub-intervals per [u_i, u_{i+1}] segment for the quadrature
+    integer :: Y_mod_N_sub = 16
+
   end type rc_fluid
 
   double precision :: t_Hildner(1:6), t_FM(1:5), t_Rosner(1:10), t_Klimchuk(1:8), &
@@ -1277,9 +1310,9 @@ module mod_radiative_cooling
 
          case('SPEX_DM')
             if(mype ==0) then
-               print *, 'Use SPEX cooling curve for solar metallicity above 10^4 K. ' 
-               print *, 'At lower temperatures,use Dalgarno & McCray (1972), ' 
-               print *, 'with a pre-set ionization fraction of 10^-3. ' 
+               print *, 'Use SPEX cooling curve for solar metallicity above 10^4 K. '
+               print *, 'At lower temperatures,use Dalgarno & McCray (1972), '
+               print *, 'with a pre-set ionization fraction of 10^-3. '
                print *, 'as described by Schure et al. (2009). '
             endif
             ntable = n_SPEX + n_DM_2 - 6
@@ -1616,7 +1649,7 @@ module mod_radiative_cooling
       double precision              :: taper
       ! LTE+IonE variables
       double precision              :: nH_val, log_nH, log_p_nH
-      double precision              :: eint_current, gamma_eff_m1
+      double precision              :: eint_current
       integer                       :: ix^D
 
       ! Check cooling method
@@ -1640,6 +1673,7 @@ module mod_radiative_cooling
          emin = rhonew(ix^D) * fl%tlow * Rfactor(ix^D) * invgam
          if (eos%ionE) then
            nH_val = rhonew(ix^D) / eos%nH2rhoFactor
+           log_nH = dlog10(nH_val)
            if (eos%method == 'analytic') then
              block
                double precision :: y_l, T_l
@@ -1649,7 +1683,6 @@ module mod_radiative_cooling
                    + y_l * eos%eion_per_nH * nH_val
              end block
            else
-             log_nH = dlog10(nH_val)
              log_p_nH = dlog10(pnew(ix^D) / nH_val)
              eint_current = pnew(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
            end if
@@ -1664,19 +1697,40 @@ module mod_radiative_cooling
            l1 = zero
          else if( Te(ix^D)>= fl%tcoolmax ) then
            call calc_l_extended(Te(ix^D), l1, fl)
-           l1 = l1 * ne(ix^D)*nH_arr(ix^D)
+             l1 = l1 * ne(ix^D) * nH_arr(ix^D)
            l1 = min(l1, lmax)
          else
-           call findY(Te(ix^D), y1, fl)
-           if (eos%ionE) then
-             gamma_eff_m1 = pnew(ix^D) / eint_current
-             y2 = y1 + fact * ne(ix^D) * gamma_eff_m1
+           if (eos%ionE .and. fl%Y_mod_built) then
+             !> Variable-c_V Townsend (Ỹ): the modified TEF carries time units
+             !> intrinsically, so the advance is just Y2 = Y1 + qdt.
+             y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
+             y2 = y1 + qdt
+             tlocal2 = findT_mod(y2, nH_arr(ix^D), fl)
            else
-             y2 = y1 + fact * ne(ix^D)*rc_gamma_1
+             !> Classical Townsend with constant γ
+             call findY(Te(ix^D), y1, fl)
+               y2 = y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                                / (rho(ix^D) * Rfactor(ix^D))
+             call findT(tlocal2, y2, fl)
            end if
-           call findT(tlocal2, y2, fl)
            if( tlocal2 <= fl%tcoolmin ) then
              l1 = lmax
+           else if (eos%ionE) then
+             !> Variable-c_V energy update. For |Te-Tlocal2|/Te below the
+             !> eint_from_T table's resolution (~1e-4), the table difference
+             !> is dominated by bicubic interpolation noise and would produce
+             !> a spurious cooling rate. Fall back to the classical rate
+             !> ne·nH·Λ(Te) which is exact at first order in qdt. The table
+             !> path only kicks in when ΔT is large enough that the variable
+             !> c_V / dne/dT correction actually matters (recombination zone).
+             if (dabs(Te(ix^D) - tlocal2) > 1.0d-4 * Te(ix^D)) then
+               l1 = ((eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
+                    - eint_nH_from_T(log_nH, dlog10(tlocal2))) * nH_val) / qdt
+               l1 = max(l1, zero)
+             else
+               call findL(Te(ix^D), l1, fl)
+                 l1 = l1 * ne(ix^D) * nH_arr(ix^D)
+             end if
            else
              l1 = (Te(ix^D)- tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam/qdt
            end if
@@ -1847,7 +1901,7 @@ module mod_radiative_cooling
       double precision :: taper
       ! LTE+IonE variables
       double precision :: nH_val, log_nH, log_p_nH
-      double precision :: eint_current, gamma_eff_m1
+      double precision :: eint_current
       integer :: ix^D
 
       call fl%get_pthermal_equi(wCT,x,ixI^L,ixO^L,pth)
@@ -1866,6 +1920,7 @@ module mod_radiative_cooling
            emin = rho(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
            if (eos%ionE) then
              nH_val = rho(ix^D) / eos%nH2rhoFactor
+             log_nH = dlog10(nH_val)
              if (eos%method == 'analytic') then
                block
                  double precision :: y_l, T_l
@@ -1875,7 +1930,6 @@ module mod_radiative_cooling
                      + y_l * eos%eion_per_nH * nH_val
                end block
              else
-               log_nH = dlog10(nH_val)
                log_p_nH = dlog10(pth(ix^D) / nH_val)
                eint_current = pth(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
              end if
@@ -1894,7 +1948,7 @@ module mod_radiative_cooling
              ! res already initialised to 0d0 above; no cooling
            else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1,fl)
-             L1 = L1*ne(ix^D)*nH_arr(ix^D)
+               L1 = L1 * ne(ix^D) * nH_arr(ix^D)
              if(phys_trac) then
                if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                  L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -1903,16 +1957,33 @@ module mod_radiative_cooling
              L1 = min(L1,Lmax)
              res(ix^D) = L1*qdt
            else
-             call findY(Te(ix^D),Y1,fl)
-             if (eos%ionE) then
-               gamma_eff_m1 = pth(ix^D) / eint_current
-               Y2 = Y1 + fact * ne(ix^D) * gamma_eff_m1
+             if (eos%ionE .and. fl%Y_mod_built) then
+               !> Variable-c_V Townsend (Ỹ): advance is just Y2 = Y1 + qdt
+               Y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
+               Y2 = Y1 + qdt
+               Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
              else
-               Y2 = Y1 + fact * ne(ix^D)*rc_gamma_1
+               call findY(Te(ix^D),Y1,fl)
+                 Y2 = Y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                                  / (rho(ix^D) * Rfactor(ix^D))
+               call findT(Tlocal2,Y2,fl)
              end if
-             call findT(Tlocal2,Y2,fl)
              if(Tlocal2<=fl%tcoolmin) then
                de = emax
+             else if (eos%ionE) then
+               !> Variable-c_V energy update with a numerical-stability fallback
+               !> (see detailed comment in cool_exact).
+               if (dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
+                 de = (eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
+                      - eint_nH_from_T(log_nH, dlog10(Tlocal2))) * nH_val
+                 de = max(de, zero)
+               else
+                 block
+                   double precision :: L_here
+                   call findL(Te(ix^D), L_here, fl)
+                     de = ne(ix^D) * nH_arr(ix^D) * L_here * qdt
+                 end block
+               end if
              else
                de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
              end if
@@ -2303,7 +2374,7 @@ module mod_radiative_cooling
       double precision :: taper
       ! LTE+IonE variables
       double precision :: nH_val, log_nH, log_p_nH
-      double precision :: eint_current, gamma_eff_m1
+      double precision :: eint_current
       double precision :: eint_w(ixI^S)  ! actual internal energy from conserved state
       integer :: ix^D
 
@@ -2324,6 +2395,7 @@ module mod_radiative_cooling
          if (eos%ionE) then
            ! LTE+IonE: EoS quantities for Y-advance; cap from conserved state
            nH_val = rhonew(ix^D) / eos%nH2rhoFactor
+           log_nH = dlog10(nH_val)
            if (eos%method == 'analytic') then
              ! Use cached Te_ and Ne_ to compute eint directly
              block
@@ -2334,7 +2406,6 @@ module mod_radiative_cooling
                    + y_loc * eos%eion_per_nH * nH_val
              end block
            else
-             log_nH = dlog10(nH_val)
              log_p_nH = dlog10(pnew(ix^D) / nH_val)
              eint_current = pnew(ix^D) * p2eint_from_nH_p(log_nH, log_p_nH)
            end if
@@ -2348,7 +2419,7 @@ module mod_radiative_cooling
            ! no cooling
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), L1,fl)
-           L1 = L1*ne(ix^D)*nH_arr(ix^D)
+             L1 = L1 * ne(ix^D) * nH_arr(ix^D)
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2359,24 +2430,40 @@ module mod_radiative_cooling
            L1 = L1 * taper
            w(ix^D,fl%e_) = w(ix^D,fl%e_)-L1*qdt
          else
-           call findY(Te(ix^D),Y1,fl)
-           if (eos%ionE) then
-             gamma_eff_m1 = pnew(ix^D) / eint_current
-             Y2 = Y1 + fact*ne(ix^D)*gamma_eff_m1
+           if (eos%ionE .and. fl%Y_mod_built) then
+             !> Variable-c_V Townsend (Ỹ): advance is just Y2 = Y1 + qdt
+             Y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
+             Y2 = Y1 + qdt
+             Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
            else
-             Y2 = Y1 + fact*ne(ix^D)*rc_gamma_1
+             call findY(Te(ix^D),Y1,fl)
+               Y2 = Y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                                / (rho(ix^D) * Rfactor(ix^D))
+             call findT(Tlocal2,Y2,fl)
            end if
-           call findT(Tlocal2,Y2,fl)
            if(Tlocal2<=fl%tcoolmin) then
              de = emax
-           else
-             if (eos%ionE .and. Te(ix^D) < eos%p_rho_FI_threshold &
-                 * eos%nH2rhoFactor / eos%n_per_nH_FI) then
-               de = eint_current - eint_nH_from_T(log_nH, dlog10(Tlocal2)) * nH_val
+           else if (eos%ionE) then
+             !> Variable-c_V energy update with a numerical-stability fallback.
+             !> When |Te-Tlocal2|/Te is below the eint_from_T grid resolution
+             !> (~1e-4), bicubic interpolation of the table gives a noisy
+             !> eint(Te)-eint(Tlocal2) difference that inflates de. In that
+             !> limit the classical rate ne·nH·Λ·qdt is exact at first order
+             !> (c_V is locally constant). The table path is only used when
+             !> ΔT is large enough to resolve variable c_V / dne/dT effects.
+             if (dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
+               de = (eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
+                     - eint_nH_from_T(log_nH, dlog10(Tlocal2))) * nH_val
                de = max(de, zero)
              else
-               de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
+               block
+                 double precision :: L_here
+                 call findL(Te(ix^D), L_here, fl)
+                   de = ne(ix^D) * nH_arr(ix^D) * L_here * qdt
+               end block
              end if
+           else
+             de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
            end if
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
@@ -2601,4 +2688,357 @@ module mod_radiative_cooling
 !                  / (tcool(jl+1)-tcool(jl))
 !      end if
     end subroutine finddLdt
+
+    !> ===================================================================
+    !> Variable-c_V Townsend extension (Y_mod)
+    !> ===================================================================
+    !>
+    !> The original Townsend (2009) exact integration scheme assumes a
+    !> constant heat capacity c_V = ρR/(γ-1). For LTE plasmas with H/He
+    !> ionisation, c_V is a strong function of temperature in the
+    !> recombination zone (Ibañez 1985, 1992 thermal-instability buffering).
+    !>
+    !> The derivation defines a modified TEF
+    !>     Ỹ(T; ρ) ≡ ∫_T^{T_ref} c_V(T'; ρ) / (n_H n_e(T'; ρ) Λ(T')) dT'
+    !> with c_V the LTE volumetric heat capacity *including* the
+    !> ionisation-energy reservoir. The integral is recast via the change
+    !> of variables u = e_int/n_H so that the discrete construction never
+    !> finite-differences c_V — both integrand and energy update are
+    !> driven by the same eint_from_T table, guaranteeing bit-consistent
+    !> energy conservation.
+    !>
+    !> Reduces to the classical Townsend Y at constant ionisation.
+    !> See /lhome/jjenkins/.claude/plans/foamy-spinning-snowflake.md for
+    !> the full derivation, units check, and verification protocol.
+    !>
+    !> Must be called *after* eos_finalise() so that eos%eint_from_T,
+    !> eos%T (forward), and eos%neOnH are all in code units. The hook is
+    !> bind_eos_to_source() in mod_hd_eos.t / mod_mhd_eos.t.
+    !>
+    !> Algorithm: change of variables from T to u = e_int/n_H. For each
+    !> log10 nH grid point j (taken from the eos%eint_from_T table's nH axis):
+    !>   1. Cache u_i = e_int/n_H at every cooling-curve T_i.
+    !>   2. Walk i = ncool-1 down to 1 and accumulate
+    !>        Y_mod(j, i) = Y_mod(j, i+1) + ∫_{u_i}^{u_{i+1}} du / (n_e Λ)
+    !>      using a composite Simpson (3-point, O(h^4)) or Boole (5-point,
+    !>      O(h^6)) rule with N_sub sub-intervals.
+    !>   3. The integrand evaluates n_e via y_from_nH_eint and Λ via findL
+    !>      (with T from T_from_nH_eint).
+    !>
+    !> Per-row inverse table T_mod_inv(j, k) is also built for the
+    !> 'table' inverse method (alternative to bisection).
+    subroutine build_Y_mod_table(fl)
+      use mod_global_parameters, only: mype
+      use mod_eos, only: eos, eint_nH_from_T, T_from_nH_eint, y_from_nH_eint
+      type(rc_fluid), intent(inout) :: fl
+
+      integer :: i, j, k, n_nH, ncool, N_sub
+      double precision :: log_nH_j, nH_j_code, u_lo, u_hi, du_total, du_step
+      double precision :: u_s, log_u_s, T_s, y_s, ne_s, Lambda_s, integ
+      double precision, allocatable :: u_at_T(:), f_node(:)
+      double precision :: Y_max_global, Y_min_global
+
+      ! Preconditions for the variable-c_V Townsend extension:
+      !   1. LTE with ionisation energy (otherwise c_V is constant and classical
+      !      Townsend already correct)
+      !   2. Townsend exact cooling method (Y-advance is its signature)
+      !   3. Tabulated cooling curve, not piecewise power law (PPL has its own
+      !      y_PPL path and does not allocate fl%tcool / fl%Lcool)
+      !   4. eos%eint_from_T table must be built (excludes analytic Saha mode)
+      !   5. Build only once per run
+      if (.not. eos%ionE) return
+      if (fl%coolmethod /= 'exact') return
+      if (fl%isPPL) return
+      if (fl%Y_mod_built) return
+
+      if (.not. allocated(eos%eint_from_T%table)) then
+        if (mype == 0) write(*,*) ' build_Y_mod_table: eos%eint_from_T not allocated; skipping'
+        return
+      end if
+
+      ! Validate quadrature option
+      select case (trim(fl%Y_mod_quadrature))
+      case ('simpson', 'boole')
+        ! ok
+      case default
+        call mpistop('build_Y_mod_table: rc_Y_mod_quadrature must be simpson or boole')
+      end select
+
+      ! Use the eos%eint_from_T nH grid for our Y_mod nH axis (no extra interpolation in nH)
+      n_nH  = eos%eint_from_T%dim1
+      ncool = fl%ncool
+      N_sub = max(2, fl%Y_mod_N_sub)
+      ! For Boole's rule we need N_sub to be a multiple of 4; round up if not.
+      if (trim(fl%Y_mod_quadrature) == 'boole') then
+        if (mod(N_sub, 4) /= 0) N_sub = N_sub + (4 - mod(N_sub, 4))
+      else
+        ! Simpson needs N_sub even
+        if (mod(N_sub, 2) /= 0) N_sub = N_sub + 1
+      end if
+
+      fl%Y_mod_n_nH      = n_nH
+      fl%Y_mod_lg_nH_min = eos%eint_from_T%var1_min
+      fl%Y_mod_lg_nH_max = eos%eint_from_T%var1_max
+      if (n_nH > 1) then
+        fl%Y_mod_lg_nH_step_inv = dble(n_nH - 1) &
+            / (fl%Y_mod_lg_nH_max - fl%Y_mod_lg_nH_min)
+      else
+        fl%Y_mod_lg_nH_step_inv = 0.0d0
+      end if
+
+      allocate(fl%Y_mod(n_nH, ncool))
+      allocate(fl%Y_mod_max_per_row(n_nH))
+      allocate(u_at_T(ncool))
+      allocate(f_node(0:N_sub))
+
+      do j = 1, n_nH
+        log_nH_j = fl%Y_mod_lg_nH_min &
+            + dble(j - 1) * (fl%Y_mod_lg_nH_max - fl%Y_mod_lg_nH_min) / dble(max(1, n_nH - 1))
+        nH_j_code = 10.0d0**log_nH_j
+
+        ! Cache u_i = e_int/n_H at each cooling-curve temperature
+        do i = 1, ncool
+          u_at_T(i) = eint_nH_from_T(log_nH_j, dlog10(fl%tcool(i)))
+        end do
+
+        fl%Y_mod(j, ncool) = 0.0d0
+
+        ! Step downward in T, accumulating ∫du / (n_e Λ)
+        do i = ncool - 1, 1, -1
+          u_lo = u_at_T(i)
+          u_hi = u_at_T(i + 1)
+          du_total = u_hi - u_lo
+          if (du_total <= 0.0d0) then
+            ! Degenerate segment (shouldn't happen physically); skip
+            fl%Y_mod(j, i) = fl%Y_mod(j, i + 1)
+            cycle
+          end if
+          du_step = du_total / dble(N_sub)
+
+          ! Sample integrand at composite quadrature nodes
+          do k = 0, N_sub
+            u_s = u_lo + dble(k) * du_step
+            if (u_s <= 0.0d0) then
+              f_node(k) = 0.0d0
+              cycle
+            end if
+            log_u_s = dlog10(u_s)
+            T_s = T_from_nH_eint(log_nH_j, log_u_s)
+              y_s = y_from_nH_eint(log_nH_j, log_u_s)
+              ne_s = y_s * nH_j_code
+            if (T_s <= fl%tcoolmin) then
+              ! Below cooling table: extrapolate linearly using boundary value
+              call findL(fl%tcoolmin, Lambda_s, fl)
+            else if (T_s >= fl%tcoolmax) then
+              call calc_l_extended(T_s, Lambda_s, fl)
+            else
+              call findL(T_s, Lambda_s, fl)
+            end if
+            if (ne_s * Lambda_s > 0.0d0) then
+              f_node(k) = 1.0d0 / (ne_s * Lambda_s)
+            else
+              f_node(k) = 0.0d0
+            end if
+          end do
+
+          select case (trim(fl%Y_mod_quadrature))
+          case ('boole')
+            integ = boole_composite(f_node, N_sub, du_step)
+          case default
+            integ = simpson_composite(f_node, N_sub, du_step)
+          end select
+
+          fl%Y_mod(j, i) = fl%Y_mod(j, i + 1) + integ
+        end do
+
+        fl%Y_mod_max_per_row(j) = fl%Y_mod(j, 1)
+      end do
+
+      deallocate(u_at_T)
+      deallocate(f_node)
+
+      fl%Y_mod_built = .true.
+
+      if (mype == 0) then
+        Y_max_global = maxval(fl%Y_mod_max_per_row)
+        Y_min_global = minval(fl%Y_mod_max_per_row)
+        write(*,'(A,I0,A,I0,A,A,A,I0)') &
+          ' Y_mod table built: ', n_nH, ' nH x ', ncool, ' T   quadrature=', &
+          trim(fl%Y_mod_quadrature), '   N_sub=', N_sub
+        write(*,'(A,F8.4,A,F8.4)') &
+          '   log10 nH range = ', fl%Y_mod_lg_nH_min, ' to ', fl%Y_mod_lg_nH_max
+        write(*,'(A,ES12.4,A,ES12.4,A)') &
+          '   Y_max per row range = [', Y_min_global, ', ', Y_max_global, '] code time'
+        write(*,'(A)') '   inverse=bisect (row-interpolated, O(log ncool))'
+      end if
+    end subroutine build_Y_mod_table
+
+    !> Composite Simpson's rule on (N+1) equally spaced samples (N even).
+    !> N must be a positive even integer; h is the step size.
+    function simpson_composite(f, N, h) result(s)
+      integer, intent(in) :: N
+      double precision, intent(in) :: f(0:N), h
+      double precision :: s
+      integer :: k
+      s = f(0) + f(N)
+      do k = 1, N - 1, 2
+        s = s + 4.0d0 * f(k)
+      end do
+      do k = 2, N - 2, 2
+        s = s + 2.0d0 * f(k)
+      end do
+      s = s * h / 3.0d0
+    end function simpson_composite
+
+    !> Composite Boole's rule on (N+1) equally spaced samples (N a multiple of 4).
+    !> Each 4-step block contributes (2h/45)*(7 f0 + 32 f1 + 12 f2 + 32 f3 + 7 f4).
+    function boole_composite(f, N, h) result(s)
+      integer, intent(in) :: N
+      double precision, intent(in) :: f(0:N), h
+      double precision :: s
+      integer :: k
+      s = 0.0d0
+      do k = 0, N - 4, 4
+        s = s + 7.0d0  * f(k)     &
+              + 32.0d0 * f(k + 1) &
+              + 12.0d0 * f(k + 2) &
+              + 32.0d0 * f(k + 3) &
+              + 7.0d0  * f(k + 4)
+      end do
+      s = s * 2.0d0 * h / 45.0d0
+    end function boole_composite
+
+    !> Bisection on a single Y_mod row to find log10(T) such that
+    !> Y_mod_row(i) = y_target. The row is monotonically increasing in
+    !> *decreasing* i (since Y(ncool)=0 grows toward Y(1)=Y_max).
+    !> Returns log10 T (code units).
+    function invert_row_bisect(Y_row, t_grid, ncool, y_target) result(log_T_out)
+      integer, intent(in) :: ncool
+      double precision, intent(in) :: Y_row(ncool), t_grid(ncool), y_target
+      double precision :: log_T_out
+      integer :: jl, jh, jc
+      double precision :: f_lo, f_hi
+
+      if (y_target <= Y_row(ncool)) then
+        log_T_out = dlog10(t_grid(ncool))
+        return
+      end if
+      if (y_target >= Y_row(1)) then
+        log_T_out = dlog10(t_grid(1))
+        return
+      end if
+
+      ! Bracket: find jl, jh = jl+1 such that Y_row(jh) <= y_target <= Y_row(jl)
+      jl = 1
+      jh = ncool
+      do
+        if (jh - jl <= 1) exit
+        jc = (jl + jh) / 2
+        if (Y_row(jc) >= y_target) then
+          jl = jc
+        else
+          jh = jc
+        end if
+      end do
+      f_lo = Y_row(jl)
+      f_hi = Y_row(jh)
+      if (f_lo == f_hi) then
+        log_T_out = 0.5d0 * (dlog10(t_grid(jl)) + dlog10(t_grid(jh)))
+      else
+        ! Linear interpolation in log T (the cooling-curve T grid is uniform in log T)
+        log_T_out = dlog10(t_grid(jl)) &
+            + (y_target - f_lo) / (f_hi - f_lo) &
+              * (dlog10(t_grid(jh)) - dlog10(t_grid(jl)))
+      end if
+    end function invert_row_bisect
+
+    !> Forward Y_mod lookup: bilinear interpolation in (log10 nH, log10 T)
+    !> on the precomputed Y_mod table. Both axes are uniform in log space.
+    function findY_mod(Te_loc, nH_loc, fl) result(Y_out)
+      double precision, intent(in) :: Te_loc, nH_loc
+      type(rc_fluid), intent(in) :: fl
+      double precision :: Y_out
+      double precision :: log_nH, log_T, ry, rx
+      integer :: jy, jy1, jx, jx1
+      double precision :: fy, fx
+
+      log_nH = dlog10(nH_loc)
+      log_T  = dlog10(Te_loc)
+
+      ! Clamp into table range
+      ry = (log_nH - fl%Y_mod_lg_nH_min) * fl%Y_mod_lg_nH_step_inv
+      ry = max(0.0d0, min(ry, dble(fl%Y_mod_n_nH - 1)))
+      jy  = int(ry)
+      jy1 = min(jy + 1, fl%Y_mod_n_nH - 1)
+      fy  = ry - dble(jy)
+
+      rx = (log_T - fl%lgtcoolmin) / fl%lgstep
+      rx = max(0.0d0, min(rx, dble(fl%ncool - 1)))
+      jx  = int(rx)
+      jx1 = min(jx + 1, fl%ncool - 1)
+      fx  = rx - dble(jx)
+
+      Y_out = (1.0d0 - fy) * ((1.0d0 - fx) * fl%Y_mod(jy + 1,  jx + 1) &
+                             +         fx  * fl%Y_mod(jy + 1,  jx1 + 1)) &
+            +         fy  * ((1.0d0 - fx) * fl%Y_mod(jy1 + 1, jx + 1) &
+                             +         fx  * fl%Y_mod(jy1 + 1, jx1 + 1))
+    end function findY_mod
+
+    !> Inverse Y_mod lookup: given Y_target and nH, return T such that
+    !> Y_mod(log10 nH, log10 T) = Y_target. Bisection on the cooling-table
+    !> i index using values interpolated linearly between the two adjacent
+    !> nH rows (same convention as the classical findT). Saturates at the
+    !> table extremes when Y_target falls outside [Y(tcoolmax), Y(tcoolmin)].
+    function findT_mod(Y_target, nH_loc, fl) result(T_out)
+      double precision, intent(in) :: Y_target, nH_loc
+      type(rc_fluid), intent(in) :: fl
+      double precision :: T_out
+      double precision :: log_nH, ry, fy
+      integer :: jy, jy1
+      double precision :: log_T_lo, log_T_hi
+      integer :: jl, jh, jc, ncool
+      double precision :: Yc_lo, Yc_hi
+
+      log_nH = dlog10(nH_loc)
+      ry = (log_nH - fl%Y_mod_lg_nH_min) * fl%Y_mod_lg_nH_step_inv
+      ry = max(0.0d0, min(ry, dble(fl%Y_mod_n_nH - 1)))
+      jy  = int(ry)
+      jy1 = min(jy + 1, fl%Y_mod_n_nH - 1)
+      fy  = ry - dble(jy)
+      ncool = fl%ncool
+
+      Yc_lo = (1.0d0 - fy) * fl%Y_mod(jy + 1, 1)      + fy * fl%Y_mod(jy1 + 1, 1)
+      Yc_hi = (1.0d0 - fy) * fl%Y_mod(jy + 1, ncool)  + fy * fl%Y_mod(jy1 + 1, ncool)
+      if (Y_target >= Yc_lo) then
+        T_out = fl%tcoolmin
+        return
+      end if
+      if (Y_target <= Yc_hi) then
+        T_out = fl%tcoolmax
+        return
+      end if
+      jl = 1
+      jh = ncool
+      do
+        if (jh - jl <= 1) exit
+        jc = (jl + jh) / 2
+        if (((1.0d0 - fy) * fl%Y_mod(jy + 1, jc) + fy * fl%Y_mod(jy1 + 1, jc)) &
+            >= Y_target) then
+          jl = jc
+        else
+          jh = jc
+        end if
+      end do
+      Yc_lo = (1.0d0 - fy) * fl%Y_mod(jy + 1, jl) + fy * fl%Y_mod(jy1 + 1, jl)
+      Yc_hi = (1.0d0 - fy) * fl%Y_mod(jy + 1, jh) + fy * fl%Y_mod(jy1 + 1, jh)
+      log_T_lo = dlog10(fl%tcool(jl))
+      log_T_hi = dlog10(fl%tcool(jh))
+      if (Yc_lo == Yc_hi) then
+        T_out = fl%tcool(jl)
+      else
+        T_out = 10.0d0**(log_T_lo &
+              + (Y_target - Yc_lo) / (Yc_hi - Yc_lo) * (log_T_hi - log_T_lo))
+      end if
+    end function findT_mod
+
 end module mod_radiative_cooling

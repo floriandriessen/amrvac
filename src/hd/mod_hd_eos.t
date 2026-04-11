@@ -5,6 +5,7 @@ module mod_hd_eos
     use mod_eos_container
     use mod_hd_phys
     use mod_timing
+    use mod_radiative_cooling, only: build_Y_mod_table
 
     use mod_comm_lib, only: mpistop
 
@@ -83,6 +84,11 @@ module mod_hd_eos
                 rc_fl%get_var_Rfactor => eos%get_Rfactor
                 rc_fl%get_Te => eos%get_Te
                 rc_fl%get_ne_nH => eos%get_ne_nH
+                !> Build the variable-c_V Townsend Y_mod table now that all
+                !> EoS tables (eint_from_T, T, neOnH) are in code units.
+                !> build_Y_mod_table checks coolmethod=='exact' and .not.isPPL
+                !> internally and early-returns otherwise.
+                if (eos%ionE) call build_Y_mod_table(rc_fl)
             end if
         end subroutine bind_eos_to_source
 

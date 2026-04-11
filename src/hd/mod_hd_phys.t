@@ -624,12 +624,16 @@ contains
       double precision :: rad_escape_tau_cutoff=0.0d0
       !> Max height from footpoint for escape probability column mass (cm); 0 = no limit
       double precision :: rad_escape_height=0.0d0
+      !> Variable-c_V Townsend extension (Y_mod): quadrature and sub-intervals
+      character(len=8) :: rc_Y_mod_quadrature='boole'
+      integer :: rc_Y_mod_N_sub=16
 
       namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, &
           rho_cap, rad_modify, rad_modify_sym, rad_suppress_DM, &
           rad_cut_hgt, rad_cut_dey, rad_taper_rho, rad_taper_dey, &
           rad_escape_prob, rad_kappa_eff, rad_kappa_Tcutoff, rad_kappa_alpha, &
-          rad_escape_type, rad_escape_tau_cutoff, rad_escape_height
+          rad_escape_type, rad_escape_tau_cutoff, rad_escape_height, &
+          rc_Y_mod_quadrature, rc_Y_mod_N_sub
 
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
@@ -659,6 +663,8 @@ contains
       fl%rad_escape_type=rad_escape_type
       fl%rad_escape_tau_cutoff=rad_escape_tau_cutoff
       fl%rad_escape_height=rad_escape_height/unit_length
+      fl%Y_mod_quadrature=rc_Y_mod_quadrature
+      fl%Y_mod_N_sub=rc_Y_mod_N_sub
     end subroutine rc_params_read
 !! end rad cool
 
