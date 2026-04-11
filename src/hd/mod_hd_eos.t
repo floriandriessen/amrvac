@@ -389,72 +389,21 @@ module mod_hd_eos
 
         end subroutine hd_get_csound2_FI
 
-        !> Sound speed squared for LTE+IonE EoS using pressure-indexed Gamma_1 table.
-        !> Expects w in primitive form: w(p_) = pressure, w(rho_) = density.
-        !> Single table lookup: Gamma_1(nH, p/nH) from precomputed gamma1_p table.
+        !> Sound speed squared for LTE+IonE EoS.
+        !> Delegates Gamma_1 computation to hd_get_gamma1_LTE, then cs2 = Gamma_1 * p/rho.
         subroutine hd_get_csound2_LTE(w, x, ixI^L, ixO^L, cs2)
-            !> Sound speed squared with regime-aware bypass.
-            !> For fully ionised cells (p/rho > threshold): cs2 = gamma * p/rho (exact).
-            !> For ionisation zone cells: Gamma_1 from pressure-indexed table.
             use mod_global_parameters
-            use mod_eos, only: gamma1_from_nH_T_analytic, saha_T_from_nH_eint
-            use mod_physics, only: phys_e_to_ei
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(in)    :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
             double precision, intent(out)   :: cs2(ixI^S)
-
-            double precision :: nH_val, log_nH, log_p_nH, g1, p_over_rho
-            double precision :: eint_val
             integer :: ix^D
 
             timeeos0 = MPI_WTIME()
 
+            call hd_get_gamma1_LTE(w, x, ixI^L, ixO^L, cs2)
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
-                p_over_rho = w(ix^D, p_) / w(ix^D, rho_)
-                if (p_over_rho > eos%p_rho_FI_threshold) then
-                    cs2(ix^D) = eos%gamma * p_over_rho
-                else
-                    nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
-                    if (eos%gamma1_method == 'effective') then
-                        !> Effective gamma: Gamma_1 = 1 + p/eint
-                        !> Use cached Te_ and Ne_ from update_eos_LTE
-                        if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0 .and. &
-                            iw_ne > 0) then
-                            block
-                                double precision :: y_loc, eint_loc
-                                y_loc = w(ix^D,iw_ne) / nH_val
-                                eint_loc = eos%inv_gamma_minus_1 * (1.0d0 + y_loc) * nH_val &
-                                    * w(ix^D,iw_te)
-                                if (eos%ionE) eint_loc = eint_loc &
-                                    + y_loc * eos%eion_per_nH * nH_val
-                                if (eint_loc > 0.0d0) then
-                                    g1 = 1.0d0 + w(ix^D,p_) / eint_loc
-                                else
-                                    g1 = eos%gamma
-                                end if
-                            end block
-                        else
-                            g1 = eos%gamma
-                        end if
-                        cs2(ix^D) = g1 * p_over_rho
-                    else if (eos%method == 'analytic') then
-                        !> Analytical exact: 2D Gamma1(nH, T) table
-                        !> Use cached Te_ from update_eos_LTE
-                        if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0) then
-                            g1 = gamma1_from_nH_T_analytic(nH_val, w(ix^D,iw_te))
-                        else
-                            g1 = eos%gamma
-                        end if
-                        cs2(ix^D) = g1 * p_over_rho
-                    else
-                        !> Table lookup for Gamma_1
-                        log_nH = dlog10(nH_val)
-                        log_p_nH = dlog10(w(ix^D, p_) / nH_val)
-                        g1 = gamma1_from_nH_p(log_nH, log_p_nH)
-                        cs2(ix^D) = g1 * p_over_rho
-                    end if
-                end if
+                cs2(ix^D) = cs2(ix^D) * w(ix^D, p_) / w(ix^D, rho_)
             {end do\}
 
             timeeos_csound = timeeos_csound + (MPI_WTIME()-timeeos0)
