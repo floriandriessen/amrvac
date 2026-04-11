@@ -48,14 +48,14 @@ module mod_hd_eos
                 phys_get_gamma1 => hd_get_gamma1_FI
             end if
 
-            ! choose Rfactor in ideal gas law
-            if (eos%eos_type == 'LTE') then
+            ! choose Rfactor in ideal gas law (usr_Rfactor takes priority)
+            if(associated(usr_Rfactor)) then
+                eos%get_Rfactor=>usr_Rfactor
+            else if (eos%eos_type == 'LTE') then
                 eos%get_Rfactor => Rfactor_from_LTE
             else if(hd_partial_ionization) then
                 eos%get_Rfactor=>Rfactor_from_PI_temperature !> defined in eos file
                 phys_update_temperature => update_PI_temperature !> defined in eos file
-            else if(associated(usr_Rfactor)) then
-                eos%get_Rfactor=>usr_Rfactor
             else
                 eos%get_Rfactor=>Rfactor_from_constant_ionization
             end if
