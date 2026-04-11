@@ -204,6 +204,35 @@ module mod_radiative_cooling
     !> Number of sub-intervals per [u_i, u_{i+1}] segment for the quadrature
     integer :: Y_mod_N_sub = 16
 
+    !> SPEX-style two-table cooling support.
+    !>
+    !> The SPEX/SPEX_DM cooling tables follow Schure et al. (2009) which
+    !> publishes the cooling function in two parts:
+    !>   Lambda_SPEX(T)  -- the cooling rate per n_H^2 (NOT per n_e n_H)
+    !>   nenh_SPEX(T)    -- the CIE equilibrium n_e/n_H ratio at temperature T
+    !> Reconstructing the volumetric cooling rate is then:
+    !>   Q = n_H^2 * nenh_eq(T) * Lambda_SPEX(T)
+    !>
+    !> All other cooling tables in AMRVAC follow the standard Dere/CHIANTI
+    !> convention where Q = n_e * n_H * Lambda(T) and the equilibrium
+    !> ionisation balance is baked into Lambda(T) itself.
+    !>
+    !> Historically, AMRVAC handled the SPEX two-table convention by
+    !> absorbing log10(nenh_SPEX) into Lambda_table at construction time, so
+    !> that the standard formula Q = n_e n_H * Lambda_table happened to give
+    !> the right answer when n_e ~ n_H (the FI assumption with neOnH ~ 1.2).
+    !> This trick silently *breaks* in LTE+ionE mode where the simulation
+    !> n_e is the actual Saha value: n_e/n_H << 1 at low T, so the formula
+    !> double-counts the equilibrium factor and badly under-counts cooling.
+    !>
+    !> The fix below: do NOT absorb nenh into Lambda_table. Instead, store
+    !> the equilibrium array nenh_eq_table on the same tcool grid, and at
+    !> runtime use Q = n_H^2 * nenh_eq(T) * Lambda_table whenever
+    !> lambda_needs_nenh_table is .true. This honours the published SPEX
+    !> convention regardless of the EoS choice.
+    logical :: lambda_needs_nenh_table = .false.
+    double precision, allocatable :: nenh_eq_table(:)
+
   end type rc_fluid
 
   double precision :: t_Hildner(1:6), t_FM(1:5), t_Rosner(1:10), t_Klimchuk(1:8), &
@@ -1307,6 +1336,15 @@ module mod_radiative_cooling
             allocate(L_table(1:ntable))
             t_table(1:ntable) = t_SPEX(1:n_SPEX)
             L_table(1:ntable) = l_SPEX(1:n_SPEX) + log10(nenh_SPEX(1:n_SPEX))
+            ! SPEX two-table convention: the absorbed nenh_SPEX factor in
+            ! L_table makes Q = n_e * n_H * Lambda give the published rate
+            ! ONLY when n_e ~ n_H (the FI assumption). In LTE+ionE mode the
+            ! actual Saha n_e is much smaller than n_H at low T and the
+            ! formula double-counts the equilibrium factor. The flag below
+            ! tells the LTE+ionE code path to substitute n_H for n_e in the
+            ! cooling rate, which recovers the correct published rate
+            ! Q = n_H^2 * (nenh_eq * Lambda_SPEX) = n_H^2 * Lambda_table.
+            fl%lambda_needs_nenh_table = .true.
 
          case('SPEX_DM')
             if(mype ==0) then
@@ -1322,6 +1360,15 @@ module mod_radiative_cooling
             L_table(1:n_DM_2-1) = L_DM_2(1:n_DM_2-1)
             t_table(n_DM_2:ntable) = t_SPEX(6:n_SPEX)
             L_table(n_DM_2:ntable) = l_SPEX(6:n_SPEX) + log10(nenh_SPEX(6:n_SPEX))
+            ! Same SPEX two-table convention as the pure SPEX case above.
+            ! The DM_2 segment was tabulated assuming y_DM = 10^-3 already
+            ! built into the published L_DM_2 values, so it follows the
+            ! same "Lambda_table includes the nenh factor" convention as
+            ! the SPEX segment above (modulo a constant 10^-3 instead of
+            ! the SPEX equilibrium ratio). Treating both halves with the
+            ! same n_H^2 * Lambda_table formula in LTE+ionE mode gives
+            ! consistent rates and removes the double-counting.
+            fl%lambda_needs_nenh_table = .true.
 
          case('Dere_corona')
             if(mype ==0) &
@@ -1697,7 +1744,11 @@ module mod_radiative_cooling
            l1 = zero
          else if( Te(ix^D)>= fl%tcoolmax ) then
            call calc_l_extended(Te(ix^D), l1, fl)
+           if (fl%lambda_needs_nenh_table) then
+             l1 = l1 * nH_arr(ix^D) * nH_arr(ix^D)
+           else
              l1 = l1 * ne(ix^D) * nH_arr(ix^D)
+           end if
            l1 = min(l1, lmax)
          else
            if (eos%ionE .and. fl%Y_mod_built) then
@@ -1709,8 +1760,16 @@ module mod_radiative_cooling
            else
              !> Classical Townsend with constant γ
              call findY(Te(ix^D), y1, fl)
+             if (fl%lambda_needs_nenh_table) then
+               ! SPEX two-table convention: Lambda_table already contains
+               ! nenh_eq(T). The published rate is Q = n_H^2 * Lambda_table,
+               ! so substitute n_H for n_e in the Y-advance driver.
+               y2 = y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                                / (rho(ix^D) * Rfactor(ix^D))
+             else
                y2 = y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
                                 / (rho(ix^D) * Rfactor(ix^D))
+             end if
              call findT(tlocal2, y2, fl)
            end if
            if( tlocal2 <= fl%tcoolmin ) then
@@ -1729,7 +1788,14 @@ module mod_radiative_cooling
                l1 = max(l1, zero)
              else
                call findL(Te(ix^D), l1, fl)
+               if (fl%lambda_needs_nenh_table) then
+                 ! SPEX two-table convention: Lambda already absorbs the
+                 ! equilibrium n_e/n_H factor at construction, so the rate is
+                 ! Q = n_H^2 * Lambda_table, NOT n_e * n_H * Lambda_table.
+                 l1 = l1 * nH_arr(ix^D) * nH_arr(ix^D)
+               else
                  l1 = l1 * ne(ix^D) * nH_arr(ix^D)
+               end if
              end if
            else
              l1 = (Te(ix^D)- tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam/qdt
@@ -1948,7 +2014,11 @@ module mod_radiative_cooling
              ! res already initialised to 0d0 above; no cooling
            else if( Te(ix^D)>=fl%tcoolmax )then
              call calc_l_extended(Te(ix^D), L1,fl)
+             if (fl%lambda_needs_nenh_table) then
+               L1 = L1 * nH_arr(ix^D) * nH_arr(ix^D)
+             else
                L1 = L1 * ne(ix^D) * nH_arr(ix^D)
+             end if
              if(phys_trac) then
                if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                  L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -1964,8 +2034,13 @@ module mod_radiative_cooling
                Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
              else
                call findY(Te(ix^D),Y1,fl)
+               if (fl%lambda_needs_nenh_table) then
+                 Y2 = Y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                                  / (rho(ix^D) * Rfactor(ix^D))
+               else
                  Y2 = Y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
                                   / (rho(ix^D) * Rfactor(ix^D))
+               end if
                call findT(Tlocal2,Y2,fl)
              end if
              if(Tlocal2<=fl%tcoolmin) then
@@ -1981,7 +2056,11 @@ module mod_radiative_cooling
                  block
                    double precision :: L_here
                    call findL(Te(ix^D), L_here, fl)
+                   if (fl%lambda_needs_nenh_table) then
+                     de = nH_arr(ix^D) * nH_arr(ix^D) * L_here * qdt
+                   else
                      de = ne(ix^D) * nH_arr(ix^D) * L_here * qdt
+                   end if
                  end block
                end if
              else
@@ -2419,7 +2498,11 @@ module mod_radiative_cooling
            ! no cooling
          else if( Te(ix^D)>=fl%tcoolmax )then
            call calc_l_extended(Te(ix^D), L1,fl)
+           if (fl%lambda_needs_nenh_table) then
+             L1 = L1 * nH_arr(ix^D) * nH_arr(ix^D)
+           else
              L1 = L1 * ne(ix^D) * nH_arr(ix^D)
+           end if
            if(phys_trac) then
              if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
                L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
@@ -2437,8 +2520,13 @@ module mod_radiative_cooling
              Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
            else
              call findY(Te(ix^D),Y1,fl)
+             if (fl%lambda_needs_nenh_table) then
+               Y2 = Y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                                / (rho(ix^D) * Rfactor(ix^D))
+             else
                Y2 = Y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
                                 / (rho(ix^D) * Rfactor(ix^D))
+             end if
              call findT(Tlocal2,Y2,fl)
            end if
            if(Tlocal2<=fl%tcoolmin) then
@@ -2459,7 +2547,11 @@ module mod_radiative_cooling
                block
                  double precision :: L_here
                  call findL(Te(ix^D), L_here, fl)
+                 if (fl%lambda_needs_nenh_table) then
+                   de = nH_arr(ix^D) * nH_arr(ix^D) * L_here * qdt
+                 else
                    de = ne(ix^D) * nH_arr(ix^D) * L_here * qdt
+                 end if
                end block
              end if
            else
@@ -2824,8 +2916,18 @@ module mod_radiative_cooling
             end if
             log_u_s = dlog10(u_s)
             T_s = T_from_nH_eint(log_nH_j, log_u_s)
+            if (fl%lambda_needs_nenh_table) then
+              ! SPEX-style two-table convention: the equilibrium n_e/n_H is
+              ! already absorbed into Lambda_table at construction time, so
+              ! the cooling rate is Q = n_H^2 * Lambda_table. The integrand
+              ! 1/(n_e * Lambda) becomes 1/(n_H * Lambda); equivalently,
+              ! substitute n_e -> n_H by setting y_s = 1.
+              y_s = 1.0d0
+              ne_s = nH_j_code
+            else
               y_s = y_from_nH_eint(log_nH_j, log_u_s)
               ne_s = y_s * nH_j_code
+            end if
             if (T_s <= fl%tcoolmin) then
               ! Below cooling table: extrapolate linearly using boundary value
               call findL(fl%tcoolmin, Lambda_s, fl)
