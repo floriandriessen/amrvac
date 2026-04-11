@@ -486,6 +486,11 @@ module mod_hd_eos
             double precision :: nH_val, p_over_rho
             integer :: ix^D
 
+            if (eos%gamma1_method == 'constant') then
+                gamma1(ixO^S) = eos%gamma
+                return
+            end if
+
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                 p_over_rho = w(ix^D, p_) / w(ix^D, rho_)
                 if (p_over_rho > eos%p_rho_FI_threshold) then

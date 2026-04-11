@@ -158,9 +158,10 @@ contains
                 " (expected 'tables' or 'analytic')")
         end if
         if (eos%gamma1_method /= 'exact' .and. eos%gamma1_method /= 'effective' &
-            .and. eos%gamma1_method /= 'approx_table') then
+            .and. eos%gamma1_method /= 'approx_table' &
+            .and. eos%gamma1_method /= 'constant') then
             call mpistop("Unknown gamma1_method: "//trim(eos%gamma1_method)// &
-                " (expected 'exact', 'approx_table', or 'effective')")
+                " (expected 'exact', 'approx_table', 'effective', or 'constant')")
         end if
         if (eos%inversion /= 'bisect' .and. eos%inversion /= 'newton') then
             call mpistop("Unknown lte_h_inversion: "//trim(eos%inversion)// &
