@@ -248,6 +248,21 @@ module mod_fld
       endif
       E_rad(ixO^S) = w(ixO^S,iw_r_e)
 
+      if(check_small_values.and..not.fix_small_values)then
+         {do ix^DB= ixOmin^DB,ixOmax^DB\}
+           if(e_gas(ix^D)<small_e.or.E_rad(ix^D)<small_r_e) then
+              write(*,*) "Error in FLD add_fld_rad_force: small value"
+              write(*,*) "of internal or radiation energy density before exchange"
+              write(*,*) "Iteration: ", it, " Time: ", global_time
+              write(*,*) "Location: ", x(ix^D,:)
+              write(*,*) "Cell number: ", ix^D
+              write(*,*) "internal energy density  is=",e_gas(ix^D)," versus   small_e=",small_e
+              write(*,*) "radiation energy density is=",E_rad(ix^D)," versus small_r_e=",small_r_e
+              call mpistop("FLD error:May need to turn on fixes")
+           end if
+         {end do\}
+      endif
+
       if(fix_small_values)then
         {do ix^D = ixOmin^D,ixOmax^D\ }
           e_gas(ix^D) = max(e_gas(ix^D),small_e)
@@ -279,6 +294,21 @@ module mod_fld
       {enddo\}
 
       E_rad(ixO^S) = (a1(ixO^S)*e_gas(ixO^S)**4.d0+E_rad(ixO^S))/(one+a2(ixO^S)+a3(ixO^S))
+
+      if(check_small_values.and..not.fix_small_values)then
+         {do ix^DB= ixOmin^DB,ixOmax^DB\}
+           if(e_gas(ix^D)<small_e.or.E_rad(ix^D)<small_r_e) then
+              write(*,*) "Error in FLD add_fld_rad_force: small value"
+              write(*,*) "of internal or radiation energy density after exchange"
+              write(*,*) "Iteration: ", it, " Time: ", global_time
+              write(*,*) "Location: ", x(ix^D,:)
+              write(*,*) "Cell number: ", ix^D
+              write(*,*) "internal energy density  is=",e_gas(ix^D)," versus   small_e=",small_e
+              write(*,*) "radiation energy density is=",E_rad(ix^D)," versus small_r_e=",small_r_e
+              call mpistop("FLD error:May need to turn on fixes")
+           end if
+         {end do\}
+      endif
 
       if(fix_small_values)then
         {do ix^D = ixOmin^D,ixOmax^D\ }
@@ -693,6 +723,23 @@ module mod_fld
     endif
     ! copy back the Erad variable in iw_r_e
     call mg_copy_from_tree_gc(mg_iphi, iw_r_e, state_to=psa)
+
+   if(check_small_values.and..not.fix_small_values)then
+       ixO^L=ixM^LL;
+       do iigrid=1,igridstail; igrid=igrids(iigrid);
+         {do ix^DB= ixOmin^DB,ixOmax^DB\}
+           if(psa(igrid)%w(ix^D,iw_r_e)<small_r_e) then
+              write(*,*) "Error in FLD fld_implicit_update: small value"
+              write(*,*) "of radiation energy density after MG"
+              write(*,*) "Iteration: ", it, " Time: ", global_time
+              write(*,*) "Location: ", psa(igrid)%x(ix^D,:)," on grid",igrid
+              write(*,*) "Cell number: ", ix^D
+              write(*,*) "radiation energy density is=",psa(igrid)%w(ix^D,iw_r_e)," versus small_r_e=",small_r_e
+              call mpistop("FLD error:May need to turn on fixes")
+           end if
+         {end do\}
+       end do
+    endif
 
     if(fix_small_values)then
        ixO^L=ixM^LL;

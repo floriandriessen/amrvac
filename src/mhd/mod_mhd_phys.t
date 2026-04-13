@@ -5138,7 +5138,6 @@ contains
 
     ! radiation force
     call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
-    if(fix_small_values) call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'fld_add_radiation')
 
   end subroutine mhd_add_radiation_source
 

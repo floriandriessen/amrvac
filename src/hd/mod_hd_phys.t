@@ -1612,7 +1612,6 @@ contains
     ! add radiation force and work done by it, changes momentum and gas energy
     ! handle photon tiring, heating and cooling exchange between gas and radiation field
     call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
-    if(fix_small_values) call hd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'fld_add_radiation')
 
   end subroutine hd_add_radiation_source
 
