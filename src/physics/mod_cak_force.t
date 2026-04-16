@@ -146,7 +146,7 @@ contains
 
     real(8), intent(in) :: rstar, twind
 
-    lum     = 4.0d0*dpi * rstar**2.0d0 * const_sigma * twind**4.0d0
+    lum     = 4.0d0*dpi * rstar**2.0d0 * sigma_SB_cgs * twind**4.0d0
     dke     = const_kappae * unit_density * unit_length
     dclight = const_c/unit_velocity
     dlum    = lum/(unit_density * unit_length**5.0d0 / unit_time**3.0d0)

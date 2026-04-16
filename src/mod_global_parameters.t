@@ -101,11 +101,20 @@ module mod_global_parameters
   !> Normalised speed of light
   double precision :: c_norm=1.d0
 
+  !> Normalised radiation constant
+  double precision :: arad_norm=1.d0
+
   !> Physical scaling factor for Opacity
   double precision :: unit_opacity=1.d0
 
   !> Physical scaling factor for radiation flux
   double precision :: unit_radflux=1.d0
+
+  !> Physical scaling factor for radiation energy density
+  double precision :: unit_Erad=1.d0
+
+  !> Physical factors useful for radiation fld
+  double precision :: const_rad_a,const_kappae,const_sigmaSB
 
   !> error handling
   double precision :: small_temperature,small_pressure,small_density,small_e,small_r_e

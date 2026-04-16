@@ -3,20 +3,21 @@
 /
 
 &filelist
-  base_filename='test_heatcool_2D'
+  base_filename='test_heatcool_2D_low'
   typefilelog='regression_test'
 /
 
  &savelist
    itsave(1,1)     = 0
    itsave(1,2)     = 0
-   ditsave_log=1
+   ditsave_log=10
 /
 
  &stoplist
-   dtmin = 1.0d-20
-   it_max = 500
+   dtmin=1.d-15
+   it_max=1000
 /
+   time_max = 1.0d-5
 
  &methodlist
    time_stepper    = 'onestep'
@@ -45,13 +46,16 @@
  /
 
  &paramlist
-  dtpar = 1.d-9
+  dtpar = 2.d-11
  /
 
  &hd_list
   hd_energy = .true.
   hd_gamma = 1.666667d0
   hd_radiation_fld = .true.
+  eq_state_units=.true.
+  He_abundance=0.1d0
+  SI_unit=.false.
  /
 
  &fld_list
@@ -66,6 +70,6 @@
 
  &test_list
   rho0 = 1.d-7
-  t0 = 1.d2
+  factor0  = 1.d-6
   E_r0 = 1.d12
  /

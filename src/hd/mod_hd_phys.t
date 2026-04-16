@@ -139,6 +139,7 @@ module mod_hd_phys
   !    as pointer phys_get_tgas
   public :: hd_get_temperature_from_prim
   ! End: following relevant for radiative hydro using FLD
+  public :: hd_get_temperature_from_etot
 
 contains
 
@@ -275,9 +276,6 @@ contains
        if(hd_dust.and.hd_dust_implicit)then
           call mpistop('implicit dust addition not compatible with FLD radiation')
        endif
-       if(SI_unit)then
-          call mpistop('using FLD implies the use of cgs units')
-       endif
        if(.not.hd_energy)then
           call mpistop('using FLD implies the use of an energy equation, set hd_energy=T')
        else
@@ -286,7 +284,7 @@ contains
           phys_get_tgas            => hd_get_temperature_from_prim
           phys_get_csrad2          => hd_get_csrad2_prim
           !> Initiate radiation-closure module
-          call fld_init(He_abundance, hd_gamma)
+          call fld_init(hd_gamma)
        endif
     else
       r_e=-1
@@ -680,15 +678,21 @@ contains
 
   subroutine hd_physical_units
     use mod_global_parameters
-    double precision :: mp,kB
+    double precision :: mp,kB,c_lightspeed,Xfrac,sigma_Telectron
     double precision :: a,b
     ! Derive scaling units
     if(SI_unit) then
       mp=mp_SI
       kB=kB_SI
+      const_sigmaSB=sigma_SB_SI
+      c_lightspeed=c_SI
+      sigma_Telectron=sigma_Te_SI
     else
       mp=mp_cgs
       kB=kB_cgs
+      const_sigmaSB=sigma_SB_cgs
+      c_lightspeed=const_c
+      sigma_Telectron=sigma_Te_cgs
     end if
     if(eq_state_units) then
       a=1d0+4d0*He_abundance
@@ -698,6 +702,7 @@ contains
         b=2d0+3d0*He_abundance
       end if
       RR=1d0
+      Xfrac=1.d0/a
     else
       a=1d0
       b=1d0
@@ -769,8 +774,23 @@ contains
     end if
     unit_mass = unit_density * unit_length**3
 
-    !> Units for radiative flux and opacity, latter is used in FLD
-    unit_radflux = unit_velocity*unit_pressure
+    !> Units needed for radiative flux and opacity as used in FLD
+    ! normalized light speed
+    c_norm=c_lightspeed/unit_velocity
+    ! this is the radiation constant in either cgs or SI units
+    const_rad_a=4.d0*const_sigmaSB/c_lightspeed
+    ! this is the dimensionless conversion factor for Erad to Trad
+    arad_norm=const_rad_a*unit_temperature**4/unit_pressure
+    ! This is the Thomson scattering opacity in the correct units
+    ! note that the hydrogen mass fraction X=1/a in eq_state_units
+    if(eq_state_units) then
+       const_kappae=sigma_Telectron*(1.d0+Xfrac)/(2.0d0*mp)
+    else
+       const_kappae=0.34d0 ! specific value in cm^2/g for He=0.1 in cgs 
+    endif
+    ! these are the units
+    unit_Erad = unit_pressure
+    unit_radflux = unit_velocity*unit_Erad
     unit_opacity = one/(unit_density*unit_length)
 
   end subroutine hd_physical_units
@@ -1276,7 +1296,6 @@ contains
   end subroutine hd_get_pthermal_plus_pradiation
 
   !> Calculates radiation temperature
-  !> Note use of cgs units here in factor const_rad_a
   subroutine hd_get_trad(w, x, ixI^L, ixO^L, trad)
     use mod_global_parameters
     use mod_constants
@@ -1286,8 +1305,7 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: trad(ixI^S)
 
-    trad(ixI^S) = (w(ixI^S,r_e)*unit_pressure&
-                /const_rad_a)**(1.d0/4.d0)/unit_temperature
+    trad(ixI^S) = (w(ixI^S,r_e)/arad_norm)**(1.d0/4.d0)
 
   end subroutine hd_get_trad
 

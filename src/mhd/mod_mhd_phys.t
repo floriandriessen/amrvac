@@ -561,9 +561,6 @@ contains
             write(*,*)'Warning: Optically thin cooling together with FLD radiation'
           endif
        endif
-       if(SI_unit)then
-          call mpistop('using FLD implies the use of cgs units')
-       endif
        if(.not.mhd_energy)then
           call mpistop('using FLD implies the use of an energy equation, set mhd_energy=T')
        else
@@ -582,7 +579,7 @@ contains
           phys_get_tgas            => mhd_get_temperature_from_prim
           phys_get_csrad2          => mhd_get_csrad2_prim
           !> Initiate radiation-closure module
-          call fld_init(He_abundance, mhd_gamma)
+          call fld_init(mhd_gamma)
        endif
     else
       r_e=-1
@@ -1374,7 +1371,7 @@ contains
         if(use_multigrid)then
            call phys_set_mg_bounds()
         else
-           call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
+           if(.not.fld_no_mg)call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
         endif
         if(mype==0)then
            write(*,*)'========================'
@@ -1448,19 +1445,23 @@ contains
 
   subroutine mhd_physical_units()
     use mod_global_parameters
-    double precision :: mp,kB,miu0,c_lightspeed
+    double precision :: mp,kB,miu0,c_lightspeed,Xfrac,sigma_Telectron
     double precision :: a,b
     ! Derive scaling units
     if(SI_unit) then
       mp=mp_SI
       kB=kB_SI
       miu0=miu0_SI
+      const_sigmaSB=sigma_SB_SI
       c_lightspeed=c_SI
+      sigma_Telectron=sigma_Te_SI
     else
       mp=mp_cgs
       kB=kB_cgs
       miu0=4.d0*dpi ! G^2 cm^2 dyne^-1
+      const_sigmaSB=sigma_SB_cgs
       c_lightspeed=const_c
+      sigma_Telectron=sigma_Te_cgs
     end if
     if(eq_state_units) then
       a=1d0+4d0*He_abundance
@@ -1470,6 +1471,7 @@ contains
         b=2d0+3d0*He_abundance
       end if
       RR=1d0
+      Xfrac=1.d0/a
     else
       a=1d0
       b=1d0
@@ -1601,8 +1603,21 @@ contains
       end if
     end if
 
-    !> Units for radiative flux and opacity, latter is used in FLD
-    unit_radflux = unit_velocity*unit_pressure
+    !> Units for radiative flux and opacity as used in FLD
+    ! this is the radiation constant in either cgs or SI units
+    const_rad_a=4.d0*const_sigmaSB/c_lightspeed
+    ! this is the dimensionless conversion factor for Erad to Trad
+    arad_norm=const_rad_a*unit_temperature**4/unit_pressure
+    ! This is the Thomson scattering opacity in the correct units
+    ! note that the hydrogen mass fraction X=1/a in eq_state_units
+    if(eq_state_units) then
+       const_kappae=sigma_Telectron*(1.d0+Xfrac)/(2.0d0*mp)
+    else
+       const_kappae=0.34d0 ! specific value in cm^2/g for He=0.1 in cgs
+    endif
+    ! these are the units
+    unit_Erad = unit_pressure
+    unit_radflux = unit_velocity*unit_Erad
     unit_opacity = one/(unit_density*unit_length)
 
   end subroutine mhd_physical_units
@@ -4108,7 +4123,6 @@ contains
   end subroutine mhd_get_pthermal_plus_pradiation
 
   !> Calculates radiation temperature 
-  ! note: const_rad_a is assuming cgs units
   subroutine mhd_get_trad(w, x, ixI^L, ixO^L, trad)
     use mod_global_parameters
     use mod_constants
@@ -4118,8 +4132,7 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: trad(ixI^S)
           
-    trad(ixI^S) = (w(ixI^S,r_e)*unit_pressure&
-    /const_rad_a)**(1.d0/4.d0)/unit_temperature
+    trad(ixI^S) = (w(ixI^S,r_e)/arad_norm)**(1.d0/4.d0)
 
   end subroutine mhd_get_trad
 
@@ -5136,7 +5149,8 @@ contains
     logical, intent(in) :: qsourcesplit
     logical, intent(inout) :: active
 
-    ! radiation force
+    ! add radiation force and work done by it, changes momentum and gas energy
+    ! handle photon tiring, heating and cooling exchange between gas and radiation field
     call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
 
   end subroutine mhd_add_radiation_source

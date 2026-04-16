@@ -16,8 +16,8 @@ module mod_fld
     implicit none
     !> source split for energy interact and radforce:
     logical :: fld_Radforce_split = .false.
-    !> Opacity per unit of unit_density
-    double precision, public :: fld_kappa0 = 0.34d0
+    !> Opacity value when using constant opacity
+    double precision, public :: fld_kappa0 = 0.0d0
     !> Tolerance for bisection method for Energy sourceterms
     !> This is a percentage of the minimum of gas- and radiation energy
     double precision, public :: fld_bisect_tol = 1.d-4
@@ -74,19 +74,20 @@ module mod_fld
   !> Initialising FLD-module
   !> Read opacities
   !> Initialise Multigrid and adimensionalise kappa
-  subroutine fld_init(He_abundance, r_gamma)
+  subroutine fld_init(r_gamma)
     use mod_global_parameters
     use mod_variables
     use mod_physics
     use mod_opal_opacity, only: init_opal_table
     use mod_multigrid_coupling
 
-    double precision, intent(in) :: He_abundance, r_gamma
-    double precision :: sigma_thomson
+    double precision, intent(in) :: r_gamma
 
     nth_for_diff_mg=1
     fld_debug=.false.
     fld_no_mg=.false.
+    ! initialize constant opacity with free electron Thomson scattering value
+    fld_kappa0=const_kappae
     call fld_params_read(par_files)
     if(.not.fld_no_mg)then
       select case(nth_for_diff_mg)
@@ -112,11 +113,9 @@ module mod_fld
     !> set gamma
     fld_gamma = r_gamma
     !> Read in opacity table if necesary
-    if(fld_opacity_law .eq. 'opal') call init_opal_table(fld_opal_table)
-    if(fld_opacity_law .eq. 'thomson')  then
-      ! special fixed value for thomson opacity, assuming cgs units
-      sigma_thomson = 6.6524585d-25
-      fld_kappa0 = sigma_thomson/const_mp * (1.+2.*He_abundance)/(1.+4.*He_abundance)
+    if(fld_opacity_law .eq. 'opal') then
+      if(SI_unit)call mpistop("adjust opal module with SI-cgs conversions for SI - or use cgs!")
+      call init_opal_table(fld_opal_table)
     endif
   end subroutine fld_init
 
@@ -145,10 +144,12 @@ module mod_fld
           mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
        case (bc_periodic)
           ! Nothing to do here
+          ! WHY NOT? 
        case (bc_noinflow)
           if (.not. associated(usr_special_mg_bc)) then 
              call mpistop("special BC for MG not defined")
           else
+             ! CHECK versus pointer in mg module
              call usr_special_mg_bc(iB)
           endif
        case (bc_special)
@@ -160,14 +161,13 @@ module mod_fld
        case default
           call mpistop("divE_multigrid warning: unknown b.c. ")
        end select
-       ! Neumann on the diffusion coefficient
+       ! Neumann on the diffusion coefficient CHECK
        ! d/dx u = 0
        mg%bc(iB, mg_iveps)%bc_type = mg_bc_neumann
        mg%bc(iB, mg_iveps)%bc_value = 0.0_dp
     end do
 
   end subroutine fld_set_mg_bounds
-
 
 
   !> w[iw]=w[iw]+qdt*S[wCT,qtC,x] where S is the source based on wCT within ixO
@@ -186,7 +186,6 @@ module mod_fld
     logical, intent(inout) :: active
 
     integer :: idir,jdir,nth_for_fld,ix^D
-    double precision :: sigma_b,cc
     double precision, dimension(ixI^S) :: a1,a2,a3,c0,c1,kappa
     double precision, dimension(ixI^S) :: e_gas,E_rad,tmp
     double precision, dimension(ixI^S,1:ndim,1:ndim) :: div_v,edd
@@ -239,8 +238,6 @@ module mod_fld
       }
       call fld_get_opacity_prim(wCTprim,x,ixI^L,ixO^L,kappa)
 
-      cc = const_c/unit_velocity
-      sigma_b = const_rad_a*cc/4.d0*(unit_temperature**4.d0)/(unit_pressure)
       !> e_gas is the INTERNAL ENERGY without KINETIC ENERGY
       e_gas(ixO^S) = w(ixO^S,iw_e)-half*sum(w(ixO^S,iw_mom(:))**2,dim=ndim+1)/w(ixO^S,iw_rho)
       if(allocated(iw_mag)) then
@@ -272,8 +269,8 @@ module mod_fld
 
       !> Coefficients for the polynomial in Moens et al. 2022, eq 37. but with photon tiring (a3)
       call phys_get_Rfactor(wCT,x,ixI^L,ixO^L,tmp)
-      a1(ixO^S) = 4.d0*sigma_b*qdt*kappa(ixO^S)*(fld_gamma-one)**4/(wCT(ixO^S,iw_rho)**3*tmp(ixO^S)**4)
-      a2(ixO^S) = cc*kappa(ixO^S)*wCT(ixO^S,iw_rho)*qdt
+      a1(ixO^S) = qdt*kappa(ixO^S)*c_norm*arad_norm*(fld_gamma-one)**4/(wCT(ixO^S,iw_rho)**3*tmp(ixO^S)**4)
+      a2(ixO^S) = c_norm*kappa(ixO^S)*wCT(ixO^S,iw_rho)*qdt
       a3(ixO^S) = a3(ixO^S)*qdt
 
       c0(ixO^S) = ((one+a2(ixO^S)+a3(ixO^S))*e_gas(ixO^S)+a2(ixO^S)*E_rad(ixO^S))/a1(ixO^S)/(one+a3(ixO^S))
@@ -412,19 +409,21 @@ module mod_fld
     double precision, intent(out) :: fld_kappa(ixI^S)
 
     integer :: ix^D
-    double precision :: rho0,Temp0,n
+    double precision :: rho0,Temp0,kapp0
     double precision :: Temp(ixI^S)
 
     select case (fld_opacity_law)
-      case('const','thomson')
+      case('const_norm')
+        fld_kappa(ixO^S) = fld_kappa0
+      case('const')
         fld_kappa(ixO^S) = fld_kappa0/unit_opacity
       case('opal')
         call phys_get_tgas(w,x,ixI^L,ixO^L,Temp)
         {do ix^D=ixOmin^D,ixOmax^D\ }
           rho0 = w(ix^D,iw_rho)*unit_density
           Temp0 = Temp(ix^D)*unit_temperature
-          call set_opal_opacity(rho0,Temp0,n)
-          fld_kappa(ix^D) = n/unit_opacity
+          call set_opal_opacity(rho0,Temp0,kapp0)
+          fld_kappa(ix^D) = kapp0/unit_opacity
         {enddo\ }
       case('special')
         if (.not. associated(usr_special_opacity)) then
@@ -571,7 +570,7 @@ module mod_fld
 
   end subroutine fld_get_fluxlimiter_prim
 
-  !> Calculate Radiation Flux (use of cgs units)
+  !> Calculate Radiation Flux 
   !> NOTE: only for diagnostics purposes (w conservative on entry)
   !> This returns cell centered values for radiation flux 
   subroutine fld_get_radflux(w, x, ixI^L, ixO^L, rad_flux)
@@ -584,7 +583,6 @@ module mod_fld
     double precision, intent(out) :: rad_flux(ixI^S, 1:ndim)
 
     integer :: idir,nth_for_fld
-    double precision :: cc
     double precision :: wprim(ixI^S,1:nw)
     double precision :: grad_r_e(ixI^S)
     double precision :: kappa(ixI^S), lambda(ixI^S), fld_R(ixI^S)
@@ -592,7 +590,6 @@ module mod_fld
     wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
 
-    cc = const_c/unit_velocity
     call fld_get_opacity_prim(wprim, x, ixI^L, ixO^L, kappa)
     nth_for_fld=2
     call fld_get_fluxlimiter_prim(wprim, x, ixI^L, ixO^L, lambda, fld_R, nth_for_fld)
@@ -600,7 +597,7 @@ module mod_fld
     !> F = -c*lambda/(kappa*rho) *grad E
     do idir = 1,ndim
       call gradient(wprim(ixI^S,iw_r_e),ixI^L,ixO^L,idir,grad_r_e,nth_for_fld)
-      rad_flux(ixO^S, idir) = -cc*lambda(ixO^S)/(kappa(ixO^S)*wprim(ixO^S,iw_rho))*grad_r_e(ixO^S)
+      rad_flux(ixO^S,idir)=-(c_norm*lambda(ixO^S)/(kappa(ixO^S)*wprim(ixO^S,iw_rho)))*grad_r_e(ixO^S)
     end do
   end subroutine fld_get_radflux
 
@@ -701,6 +698,7 @@ module mod_fld
     ! copy in RHS f factor as Erad with factor -(1/dt)
     call mg_copy_to_tree(iw_r_e, mg_irhs, factor=-lambda, state_from=psb)
     if(time_advance)then
+      ! WHY THIS
        call mg_restrict(mg, mg_iveps)
        call mg_fill_ghost_cells(mg, mg_iveps)
     endif
@@ -832,18 +830,16 @@ module mod_fld
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
-    double precision :: cc
     double precision :: wprim(ixI^S,1:nw)
     double precision :: kappa(ixI^S),lambda(ixI^S),fld_R(ixI^S)
 
-    cc = const_c/unit_velocity
     wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
     ! ensure entries in entire ixI range
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
     call fld_get_opacity_prim(wprim, x, ixI^L, ixO^L, kappa)
     ! note that we use central difference here (last argument is 1 or 2)
     call fld_get_fluxlimiter_prim(wprim, x, ixI^L, ixO^L, lambda, fld_R, nth_for_diff_mg)
-    w(ixO^S,i_diff_mg) = cc*lambda(ixO^S)/(kappa(ixO^S)*wprim(ixO^S,iw_rho))
+    w(ixO^S,i_diff_mg) = c_norm*lambda(ixO^S)/(kappa(ixO^S)*wprim(ixO^S,iw_rho))
     if(associated(usr_special_diffcoef)) call usr_special_diffcoef(w, wprim, x, ixI^L, ixO^L)
     if(minval(w(ixO^S,i_diff_mg))<smalldouble) then
         print *,'min diffcoef=',minval(w(ixO^S,i_diff_mg))
