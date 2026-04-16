@@ -1856,53 +1856,35 @@ module mod_radiative_cooling
            end if
            l1 = min(l1, lmax)
          else
-           if (eos%ionE .and. fl%Y_mod_built) then
-             !> Variable-c_V Townsend (Ỹ): the modified TEF carries time units
-             !> intrinsically, so the advance is just Y2 = Y1 + qdt.
+           !> Always classical Townsend first. Upgrade to Y_mod only where
+           !> ionisation buffering matters (large ΔT, recombination zone).
+           call findY(Te(ix^D), y1, fl)
+           if (fl%lambda_needs_nenh_table) then
+             y2 = y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                              / (rho(ix^D) * Rfactor(ix^D))
+           else
+             y2 = y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                              / (rho(ix^D) * Rfactor(ix^D))
+           end if
+           call findT(tlocal2, y2, fl)
+
+           if (eos%ionE .and. fl%Y_mod_built .and. &
+               dabs(Te(ix^D) - tlocal2) > 1.0d-4 * Te(ix^D)) then
              y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
              y2 = y1 + qdt
              tlocal2 = findT_mod(y2, nH_arr(ix^D), fl)
-           else
-             !> Classical Townsend with constant γ
-             call findY(Te(ix^D), y1, fl)
-             if (fl%lambda_needs_nenh_table) then
-               ! SPEX two-table convention: Lambda_table already contains
-               ! nenh_eq(T). The published rate is Q = n_H^2 * Lambda_table,
-               ! so substitute n_H for n_e in the Y-advance driver.
-               y2 = y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
-                                / (rho(ix^D) * Rfactor(ix^D))
-             else
-               y2 = y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
-                                / (rho(ix^D) * Rfactor(ix^D))
-             end if
-             call findT(tlocal2, y2, fl)
            end if
+
            if( tlocal2 <= fl%tcoolmin ) then
              l1 = lmax
-           else if (eos%ionE) then
-             !> Variable-c_V energy update. For |Te-Tlocal2|/Te below the
-             !> eint_from_T table's resolution (~1e-4), the table difference
-             !> is dominated by bicubic interpolation noise and would produce
-             !> a spurious cooling rate. Fall back to the classical rate
-             !> ne·nH·Λ(Te) which is exact at first order in qdt. The table
-             !> path only kicks in when ΔT is large enough that the variable
-             !> c_V / dne/dT correction actually matters (recombination zone).
-             if (dabs(Te(ix^D) - tlocal2) > 1.0d-4 * Te(ix^D)) then
-               l1 = ((eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
-                    - eint_nH_from_T(log_nH, dlog10(tlocal2))) * nH_val) / qdt
-               l1 = max(l1, zero)
-             else
-               call findL(Te(ix^D), l1, fl)
-               if (fl%lambda_needs_nenh_table) then
-                 ! SPEX two-table convention: Lambda already absorbs the
-                 ! equilibrium n_e/n_H factor at construction, so the rate is
-                 ! Q = n_H^2 * Lambda_table, NOT n_e * n_H * Lambda_table.
-                 l1 = l1 * nH_arr(ix^D) * nH_arr(ix^D)
-               else
-                 l1 = l1 * ne(ix^D) * nH_arr(ix^D)
-               end if
-             end if
+           else if (eos%ionE .and. &
+                    dabs(Te(ix^D) - tlocal2) > 1.0d-4 * Te(ix^D)) then
+             !> Recombination zone: table-based de for variable c_V.
+             l1 = ((eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
+                  - eint_nH_from_T(log_nH, dlog10(tlocal2))) * nH_val) / qdt
+             l1 = max(l1, zero)
            else
+             !> Saturated y or non-ionE: identical Townsend kinetic form.
              l1 = (Te(ix^D)- tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam/qdt
            end if
            l1 = min(l1, lmax)
@@ -2132,42 +2114,33 @@ module mod_radiative_cooling
              L1 = min(L1,Lmax)
              res(ix^D) = L1*qdt
            else
-             if (eos%ionE .and. fl%Y_mod_built) then
-               !> Variable-c_V Townsend (Ỹ): advance is just Y2 = Y1 + qdt
+             !> Always classical Townsend first. Upgrade to Y_mod only in the
+             !> recombination zone (large ΔT) — saturated y uses the identical
+             !> formula as ionE=false, removing per-substep asymmetry.
+             call findY(Te(ix^D),Y1,fl)
+             if (fl%lambda_needs_nenh_table) then
+               Y2 = Y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                                / (rho(ix^D) * Rfactor(ix^D))
+             else
+               Y2 = Y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                                / (rho(ix^D) * Rfactor(ix^D))
+             end if
+             call findT(Tlocal2,Y2,fl)
+
+             if (eos%ionE .and. fl%Y_mod_built .and. &
+                 dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
                Y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
                Y2 = Y1 + qdt
                Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
-             else
-               call findY(Te(ix^D),Y1,fl)
-               if (fl%lambda_needs_nenh_table) then
-                 Y2 = Y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
-                                  / (rho(ix^D) * Rfactor(ix^D))
-               else
-                 Y2 = Y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
-                                  / (rho(ix^D) * Rfactor(ix^D))
-               end if
-               call findT(Tlocal2,Y2,fl)
              end if
+
              if(Tlocal2<=fl%tcoolmin) then
                de = emax
-             else if (eos%ionE) then
-               !> Variable-c_V energy update with a numerical-stability fallback
-               !> (see detailed comment in cool_exact).
-               if (dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
-                 de = (eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
-                      - eint_nH_from_T(log_nH, dlog10(Tlocal2))) * nH_val
-                 de = max(de, zero)
-               else
-                 block
-                   double precision :: L_here
-                   call findL(Te(ix^D), L_here, fl)
-                   if (fl%lambda_needs_nenh_table) then
-                     de = nH_arr(ix^D) * nH_arr(ix^D) * L_here * qdt
-                   else
-                     de = ne(ix^D) * nH_arr(ix^D) * L_here * qdt
-                   end if
-                 end block
-               end if
+             else if (eos%ionE .and. &
+                      dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
+               de = (eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
+                    - eint_nH_from_T(log_nH, dlog10(Tlocal2))) * nH_val
+               de = max(de, zero)
              else
                de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
              end if
@@ -2618,48 +2591,42 @@ module mod_radiative_cooling
            L1 = L1 * taper
            w(ix^D,fl%e_) = w(ix^D,fl%e_)-L1*qdt
          else
-           if (eos%ionE .and. fl%Y_mod_built) then
-             !> Variable-c_V Townsend (Ỹ): advance is just Y2 = Y1 + qdt
+           !> Always compute the CLASSICAL Townsend advance first. This gives
+           !> Tlocal2 using the same path as ionE=false. If the resulting ΔT
+           !> is small (saturated y region), the classical kinetic form is
+           !> exact and we're done. If ΔT is large (recombination zone), we
+           !> redo the advance with the Y_mod path to capture variable-c_V
+           !> dynamics from ionisation buffering.
+           call findY(Te(ix^D),Y1,fl)
+           if (fl%lambda_needs_nenh_table) then
+             Y2 = Y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                              / (rho(ix^D) * Rfactor(ix^D))
+           else
+             Y2 = Y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
+                              / (rho(ix^D) * Rfactor(ix^D))
+           end if
+           call findT(Tlocal2,Y2,fl)
+
+           !> Upgrade to Y_mod only in the recombination zone (large ΔT).
+           if (eos%ionE .and. fl%Y_mod_built .and. &
+               dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
              Y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
              Y2 = Y1 + qdt
              Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
-           else
-             call findY(Te(ix^D),Y1,fl)
-             if (fl%lambda_needs_nenh_table) then
-               Y2 = Y1 + fact * nH_arr(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
-                                / (rho(ix^D) * Rfactor(ix^D))
-             else
-               Y2 = Y1 + fact * ne(ix^D) * nH_arr(ix^D) * rc_gamma_1 &
-                                / (rho(ix^D) * Rfactor(ix^D))
-             end if
-             call findT(Tlocal2,Y2,fl)
            end if
+
            if(Tlocal2<=fl%tcoolmin) then
              de = emax
-           else if (eos%ionE) then
-             !> Variable-c_V energy update with a numerical-stability fallback.
-             !> When |Te-Tlocal2|/Te is below the eint_from_T grid resolution
-             !> (~1e-4), bicubic interpolation of the table gives a noisy
-             !> eint(Te)-eint(Tlocal2) difference that inflates de. In that
-             !> limit the classical rate ne·nH·Λ·qdt is exact at first order
-             !> (c_V is locally constant). The table path is only used when
-             !> ΔT is large enough to resolve variable c_V / dne/dT effects.
-             if (dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
-               de = (eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
-                     - eint_nH_from_T(log_nH, dlog10(Tlocal2))) * nH_val
-               de = max(de, zero)
-             else
-               block
-                 double precision :: L_here
-                 call findL(Te(ix^D), L_here, fl)
-                 if (fl%lambda_needs_nenh_table) then
-                   de = nH_arr(ix^D) * nH_arr(ix^D) * L_here * qdt
-                 else
-                   de = ne(ix^D) * nH_arr(ix^D) * L_here * qdt
-                 end if
-               end block
-             end if
+           else if (eos%ionE .and. &
+                    dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
+             !> Recombination zone: use table-based de for variable c_V.
+             de = (eint_nH_from_T(log_nH, dlog10(Te(ix^D))) &
+                   - eint_nH_from_T(log_nH, dlog10(Tlocal2))) * nH_val
+             de = max(de, zero)
            else
+             !> Saturated y or non-ionE: classical Townsend kinetic form.
+             !> Identical formula for both branches — removes ionE-induced
+             !> discrete asymmetry at full ionisation.
              de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
            end if
            if(phys_trac) then
