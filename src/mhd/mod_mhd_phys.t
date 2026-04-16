@@ -88,8 +88,6 @@ module mod_mhd_phys
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
   integer, public, protected              :: Tweight_
-  !> Index of cached log10(nH) in wextra for LTE+TC fast path
-  integer, public, protected              :: iw_log_nH = -1
   !> Indices of the tracers
   integer, allocatable, public, protected :: tracer(:)
   !> The number of waves
