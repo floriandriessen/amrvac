@@ -69,6 +69,7 @@ contains
   subroutine average2(wL,wR,x,ix^L,idim,wroe,cfast,cslow,afast,aslow,csound2,dp, &
        rhodv,tmp)
     use mod_global_parameters
+    use mod_eos, only: eos
 
     integer                               :: ix^L,idim,idir,jdir,iw
     double precision, dimension(ixG^T,nw) :: wL,wR,wroe
@@ -102,9 +103,9 @@ contains
 
     !Calculate csound2,cfast,cslow,alphafast and alphaslow
 
-    ! get csound**2
+    ! get csound**2 via EoS dispatch (honours LTE+ionE Gamma_1 table)
     if(mhd_energy) then
-      csound2(ix^S)=mhd_gamma*wroe(ix^S,p_)/wroe(ix^S,rho_)
+      call eos%get_csound2(wroe, x, ixG^LL, ix^L, csound2)
     else
       csound2(ix^S)=mhd_gamma*mhd_adiab*wroe(ix^S,rho_)**(mhd_gamma-one)
     end if

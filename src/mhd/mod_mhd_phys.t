@@ -2565,9 +2565,28 @@ contains
     double precision, intent(inout) :: cmax(ixI^S)
 
     double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
+    double precision :: cs2(ixI^S)
+    double precision, allocatable :: w_eos(:^D&,:)
     integer :: ix^D
+    logical :: need_aug
 
     if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+
+    ! Sound speed squared via EoS dispatch (LTE+ionE -> Gamma_1 table; FI -> const gamma).
+    ! If equi_rho0 / equi_pe0 are active, csound^2 is based on the total state.
+    need_aug = has_equi_rho0 .or. has_equi_pe0
+    if (need_aug) then
+      allocate(w_eos(ixI^S,nw))
+      w_eos(ixO^S,:) = w(ixO^S,:)
+      if (has_equi_rho0) w_eos(ixO^S, rho_) = &
+          w(ixO^S, rho_) + block%equi_vars(ixO^S, equi_rho0_, b0i)
+      if (has_equi_pe0)  w_eos(ixO^S, p_)   = &
+          w(ixO^S, p_)   + block%equi_vars(ixO^S, equi_pe0_, b0i)
+      call eos%get_csound2(w_eos, x, ixI^L, ixO^L, cs2)
+      deallocate(w_eos)
+    else
+      call eos%get_csound2(w, x, ixI^L, ixO^L, cs2)
+    end if
 
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
@@ -2577,12 +2596,7 @@ contains
           rho=w(ix^D,rho_)
         end if
         inv_rho=1.d0/rho
-        ! sound speed**2 
-        if(has_equi_pe0) then
-           cmax(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        else
-           cmax(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
-        endif
+        cmax(ix^D)=cs2(ix^D)
         ! store |B|^2 in v
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
@@ -2604,12 +2618,7 @@ contains
           rho=w(ix^D,rho_)
         end if
         inv_rho=1.d0/rho
-        ! sound speed**2 
-        if(has_equi_pe0) then
-           cmax(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        else
-           cmax(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
-        endif
+        cmax(ix^D)=cs2(ix^D)
         ! store |B|^2 in v
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
@@ -3414,16 +3423,22 @@ contains
     double precision, intent(out):: csound(ixO^S)
 
     double precision :: inv_rho, cfast2, AvMinCs2, b2, kmax
+    double precision :: cs2(ixI^S)
     integer :: ix^D
 
     if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+
+    ! Sound speed squared via EoS dispatch (honours LTE+ionE Gamma_1 table).
+    if(mhd_energy) then
+      call eos%get_csound2(w, x, ixI^L, ixO^L, cs2)
+    end if
 
     ! store |B|^2 in v
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         inv_rho=1.d0/w(ix^D,rho_)
         if(mhd_energy) then
-          csound(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
+          csound(ix^D)=cs2(ix^D)
         else
           csound(ix^D)=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
         end if
@@ -3441,7 +3456,7 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         inv_rho=1.d0/w(ix^D,rho_)
         if(mhd_energy) then
-          csound(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
+          csound(ix^D)=cs2(ix^D)
         else
           csound(ix^D)=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
         end if
