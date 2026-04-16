@@ -105,10 +105,12 @@ contains
   !=============================================================================
   subroutine initglobaldata_usr
     real(8) :: lstar, mumol, vesc, gammae, logg, logge, heff, vrotc, vinf, mdot
+    double precision :: const_kappae_local
+    const_kappae_local=0.34d0
 
     ! Stellar structure
     lstar  = 4.0d0*dpi * rstar**2.0d0 * const_sigma * twind**4.0d0
-    gammae = const_kappae * lstar/(4.0d0*dpi * const_G * mstar * const_c)
+    gammae = const_kappae_local * lstar/(4.0d0*dpi * const_G * mstar * const_c)
     logg   = log10(const_G * mstar/rstar**2.0d0)
     logge  = logg + log10(1.0d0 - gammae)
     mumol  = (1.0d0 + 4.0d0*He_abundance)/(2.0d0 + 3.0d0*He_abundance)
