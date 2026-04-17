@@ -33,7 +33,7 @@ module mod_usr
   real(8) :: mstar, rstar, rhobound, mdot, vinf, asound, Ggrav
 
   ! Free-electron scattering opacity for fully-ionised plasma at solar
-  ! abundance (helium number density = 0.1)
+  ! abundance (helium number fraction = 0.1)
   real(8), parameter :: const_kappae_loc = 0.34d0
 
 contains
