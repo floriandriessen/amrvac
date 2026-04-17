@@ -218,7 +218,7 @@ contains
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision :: dtnew
 
-    double precision :: mf(ixO^S,1:ndim),Te(ixI^S),rho(ixI^S),gradT(ixI^S)
+    double precision :: mf(ixO^S,1:ndir),Te(ixI^S),rho(ixI^S),gradT(ixI^S)
     double precision :: ne(ixI^S), nH_arr(ixI^S)
     double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndir),Bmag
     double precision :: dtdiff_tcond,maxtmp2
@@ -379,7 +379,8 @@ contains
     double precision, intent(out) :: qvec(ixI^S,1:ndim)
 
     !! qdd store the heat conduction energy changing rate
-    double precision, dimension(ixI^S,1:ndim) :: mf,Bc,Bcf,gradT
+    double precision, dimension(ixI^S,1:ndir) :: mf
+    double precision, dimension(ixI^S,1:ndim) :: Bc,Bcf,gradT
     double precision, dimension(ixI^S) :: ka,kaf,ke,kef,qdd,Bnorm
     double precision, dimension(ixI^S) :: ne, nH_arr, Rfactor_arr
     double precision :: minq,maxq,qd(ixI^S,2**(ndim-1)), blocal(ndir), Bmag
