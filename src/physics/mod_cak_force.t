@@ -151,7 +151,7 @@ contains
     double precision :: const_kappae_local
     const_kappae_local=0.34d0
 
-    lstar_cgs = 4.0d0*dpi * rstar_cgs**2.0d0 * const_sigma * twind_cgs**4.0d0
+    lstar_cgs = 4.0d0*dpi * rstar_cgs**2.0d0 * sigma_SB_cgs * twind_cgs**4.0d0
 
     ! Dimensionless quantities used in this module computations
     kappae = const_kappae_local * unit_density * unit_length
