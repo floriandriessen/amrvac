@@ -1871,8 +1871,10 @@ module mod_radiative_cooling
            if (eos%ionE .and. fl%Y_mod_built .and. &
                dabs(Te(ix^D) - tlocal2) > 1.0d-4 * Te(ix^D)) then
              y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
-             y2 = y1 + qdt
-             tlocal2 = findT_mod(y2, nH_arr(ix^D), fl)
+             if (y1 == y1 .and. abs(y1) < huge(1.0d0)) then
+               y2 = y1 + qdt
+               tlocal2 = findT_mod(y2, nH_arr(ix^D), fl)
+             end if
            end if
 
            if( tlocal2 <= fl%tcoolmin ) then
@@ -2130,8 +2132,10 @@ module mod_radiative_cooling
              if (eos%ionE .and. fl%Y_mod_built .and. &
                  dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
                Y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
-               Y2 = Y1 + qdt
-               Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
+               if (Y1 == Y1 .and. abs(Y1) < huge(1.0d0)) then
+                 Y2 = Y1 + qdt
+                 Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
+               end if
              end if
 
              if(Tlocal2<=fl%tcoolmin) then
@@ -2608,11 +2612,15 @@ module mod_radiative_cooling
            call findT(Tlocal2,Y2,fl)
 
            !> Upgrade to Y_mod only in the recombination zone (large ΔT).
+           !> Guard: if findY_mod overflows (cooling curve near-zero at this T),
+           !> keep the classical result — variable c_V is irrelevant where Λ ≈ 0.
            if (eos%ionE .and. fl%Y_mod_built .and. &
                dabs(Te(ix^D) - Tlocal2) > 1.0d-4 * Te(ix^D)) then
              Y1 = findY_mod(Te(ix^D), nH_arr(ix^D), fl)
-             Y2 = Y1 + qdt
-             Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
+             if (Y1 == Y1 .and. abs(Y1) < huge(1.0d0)) then
+               Y2 = Y1 + qdt
+               Tlocal2 = findT_mod(Y2, nH_arr(ix^D), fl)
+             end if
            end if
 
            if(Tlocal2<=fl%tcoolmin) then
@@ -3001,8 +3009,9 @@ module mod_radiative_cooling
               ne_s = y_s * nH_j_code
             end if
             if (T_s <= fl%tcoolmin) then
-              ! Below cooling table: extrapolate linearly using boundary value
-              call findL(fl%tcoolmin, Lambda_s, fl)
+              ! Below cooling table: no cooling, so integrand = 0
+              f_node(k) = 0.0d0
+              cycle
             else if (T_s >= fl%tcoolmax) then
               call calc_l_extended(T_s, Lambda_s, fl)
             else
