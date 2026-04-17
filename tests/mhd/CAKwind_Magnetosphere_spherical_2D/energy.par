@@ -71,7 +71,6 @@
 
 &rc_list
   coolcurve  = 'SPEX'
-  coolmethod = 'exact'
   ncool      = 10000
   Tfix       = .true.
   tlow       = 1.0d0

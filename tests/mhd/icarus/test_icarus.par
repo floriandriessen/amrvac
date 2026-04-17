@@ -5,11 +5,11 @@
  &filelist
         autoconvert   = .true.
         saveprim      = .true.
-        base_filename ='icarus_2015_5CMEs'
+        base_filename ='output_for_yt/icarus_2015_5CMEs_new'
         convert_type  = 'vtuBCCmpi'
         slice_type    = 'csv'
         nocartesian   = .true.
-        nwauxio       = 3
+        nwauxio       = 7
 
 
 /
@@ -17,8 +17,8 @@
  &savelist
         itsave(1,1)   = 0
         itsave(1,2)   = 0
-        tsavestart(2) = 240.0
-        dtsave_dat    = 3.0
+       ! tsavestart(2) = 240.0
+        dtsave_dat    = 12.0
 /
 
 
@@ -54,6 +54,7 @@
  &particles_list
        physics_type_particles='sample'
        num_particles=10
+       nusrpayload=0
        dtsave_particles=0.225d0
        write_individual=.true.
        write_ensemble=.false.
@@ -73,8 +74,8 @@
  /
 
  &meshlist
-        !stretch_dim(1)='uni'
-        !stretch_uncentered = .false.
+        stretch_dim(1)='uni'
+        stretch_uncentered = .false.
         refine_criterion=1
         refine_max_level = 1
         nbufferx1=0
@@ -111,7 +112,7 @@
 /
 
 &icarus_list
-        amr_criterion = 'shock'
+        amr_criterion = 'tracing'
         num_cmes = 5
         relaxation = 10
         cme_insertion = 7

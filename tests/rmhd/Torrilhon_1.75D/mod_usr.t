@@ -1,5 +1,5 @@
 module mod_usr
-  use mod_rmhd
+  use mod_mhd
   implicit none
 
 contains
@@ -16,11 +16,11 @@ contains
     unit_temperature   = 1.1d3  !1.d4   ! K
     unit_numberdensity = 1.001d10 !1.d9   ! cm^-3
     
-    call rmhd_activate()
+    call mhd_activate()
   end subroutine usr_init
 
   subroutine initglobaldata_usr
-     rmhd_gamma = 5.0d0/3.0d0
+     mhd_gamma = 5.0d0/3.0d0
   end subroutine initglobaldata_usr
 
   subroutine initonegrid_usr(ixG^L,ix^L,w,x)
@@ -65,7 +65,7 @@ contains
        w(ixG^S,mag(1) )  = bx
        w(ixG^S,mag(2) )  = byleft
        w(ixG^S,mag(3) )  = bzleft
-       w(ix^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
+       w(ixG^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
     elsewhere
        w(ixG^S,rho_)     = rhoright
        w(ixG^S,mom(1))   = vright(1)
@@ -75,10 +75,10 @@ contains
        w(ixG^S,mag(1) )  = bx
        w(ixG^S,mag(2) )  = byright
        w(ixG^S,mag(3) )  = bzright
-       w(ix^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
+       w(ixG^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
     endwhere
 
-    call rmhd_to_conserved(ixG^L,ix^L,w,x)
+    call mhd_to_conserved(ixG^L,ix^L,w,x)
   end subroutine initonegrid_usr
 
   subroutine specialvar_output(ixI^L,ixO^L,w,x,normconv)
@@ -87,8 +87,10 @@ contains
     double precision, intent(in)       :: x(ixI^S,1:ndim)
     double precision                   :: w(ixI^S,nw+nwauxio)
     double precision                   :: normconv(0:nw+nwauxio)
+    double precision :: wlocal(ixI^S,nw)
     double precision :: lamb(ixO^S), R(ixO^S)
 
+    wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
     call fld_get_fluxlimiter(w,x,ixI^L,ixO^L,lamb,R,1)
     w(ixO^S,nw+1)=lamb(ixO^S)
     w(ixO^S,nw+2)=R(ixO^S)

@@ -51,8 +51,7 @@
  &mhd_list
         typedivbfix   =  'linde'
         !typedivbfix   =  'none'
-        has_equi_pe0 = .true.
-        has_equi_rho0 = .true.
+        has_equi_rho_and_p = .true.
         B0field=.true.
         B0field_forcefree=.true.
 

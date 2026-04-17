@@ -101,14 +101,23 @@ module mod_global_parameters
   !> Normalised speed of light
   double precision :: c_norm=1.d0
 
+  !> Normalised radiation constant
+  double precision :: arad_norm=1.d0
+
   !> Physical scaling factor for Opacity
   double precision :: unit_opacity=1.d0
 
   !> Physical scaling factor for radiation flux
   double precision :: unit_radflux=1.d0
 
+  !> Physical scaling factor for radiation energy density
+  double precision :: unit_Erad=1.d0
+
+  !> Physical factors useful for radiation fld
+  double precision :: const_rad_a,const_kappae,const_sigmaSB
+
   !> error handling
-  double precision :: small_temperature,small_pressure,small_density
+  double precision :: small_temperature,small_pressure,small_density,small_e,small_r_e
   double precision :: phys_trac_mask
 
   !> amplitude of background dipolar, quadrupolar, octupolar, user's field
@@ -138,14 +147,8 @@ module mod_global_parameters
   !> global fastest wave speed needed in fd scheme and glm method
   double precision :: cmax_global
 
-  !> global sound speed squared for hyperbolic TC
-  double precision :: cs2_global
-
   !> global fastest flow speed needed in glm method
   double precision :: vmax_global
-
-  !> global largest a2 for schmid scheme
-  double precision :: a2max_global(^ND)
 
   !> times for enhancing spatial resolution for EUV image/spectra
   double precision :: instrument_resolution_factor
@@ -655,7 +658,6 @@ module mod_global_parameters
   logical :: fix_small_values=.false.
 
   !> split magnetic field as background B0 field
-  ! TODO these should be moved in a different file  
   logical :: B0field=.false.
   logical :: B0fieldAllocCoarse=.false.
   !> Use SI units (.true.) or use cgs units (.false.)
@@ -679,12 +681,6 @@ module mod_global_parameters
   !> need global maximal wave speed
   logical :: need_global_cmax=.false.
 
-  !> need global squared sound speed
-  logical :: need_global_cs2=.false.
-
-  !> global value for schmid scheme
-  logical :: need_global_a2max=.false.
-  
   ! Boundary region parameters
 
   !> True for dimensions with periodic boundaries

@@ -43,27 +43,21 @@
 
  &paramlist
         courantpar=0.8d0
-        slowsteps=20000
+        slowsteps=200
  /
 
- &rmhd_list
+ &mhd_list
      typedivbfix='none'
      He_abundance = 0.0d0
-     rmhd_energy = .true.
-     rmhd_gamma = 1.6666667d0
-     rmhd_radiation_formalism = 'fld'
-     rmhd_radiation_force = .true.
-     rmhd_energy_interact = .true.
-     rmhd_radiation_diffusion = .true.
-     rmhd_radiation_advection = .true.
+     mhd_energy = .true.
+     mhd_gamma = 1.6666667d0
+     mhd_radiation_fld = .true.
  /
 
  &fld_list
-     fld_Eint_split = .false.
      fld_Radforce_split = .false.
      fld_opacity_law = 'const'
      fld_kappa0 = 0.4d4
-     fld_diff_scheme = 'mg'
      fld_interaction_method = 'Halley'
      fld_fluxlimiter = 'Pomraning'
      fld_diff_tol = 1.d-7

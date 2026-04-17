@@ -10,7 +10,9 @@
  /
 
  &savelist
-        dtsave_log=0.001d0
+        itsave(1,1)=0
+        itsave(1,2)=0
+        ditsave_log=1
  /
 
  &stoplist
@@ -22,10 +24,6 @@
         time_integrator= 'IMEX_ARS3'
         flux_scheme=    20*'hll'
         limiter= 20*'weno3'
-        check_small_values=.false 
-        small_values_method = 'replace'
-        small_pressure = 1.d-12
-        small_density = 1.d-12
  /
 
  &boundlist
@@ -47,27 +45,21 @@
 
  &paramlist
         courantpar=0.6d0
-        slowsteps=20000
+        slowsteps=100
  /
 
- &rmhd_list
+ &mhd_list
      typedivbfix='none'
      He_abundance = 0.0d0 
-     rmhd_energy = .true.
-     rmhd_gamma = 1.6666667d0
-     rmhd_radiation_formalism = 'fld'
-     rmhd_radiation_force = .T.
-     rmhd_energy_interact = .T.
-     rmhd_radiation_diffusion = .T.
-     rmhd_radiation_advection = .T.
+     mhd_energy = .true.
+     mhd_gamma = 1.6666667d0
+     mhd_radiation_fld = .true.
  /
 
  &fld_list
-     fld_Eint_split = .false.
      fld_Radforce_split = .false.
      fld_opacity_law = 'const'
      fld_kappa0 = 0.4d4
-     fld_diff_scheme = 'mg'
      fld_interaction_method = 'Halley'
      fld_fluxlimiter = 'Pomraning'
      fld_diff_tol = 1.d-7

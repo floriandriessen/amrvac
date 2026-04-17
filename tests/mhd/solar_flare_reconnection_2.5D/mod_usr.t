@@ -189,7 +189,7 @@ contains
         !w(ix2^%2ixO^S,mom(2))=w(ixOmax2+1^%2ixO^S,mom(2))/w(ixOmax2+1^%2ixO^S,rho_)
         !w(ix2^%2ixO^S,mom(3))=w(ixOmax2+1^%2ixO^S,mom(3))/w(ixOmax2+1^%2ixO^S,rho_)
         w(ix2^%2ixO^S,p_)=pth(ixOmax2+1^%2ixO^S)
-        if(mhd_glm) w(ix2^%2ixO^S,psi_)=w(ixOmax2+1^%2ixO^S,psi_)
+        if(mhd_hyperbolic_thermal_conduction) w(ix2^%2ixO^S,q_)=w(ixOmax2+1^%2ixO^S,q_)
       enddo
       w(ixO^S,mom(2:3))=zero
       if(stagger_grid) then
@@ -233,6 +233,7 @@ contains
         w(ix2^%2ixO^S,mom(2))=w(ixOmin2-1^%2ixO^S,mom(2))/w(ixOmin2-1^%2ixO^S,rho_)
         w(ix2^%2ixO^S,mom(3))=w(ixOmin2-1^%2ixO^S,mom(3))/w(ixOmin2-1^%2ixO^S,rho_)
         w(ix2^%2ixO^S,p_)=pth(ixOmin2-1^%2ixO^S)
+        if(mhd_hyperbolic_thermal_conduction) w(ix2^%2ixO^S,q_)=w(ixOmin2-1^%2ixO^S,q_)
       enddo
       if(stagger_grid) then
         do idir=1,nws

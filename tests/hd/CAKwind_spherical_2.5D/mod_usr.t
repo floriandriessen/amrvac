@@ -91,13 +91,15 @@ contains
     real(8) :: mstar_cgs, rstar_cgs, lstar_cgs, mumol, vesc_cgs, gammae
     real(8) :: logg_cgs, logge_cgs, heff_cgs, vrotc_cgs, vinf_cgs, asound_cgs
     real(8) :: mdot_cgs, vrot_cgs, pthbound, twind
+    double precision :: const_kappae_local
 
     mstar_cgs = mstar_sol * const_MSun
     rstar_cgs = rstar_sol * const_RSun
+    const_kappae_local=0.34d0
 
     ! Stellar structure
     lstar_cgs  = 4.0d0*dpi * rstar_cgs**2.0d0 * const_sigma * twind_cgs**4.0d0
-    gammae     = const_kappae * lstar_cgs / (4.0d0*dpi * const_G * mstar_cgs * const_c)
+    gammae     = const_kappae_local * lstar_cgs / (4.0d0*dpi * const_G * mstar_cgs * const_c)
     logg_cgs   = log10(const_G * mstar_cgs/rstar_cgs**2.0d0)
     logge_cgs  = logg_cgs + log10(1.0d0 - gammae)
     mumol      = (1.0d0 + 4.0d0*He_abundance)/(2.0d0 + 3.0d0*He_abundance)

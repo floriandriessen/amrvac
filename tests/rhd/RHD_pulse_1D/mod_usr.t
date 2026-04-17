@@ -1,8 +1,7 @@
-!> This is a template for a new user problem
 module mod_usr
 
   ! Include a physics module
-  use mod_rhd
+  use mod_hd
   use mod_fld
 
   implicit none
@@ -12,6 +11,7 @@ module mod_usr
   double precision :: T0 = 1.d7
   double precision :: T1 = 2.d7
   double precision :: wdth = 24.d0
+  double precision :: fld_mu
 
 contains
 
@@ -35,7 +35,7 @@ contains
     usr_special_mg_bc => mg_boundary_conditions
 
     ! Active the physics module
-    call rhd_activate()
+    call hd_activate()
 
   end subroutine usr_init
 
@@ -44,7 +44,7 @@ contains
     use mod_global_parameters
     use mod_fld
 
-    unit_velocity = v0 !r_arr(nghostcells) ! cm
+    unit_velocity = v0 
     unit_numberdensity = rho0/((1.d0+4.d0*He_abundance)*const_mp)
     unit_length = wdth
 
@@ -57,18 +57,20 @@ contains
     unit_radflux = unit_velocity*unit_pressure
     unit_opacity = one/(unit_density*unit_length)
 
-    print*, unit_time, 's'
 
     rho0 = rho0/unit_density
     v0 = v0/unit_velocity
     T0 = T0/unit_temperature
     T1 = T1/unit_temperature
     wdth = wdth/unit_length
-
+  
+    fld_mu=(1.0d0+4.0d0*He_abundance)/(2.0d0+3.0d0*He_abundance)
+    if(mype==0)then
     print*, 'u_time', unit_time
     print*, 'u_length', unit_length
     print*, 'u_density', unit_density
     print*, 'u_pressure', unit_pressure
+    endif
 
   end subroutine initglobaldata_usr
 
@@ -82,7 +84,7 @@ contains
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     double precision :: temp(ixI^S), pth(ixI^S)
-    double precision :: kappa(ixO^S), fld_R(ixO^S), lambda(ixO^S)
+    double precision :: kappa(ixI^S), fld_R(ixI^S), lambda(ixI^S)
 
     ! v0 = 0.d0
 
@@ -94,14 +96,15 @@ contains
     * (T0**4.d0/temp(ixI^S) - temp(ixI^S)**3.d0)
 
     w(ixI^S,mom(:)) = 0.d0
-    w(ixI^S,mom(1)) = w(ixI^S,rho_)*v0
+    w(ixI^S,mom(1)) = v0
 
-    pth(ixI^S) = temp(ixI^S)*w(ixI^S,rho_)
-    w(ixI^S,e_) = pth(ixI^S)/(rhd_gamma-1.d0) + half*w(ixI^S,rho_)*v0**2
+    w(ixI^S,p_) = temp(ixI^S)*w(ixI^S,rho_)
     w(ixI^S,r_e) = const_rad_a*(temp(ixI^S)*unit_temperature)**4.d0/unit_pressure
 
-    call fld_get_opacity(w, x, ixI^L, ixO^L, kappa)
-    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nghostcells)
+    call fld_get_opacity_prim(w, x, ixI^L, ixO^L, kappa)
+    call fld_get_fluxlimiter_prim(w, x, ixI^L, ixO^L, lambda, fld_R, nghostcells)
+
+    call hd_to_conserved(ixI^L,ixI^L,w,x)
 
     w(ixO^S,i_diff_mg) = (const_c/unit_velocity)*lambda(ixO^S)/(kappa(ixO^S)*w(ixO^S,rho_))
 
@@ -110,7 +113,6 @@ contains
   subroutine boundary_conditions(qt,ixI^L,ixB^L,iB,w,x)
     use mod_global_parameters
     use mod_fld
-
 
     integer, intent(in)             :: ixI^L, ixB^L, iB
     double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
@@ -128,14 +130,13 @@ contains
       w(ixB^S,mom(:)) = 0.d0
       w(ixB^S,mom(1)) = w(ixB^S,rho_)*v0
       pth(ixB^S) = temp(ixB^S)*w(ixB^S,rho_)
-      w(ixB^S,e_) = pth(ixB^S)/(rhd_gamma-1.d0) + half*w(ixB^S,rho_)*v0**2
+      w(ixB^S,e_) = pth(ixB^S)/(hd_gamma-1.d0) + half*w(ixB^S,rho_)*v0**2
       w(ixB^S,r_e) = const_rad_a*(temp(ixB^S)*unit_temperature)**4.d0/unit_pressure
 
     case default
       call mpistop('boundary not known')
     end select
   end subroutine boundary_conditions
-
 
   subroutine mg_boundary_conditions(iB)
 
@@ -151,10 +152,8 @@ contains
     case (2)
         mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
         mg%bc(iB, mg_iphi)%bc_value = const_rad_a*(T0*unit_temperature)**4.d0/unit_pressure
-
-      case default
-        print *, "Not a standard: ", typeboundary(r_e, iB)
-        error stop "Set special bound for this Boundary "
+    case default
+        call mpistop("issue for mg_boundary in mod_usr")
     end select
   end subroutine mg_boundary_conditions
 

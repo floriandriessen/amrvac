@@ -1009,7 +1009,7 @@ contains
       ! Strip restart_from_filename of the ending 
       pos = scan(restart_from_file, '.dat', back=.true.)
       do index_latest=9999,0,-1
-        write(filename,"(a,a,i4.4,a)") trim(restart_from_file(1:pos-8)),'_particles',index_latest,'.dat'
+        write(filename,"(a,a,i6.6,a)") trim(restart_from_file(1:pos-8)),'_particles',index_latest,'.dat'
         INQUIRE(FILE=filename, EXIST=file_exists)
         if(file_exists) exit 
       end do

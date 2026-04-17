@@ -45,9 +45,6 @@ module mod_physics
   !> Solve partially ionized one-fluid plasma
   logical :: phys_partial_ionization=.false.
 
-  !> if equilibrium pressure is splitted
-  logical :: phys_equi_pe=.false.
-
   !> String describing the physics type of the simulation
   character(len=name_len) :: physics_type = ""
 
@@ -57,8 +54,6 @@ module mod_physics
   procedure(sub_convert), pointer         :: phys_to_primitive           => null()
   procedure(sub_modify_wLR), pointer      :: phys_modify_wLR             => null()
   procedure(sub_get_cmax), pointer        :: phys_get_cmax               => null()
-  procedure(sub_get_cs2), pointer        :: phys_get_cs2                => null()
-  procedure(sub_get_a2max), pointer       :: phys_get_a2max              => null()
   procedure(sub_get_tcutoff), pointer     :: phys_get_tcutoff            => null()
   procedure(sub_trac_after_setdt), pointer:: phys_trac_after_setdt       => null()
   procedure(sub_get_H_speed), pointer     :: phys_get_H_speed            => null()
@@ -74,7 +69,8 @@ module mod_physics
   procedure(sub_check_w), pointer         :: phys_check_w                => null()
   procedure(sub_get_pthermal), pointer    :: phys_get_pthermal           => null()
   procedure(sub_get_tgas), pointer        :: phys_get_tgas               => null()
-  procedure(sub_get_trad), pointer        :: phys_get_trad               => null()
+  procedure(sub_get_csrad2), pointer      :: phys_get_csrad2             => null()
+  procedure(sub_get_Rfactor), pointer     :: phys_get_Rfactor            => null()
   procedure(sub_boundary_adjust), pointer :: phys_boundary_adjust        => null()
   procedure(sub_write_info), pointer      :: phys_write_info             => null()
   procedure(sub_small_values), pointer    :: phys_handle_small_values    => null()
@@ -131,20 +127,6 @@ module mod_physics
        double precision, intent(in)    :: w(ixI^S, nw), x(ixI^S, 1:^ND)
        double precision, intent(inout) :: cmax(ixI^S)
      end subroutine sub_get_cmax
-
-     subroutine sub_get_cs2(w, x, ixI^L, ixO^L, cs2)
-       use mod_global_parameters
-       integer, intent(in)             :: ixI^L, ixO^L
-       double precision, intent(in)    :: w(ixI^S, nw), x(ixI^S, 1:^ND)
-       double precision, intent(inout) :: cs2(ixI^S)
-     end subroutine sub_get_cs2
-
-     subroutine sub_get_a2max(w, x, ixI^L, ixO^L, a2max)
-       use mod_global_parameters
-       integer, intent(in)             :: ixI^L, ixO^L
-       double precision, intent(in)    :: w(ixI^S, nw), x(ixI^S, 1:^ND)
-       double precision, intent(inout) :: a2max(ndim)
-     end subroutine sub_get_a2max
 
      subroutine sub_get_tcutoff(ixI^L,ixO^L,w,x,tco_local,Tmax_local)
        use mod_global_parameters
@@ -293,13 +275,21 @@ module mod_physics
        double precision, intent(out):: tgas(ixI^S)
      end subroutine sub_get_tgas
 
-     subroutine sub_get_trad(w,x,ixI^L,ixO^L,trad)
+     subroutine sub_get_csrad2(w,x,ixI^L,ixO^L,cmax)
        use mod_global_parameters
        integer, intent(in)          :: ixI^L, ixO^L
        double precision, intent(in) :: w(ixI^S,nw)
        double precision, intent(in) :: x(ixI^S,1:ndim)
-       double precision, intent(out):: trad(ixI^S)
-     end subroutine sub_get_trad
+       double precision, intent(out):: cmax(ixI^S)
+     end subroutine sub_get_csrad2
+
+     subroutine sub_get_Rfactor(w,x,ixI^L,ixO^L,cmax)
+       use mod_global_parameters
+       integer, intent(in)          :: ixI^L, ixO^L
+       double precision, intent(in) :: w(ixI^S,nw)
+       double precision, intent(in) :: x(ixI^S,1:ndim)
+       double precision, intent(out):: cmax(ixI^S)
+     end subroutine sub_get_Rfactor
 
      subroutine sub_write_info(file_handle)
        integer, intent(in) :: file_handle
@@ -313,13 +303,6 @@ module mod_physics
        double precision, intent(in)    :: x(ixI^S,1:ndim)
        character(len=*), intent(in)    :: subname
      end subroutine sub_small_values
-
-     subroutine sub_get_var(ixI^L, ixO^L, w, out)
-       use mod_global_parameters
-       integer, intent(in)           :: ixI^L, ixO^L
-       double precision, intent(in)  :: w(ixI^S, nw)
-       double precision, intent(out) :: out(ixO^S)
-     end subroutine sub_get_var
 
      subroutine sub_get_ct_velocity(vcts,wLp,wRp,ixI^L,ixO^L,idim,cmax,cmin)
        use mod_global_parameters
@@ -404,9 +387,6 @@ contains
     if (.not. associated(phys_get_cmax)) &
          call mpistop("Error: no phys_get_cmax not defined")
 
-    if (.not. associated(phys_get_a2max)) &
-         phys_get_a2max => dummy_get_a2max
-
     if (.not. associated(phys_get_H_speed)) &
          phys_get_H_speed => dummy_get_H_speed
 
@@ -483,15 +463,6 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(out)   :: Hspeed(ixI^S,1:number_species)
   end subroutine dummy_get_H_speed
-
-  subroutine dummy_get_a2max(w, x, ixI^L, ixO^L, a2max)
-       use mod_global_parameters
-       use mod_comm_lib, only: mpistop
-       integer, intent(in)             :: ixI^L, ixO^L
-       double precision, intent(in)    :: w(ixI^S, nw), x(ixI^S, 1:^ND)
-       double precision, intent(inout) :: a2max(ndim)
-       call mpistop("Error: entered dummy_get_a2max")
-  end subroutine dummy_get_a2max
 
   subroutine dummy_add_source_geom(qdt, dtfactor, ixI^L, ixO^L, wCT, wprim, w, x)
     use mod_global_parameters

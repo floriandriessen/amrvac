@@ -263,8 +263,7 @@ contains
          rk2_alfa,imex222_lambda,ssprk_order,rk3_switch,imex_switch,&
          small_temperature,small_pressure,small_density, &
          small_values_method, small_values_daverage, fix_small_values, check_small_values, &
-         trace_small_values, small_values_fix_iw, &
-         schmid_rad^D
+         trace_small_values, small_values_fix_iw
 
     namelist /boundlist/ nghostcells,ghost_copy,&
          internalboundary, typeboundary_^L, save_physical_boundary
@@ -473,7 +472,6 @@ contains
     else
       cada3_radius  = 0.1d0
     end if
-    {schmid_rad^D = 1.d0\}
     typetvd         = 'roe'
     typeboundspeed  = 'Einfeldt'
     source_split_usr= .false.
@@ -730,12 +728,19 @@ contains
       type_courant=type_maxsum
     case ('summax')
       type_courant=type_summax
+      if (local_timestep) then
+       call mpistop("Type courant summax incompatible with local_timestep")
+      endif
     case ('minimum')
       type_courant=type_minimum
+      if (local_timestep) then
+       call mpistop("Type courant minimum incompatible with local_timestep")
+      endif
     case default
        write(unitterm,*)'Unknown typecourant=',typecourant
        call mpistop("Error from read_par_files: no such typecourant!")
     end select
+
 
     do level=1,nlevelshi
        select case (flux_scheme(level))
@@ -813,7 +818,6 @@ contains
 
     ! finite difference scheme fd need global maximal speed
     if(any(flux_scheme=='fd')) need_global_cmax=.true.
-    if(any(limiter=='schmid1')) need_global_a2max=.true.
 
     ! initialize type_curl
      select case (typecurl)

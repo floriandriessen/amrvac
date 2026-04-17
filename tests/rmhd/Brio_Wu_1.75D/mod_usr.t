@@ -1,5 +1,5 @@
 module mod_usr
-  use mod_rmhd
+  use mod_mhd
   implicit none
 
 contains
@@ -16,12 +16,12 @@ contains
     unit_temperature   = 1.1d3  !1.d4   ! K
     unit_numberdensity = 1.001d10 !1.d9   ! cm^-3
     
-    call rmhd_activate()
+    call mhd_activate()
 
   end subroutine usr_init
 
   subroutine initglobaldata_usr
-     rmhd_gamma = 2.0d0
+     mhd_gamma = 2.0d0
 
   end subroutine initglobaldata_usr
 
@@ -37,7 +37,6 @@ contains
     logical,save :: first=.true.
 
 
-    ! Torrilhon test for 1.75D MHD setup.pl -d=1, Cartesian_1.75D
     bx=0.75d0 
     rholeft=1.0d0
     pleft=1.0d0 
@@ -57,8 +56,6 @@ contains
       first=.false.
     endif
 
-
-
     slocx1=half*(xprobmax1+xprobmin1)
     where({^D&x(ixG^S,^D)<=slocx^D|.or.})
        w(ixG^S,rho_)     = rholeft
@@ -69,7 +66,7 @@ contains
        w(ixG^S,mag(1) )  = bx
        w(ixG^S,mag(2) )  = byleft
        w(ixG^S,mag(3) )  = bzleft
-       w(ix^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
+       w(ixG^S,r_e) = const_rad_a*(unit_temperature)**4.d0/unit_pressure
     elsewhere
        w(ixG^S,rho_)     = rhoright
        w(ixG^S,mom(1))   = vright(1)
@@ -79,11 +76,10 @@ contains
        w(ixG^S,mag(1) )  = bx
        w(ixG^S,mag(2) )  = byright
        w(ixG^S,mag(3) )  = bzright
-       w(ix^S,r_e) = const_rad_a*(0.8*unit_temperature)**4.d0/unit_pressure
+       w(ixG^S,r_e) = const_rad_a*(0.8*unit_temperature)**4.d0/unit_pressure
     endwhere
 
-  
-    call rmhd_to_conserved(ixG^L,ix^L,w,x)
+    call mhd_to_conserved(ixG^L,ixG^L,w,x)
   
   end subroutine initonegrid_usr
 
@@ -94,9 +90,11 @@ contains
     double precision                   :: w(ixI^S,nw+nwauxio)
     double precision                   :: normconv(0:nw+nwauxio)
 
-    double precision :: lamb(ixO^S), R(ixO^S)
+    double precision                   :: wlocal(ixI^S,nw)
+    double precision :: lamb(ixI^S), R(ixI^S)
 
-    call fld_get_fluxlimiter(w,x,ixI^L,ixO^L,lamb,R,1)
+    wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2)
     w(ixO^S,nw+1)=lamb(ixO^S)
     w(ixO^S,nw+2)=R(ixO^S)
   end subroutine specialvar_output

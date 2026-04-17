@@ -76,9 +76,6 @@ module mod_ffhd_phys
   !> The adiabatic constant
   double precision, public                :: ffhd_adiab = 1.0d0
 
-  !> The small_est allowed energy
-  double precision, protected             :: small_e
-
   !> The thermal conductivity kappa in hyperbolic thermal conduction
   double precision, public                :: hypertc_kappa
 
@@ -144,7 +141,6 @@ contains
 
   subroutine ffhd_read_params(files)
     use mod_global_parameters
-    use mod_particles, only: particles_eta, particles_etah
     character(len=*), intent(in) :: files(:)
     integer                      :: n
 
@@ -310,7 +306,6 @@ contains
 
     phys_get_dt              => ffhd_get_dt
     phys_get_cmax            => ffhd_get_cmax_origin
-    phys_get_a2max           => ffhd_get_a2max
     phys_get_tcutoff         => ffhd_get_tcutoff
     phys_get_cbounds         => ffhd_get_cbounds
     phys_to_primitive        => ffhd_to_primitive_origin
@@ -404,12 +399,14 @@ contains
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
       rc_fl%has_equi = .false.
+      rc_fl%subtract_equi = .false.
     end if
+
+{^IFTHREED
     allocate(te_fl_ffhd)
     te_fl_ffhd%get_rho=> ffhd_get_rho
     te_fl_ffhd%get_pthermal=> ffhd_get_pthermal
     te_fl_ffhd%get_var_Rfactor => ffhd_get_Rfactor
-{^IFTHREED
     phys_te_images => ffhd_te_images
 }
 
@@ -527,13 +524,9 @@ contains
     type(rc_fluid), intent(inout) :: fl
     integer                      :: n
     integer :: ncool = 4000
-    double precision :: cfrac=0.1d0
   
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
-  
-    !> Name of cooling method
-    character(len=std_len)  :: coolmethod='exact'
   
     !> Fixed temperature not lower than tlow
     logical    :: Tfix=.false.
@@ -547,7 +540,7 @@ contains
     double precision :: rad_cut_hgt=0.5d0
     double precision :: rad_cut_dey=0.15d0
 
-    namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, rad_cut, rad_cut_hgt, rad_cut_dey
+    namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split, rad_cut, rad_cut_hgt, rad_cut_dey
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -557,11 +550,9 @@ contains
 
     fl%ncool=ncool
     fl%coolcurve=coolcurve
-    fl%coolmethod=coolmethod
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
-    fl%cfrac=cfrac
     fl%rad_cut=rad_cut
     fl%rad_cut_hgt=rad_cut_hgt
     fl%rad_cut_dey=rad_cut_dey
@@ -571,6 +562,8 @@ contains
     use mod_global_parameters
     use mod_usr_methods
     use mod_convert, only: add_convert_method
+    use mod_geometry, only: coordinate
+
 
     gamma_1=ffhd_gamma-1.d0
     if (.not. ffhd_energy) then
@@ -587,6 +580,35 @@ contains
     if (number_equi_vars > 0 .and. .not. associated(usr_set_equi_vars)) then
       call mpistop("usr_set_equi_vars has to be implemented in the user file")
     end if
+
+
+    if(mype==0)then
+           write(*,*)'====FFHD run with settings===================='
+           write(*,*)'Using mod_ffhd_phys with settings:'
+           write(*,*)'SI_unit=',SI_unit
+           write(*,*)'Dimensionality   :',ndim
+           write(*,*)'vector components:',ndir
+           write(*,*)'coordinate set to type,slab:',coordinate,slab
+           write(*,*)'number of variables          nw=',nw
+           write(*,*)'    start index         iwstart=',iwstart
+           write(*,*)'number of      vector variables=',nvector
+           write(*,*)'number of stagger variables nws=',nws
+           write(*,*)'number of    variables with BCs=',nwgc
+           write(*,*)'number of      vars with fluxes=',nwflux
+           write(*,*)'number of   vars with flux + BC=',nwfluxbc
+           write(*,*)'number of   auxiliary variables=',nwaux
+           write(*,*)'number of extra vars without flux=',nwextra
+           write(*,*)'number of extra vars   for wextra=',nw_extra
+           write(*,*)'number of auxiliary I/O variables=',nwauxio
+           write(*,*)'    ffhd_energy=',ffhd_energy
+           write(*,*)'    ffhd_gravity=',ffhd_gravity
+           write(*,*)'    ffhd_radiative_cooling=',ffhd_radiative_cooling
+           write(*,*)'    ffhd_hyperbolic_thermal_conduction=',ffhd_hyperbolic_thermal_conduction
+           write(*,*)'    ffhd_trac=',ffhd_trac
+           write(*,*)'number of             ghostcells=',nghostcells
+           write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
+           write(*,*)'==========================================='
+    endif
   end subroutine ffhd_check_params
 
   subroutine ffhd_physical_units()
@@ -845,31 +867,6 @@ contains
     cmax(ixO^S)=dabs(wprim(ixO^S,mom(1))*block%B0(ixO^S,idim,0))+cmax(ixO^S)
 
   end subroutine ffhd_get_cmax_origin
-
-  subroutine ffhd_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-    use mod_geometry
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
-
-    if(.not.slab_uniform)then
-       call mpistop("subroutine get_a2max in mod_ffhd_phys adopts cartesian setting")
-    endif
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nw)=dabs(-w(kxO^S,1:nw)+16.d0*w(jxO^S,1:nw)&
-         -30.d0*w(ixO^S,1:nw)+16.d0*w(hxO^S,1:nw)-w(gxO^S,1:nw))
-      a2max(i)=maxval(a2(ixO^S,i,1:nw))/12.d0/dxlevel(i)**2
-    end do
-  end subroutine ffhd_get_a2max
 
   subroutine ffhd_get_tcutoff(ixI^L,ixO^L,w,x,Tco_local,Tmax_local)
     use mod_global_parameters
@@ -1229,8 +1226,7 @@ contains
       active = .true.
       call add_punitb(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       if(ffhd_hyperbolic_thermal_conduction) then
-        !!call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
-        call add_hypertc_source_orig(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+        call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
     end if
 
@@ -1329,25 +1325,20 @@ contains
       He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
   end subroutine ffhd_update_temperature
 
-  subroutine ffhd_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+  subroutine ffhd_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
-    use mod_radiative_cooling, only: cooling_get_dt
     use mod_gravity, only: gravity_get_dt
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
     double precision, intent(in)    :: dx^D
-    double precision, intent(in)    :: w(ixI^S,1:nw)
+    double precision, intent(in)    :: wprim(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
     dtnew = bigdouble
 
-    if(ffhd_radiative_cooling) then
-      call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl)
-    end if
-
     if(ffhd_gravity) then
-      call gravity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call gravity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
   end subroutine ffhd_get_dt
 
@@ -1399,53 +1390,6 @@ contains
 
   subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
-    use mod_geometry
-    integer, intent(in) :: ixI^L,ixO^L
-    double precision, intent(in) :: qdt
-    double precision, dimension(ixI^S,1:ndim), intent(in) :: x
-    double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
-    double precision, dimension(ixI^S,1:nw), intent(inout) :: w
-
-    double precision, dimension(ixI^S) :: Te,R,BgradT,gradT
-    double precision :: sigma_T5,sigma_T7,sigmaT5_bgradT,f_sat,tau
-    integer :: ix^D,idims
-
-    call ffhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
-    Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*wCT(ixI^S,rho_))
-    {^IFONED
-    call gradient(Te,ixI^L,ixO^L,1,BgradT,2)
-    }
-    {^NOONED
-    BgradT(ixO^S)=zero
-    do idims=1,ndim
-       ! compute gradient conform the geometry, 4th order CD for uniform cartesian by setting 2
-       call gradient(Te,ixI^L,ixO^L,idims,gradT,2)
-       BgradT(ixO^S)=BgradT(ixO^S)+(block%B0(ixO^S,idims,0))*gradT(ixO^S)
-    enddo
-    }
-   {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      if(ffhd_trac) then
-         R(ix^D)=max(Te(ix^D),block%wextra(ix^D,Tcoff_))
-      else
-         R(ix^D)=Te(ix^D)
-      endif
-      sigma_T5=hypertc_kappa*dsqrt(R(ix^D)**5)
-      sigma_T7=sigma_T5*R(ix^D)
-      sigmaT5_bgradT=sigma_T5*BgradT(ix^D)
-      if(ffhd_htc_sat) then
-        f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*wCT(ix^D,rho_)*(ffhd_gamma*wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0))
-        tau=max(4.d0*dt, f_sat*sigma_T7/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
-        w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
-      else
-        w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-         max(4.d0*dt, sigma_T7/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
-      end if
-    {end do\}
-   
-  end subroutine add_hypertc_source
-
-  subroutine add_hypertc_source_orig(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
-    use mod_global_parameters
 
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: qdt
@@ -1479,7 +1423,8 @@ contains
            block%B0(ix^D,1,0)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +block%B0(ix^D,2,0)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
         if(ffhd_htc_sat) then
-          f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*wCT(ix^D,rho_)*(ffhd_gamma*wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0)
+          ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
+          f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*wCT(ix^D,rho_)*(wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0))
           tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
           w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
         else
@@ -1510,7 +1455,8 @@ contains
             +block%B0(ix^D,2,0)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +block%B0(ix^D,3,0)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
           if(ffhd_htc_sat) then
-            f_sat=one/(one+abs(sigmaT5_bgradT))/(1.5d0*wCT(ix^D,rho_)*(ffhd_gamma*wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0)
+            ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
+            f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*wCT(ix^D,rho_)*(wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0))
             tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
             w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
           else
@@ -1521,6 +1467,6 @@ contains
       end do
     end do
    }
- end subroutine add_hypertc_source_orig
+ end subroutine add_hypertc_source
 
 end module mod_ffhd_phys
