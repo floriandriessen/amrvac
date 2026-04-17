@@ -26,16 +26,16 @@ module mod_fld
     !> switches for local debug purposes
     logical :: fld_debug,fld_no_mg
     !> switches for opacity
-    character(len=8)  :: fld_opacity_law = 'const'
-    character(len=50) :: fld_opal_table = 'Y09800' 
+    character(len=40)  :: fld_opacity_law = 'const'
+    character(len=40) :: fld_opal_table = 'Y09800' 
     !> flux limiter choice
-    character(len=16) :: fld_fluxlimiter = 'Pomraning'
+    character(len=40) :: fld_fluxlimiter = 'Pomraning'
     !> diffusion coefficient for multigrid method
     integer :: i_diff_mg
     !> diffusion coefficient stencil control
     integer :: nth_for_diff_mg
     !> Which method to find the root for the energy interaction polynomial
-    character(len=8) :: fld_interaction_method = 'Halley'
+    character(len=40) :: fld_interaction_method = 'Halley'
     !> A copy of (m)hd_gamma
     double precision, private, protected :: fld_gamma
 
@@ -106,14 +106,16 @@ module mod_fld
        i_diff_mg = var_set_extravar("D", "D")
        use_multigrid = .true.
        ! use multigrid to solve a helmholtz equation with variable coefficient
+       ! this is stored also as extra variable in the mg solver as mg_iveps
        mg%n_extra_vars = 1
        mg%operator_type = mg_vhelmholtz
-       mg%smoother_type = mg_smoother_gs
+       ! choice of smoother: can be mg_smoother_gs or gsrb (latter recommended)
+       mg%smoother_type = mg_smoother_gsrb
     endif
     !> set gamma
     fld_gamma = r_gamma
     !> Read in opacity table if necesary
-    if(fld_opacity_law .eq. 'opal') then
+    if(trim(fld_opacity_law) .eq. 'opal') then
       if(SI_unit)call mpistop("adjust opal module with SI-cgs conversions for SI - or use cgs!")
       call init_opal_table(fld_opal_table)
     endif
@@ -143,13 +145,11 @@ module mod_fld
           mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
           mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
        case (bc_periodic)
-          ! Nothing to do here
-          ! WHY NOT? 
+          ! Nothing to do here, this is picked up through periodB variable
        case (bc_noinflow)
           if (.not. associated(usr_special_mg_bc)) then 
              call mpistop("special BC for MG not defined")
           else
-             ! CHECK versus pointer in mg module
              call usr_special_mg_bc(iB)
           endif
        case (bc_special)
@@ -161,7 +161,7 @@ module mod_fld
        case default
           call mpistop("divE_multigrid warning: unknown b.c. ")
        end select
-       ! Neumann on the diffusion coefficient CHECK
+       ! Neumann on diffusion coefficient is needed on all lower grid levels
        ! d/dx u = 0
        mg%bc(iB, mg_iveps)%bc_type = mg_bc_neumann
        mg%bc(iB, mg_iveps)%bc_value = 0.0_dp
@@ -412,7 +412,7 @@ module mod_fld
     double precision :: rho0,Temp0,kapp0
     double precision :: Temp(ixI^S)
 
-    select case (fld_opacity_law)
+    select case (trim(fld_opacity_law))
       case('const_norm')
         fld_kappa(ixO^S) = fld_kappa0
       case('const')
@@ -658,6 +658,8 @@ module mod_fld
     use mod_global_parameters
     use mod_forest
     use mod_multigrid_coupling
+    use mod_input_output, only: get_global_maxima,get_global_minima
+
     type(state), target :: psa(max_blocks)
     type(state), target :: psb(max_blocks)
     double precision, intent(in) :: qdt
@@ -667,17 +669,38 @@ module mod_fld
     integer, parameter           :: max_its = 100
     integer                      :: n,ixO^L,ix^D
     double precision             :: res, max_residual, lambda, fac
+    double precision :: wmax(nw),wmin(nw)
     integer :: iigrid, igrid
 
     ! Avoid setting a very restrictive limit to residual when time step small
     if(qdt < dtmin) then
       if(mype==0)then
+          ! this is because the factor 1/qdt enters as coefficient
           print *,'skipping implicit solve: dt too small!'
           print *,'Currently at time=',global_time,' time step=',qdt,' dtmin=',dtmin
       endif
       return
     endif
     max_residual = fld_diff_tol
+
+    ! we need first to compute the (variable) diffusion coefficient on entire grid
+    !   this must be done in mesh+1 ghostcell layer
+    call update_diffcoeff(psa)
+
+    lambda = 1.d0/(dtfactor *qdt)
+    fac = 1.d0
+
+    if(fld_debug)then
+       call get_global_maxima(wmax)
+       call get_global_minima(wmin)
+       if(mype==0)then
+          print *,'at start of MG solver, we have E_rad range as',wmax(iw_r_e),wmin(iw_r_e)
+          print *,'at start of MG solver, we have Diff coeff range as',wmax(i_diff_mg),wmin(i_diff_mg)
+          print *,'at start of MG solver, we have density range as',wmax(iw_rho),wmin(iw_rho)
+          print *,'at start of MG solver, we have qdt as',qdt,' max_residual=',max_residual
+          print *,'at start of MG solver, we have dtfactor as',dtfactor,' or lambda=',lambda
+       endif
+    endif
 
     call mg_set_methods(mg)
     if(.not. mg%is_allocated) call mpistop("multigrid tree not allocated yet")
@@ -687,21 +710,19 @@ module mod_fld
     ! Helmholtz equation is div(eps nabla phi) -lambda phi = f
     !    hence eps is our variable coefficient D=fld_lambda*c/(kappa*rho)
     !    hence phi is Erad and lambda=1/dt
-    lambda = 1.d0/(dtfactor *qdt)
-    fac = 1.d0
     call vhelmholtz_set_lambda(lambda)
-    call update_diffcoeff(psa)
     ! copy in the (variable) diffusion coefficient in mg_iveps
+    ! NOTE: this copies also the ghostcell values for this coefficient to mg
     call mg_copy_to_tree(i_diff_mg, mg_iveps, factor=fac, state_from=psa)
     ! copy in the Erad variable in mg_iphi (the one we solve for)
     call mg_copy_to_tree(iw_r_e, mg_iphi, factor=fac, state_from=psa)
     ! copy in RHS f factor as Erad with factor -(1/dt)
     call mg_copy_to_tree(iw_r_e, mg_irhs, factor=-lambda, state_from=psb)
-    if(time_advance)then
-      ! WHY THIS
-       call mg_restrict(mg, mg_iveps)
-       call mg_fill_ghost_cells(mg, mg_iveps)
-    endif
+    ! becuase the variable coefficient is needed on lower grid levels in mg
+    ! we need to restrict and adopt BCs for this variable: Neumann is set 
+    call mg_restrict(mg, mg_iveps)
+    call mg_fill_ghost_cells(mg, mg_iveps)
+    ! Now try solving with MG
     call mg_fas_fmg(mg, .true., max_res=res)
     do n = 1, max_its
       if(res < max_residual) exit
@@ -847,7 +868,7 @@ module mod_fld
     endif
     if(maxval(w(ixO^S,i_diff_mg))>bigdouble)  call mpistop("too large diffusion coefficient")
 
-    if(fld_debug)then
+    if(fld_debug.and..false.)then
       print *,'setting diffcoefs with data on',ixI^L
       print *,'min diffcoef=',minval(w(ixO^S,i_diff_mg))
       print *,'min lambda kappa rho fld_R'

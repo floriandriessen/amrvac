@@ -630,6 +630,8 @@ contains
        if (res < max_residual) exit
     end do
 
+    if (res > max_residual) call mpistop("u_multigrid: no convergence")
+
     call mg_copy_from_tree_gc(mg_iphi, u_, state_to=psa)
     ! Done with the u variable ***************************************
 
@@ -648,6 +650,7 @@ contains
           if (res < max_residual) exit
        end do
 
+       if (res > max_residual) call mpistop("v_multigrid: no convergence")
        call mg_copy_from_tree_gc(mg_iphi, v_, state_to=psa)
     end if
     ! Done with the v variable ***************************************
@@ -666,6 +669,7 @@ contains
           if (res < max_residual) exit
        end do
 
+       if (res > max_residual) call mpistop("w_multigrid: no convergence")
        call mg_copy_from_tree_gc(mg_iphi, w_, state_to=psa)
     end if
     ! Done with the w variable ***************************************

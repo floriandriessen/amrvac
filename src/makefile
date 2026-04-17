@@ -223,6 +223,7 @@ mod_fld.o: mod_constants.mod
 mod_fld.o: mod_forest.mod
 mod_fld.o: mod_geometry.mod
 mod_fld.o: mod_global_parameters.mod
+mod_fld.o: mod_input_output.mod
 mod_fld.o: mod_multigrid_coupling.mod
 mod_fld.o: mod_opal_opacity.mod
 mod_fld.o: mod_physics.mod
