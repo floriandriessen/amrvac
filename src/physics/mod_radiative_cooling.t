@@ -111,17 +111,14 @@ module mod_radiative_cooling
 
     logical :: isPPL = .false.
 
-    !> cutoff radiative cooling below rad_cut_hgt
-    logical :: rad_cut
-    !> Suppress only the low-T DM extension (not all cooling) within
-    !> the rad_modify spatial taper region. When true and rad_modify is
-    !> active, cells inside rad_cut_hgt with T < tcoolmin_noDM get
-    !> factor=0; cells above that T cool normally. The junction
-    !> temperature tcoolmin_noDM is auto-set from the cooling curve.
-    logical :: rad_suppress_DM = .false.
-    !> Minimum log10(T) of the non-DM partner curve (auto-set during init).
-    !> Cells below 10^tcoolmin_noDM are suppressed when rad_suppress_DM=T.
-    double precision :: tcoolmin_noDM = 4.0d0
+    !> Suppress cooling for T below this threshold (Kelvin) within
+    !> rad_cut_hgt of footpoints. When > 0, cells inside the spatial
+    !> taper region with T < rad_suppress_temp get factor=0; coronal
+    !> cooling above that T proceeds unmodified. Default 0 = disabled.
+    double precision :: rad_suppress_temp = 0.0d0
+    !> Internal: suppress threshold in code units (set from rad_suppress_temp
+    !> during init). Not a namelist parameter.
+    double precision :: suppress_temp_code = 0.0d0
     !> Master switch for radiative loss modification (spatial + density taper)
     logical :: rad_modify
     !> Apply spatial taper at both boundaries (default: lower only)
@@ -129,12 +126,6 @@ module mod_radiative_cooling
     ! these are to be set directly
     logical :: has_equi = .false.
 
-    !> Density cap for optically thick regions (code units).
-    !> When rho > rho_cap, radiative losses are set to zero.
-    !> Intended for _DM variants where the low-temperature DM extension
-    !> assumes optically thin conditions that break down at high density.
-    !> Defaults to bigdouble (cap disabled). Set in the cooling namelist.
-    double precision :: rho_cap
     !> Density threshold for Gaussian taper (code units)
     double precision :: rad_taper_rho
     !> Gaussian decay width for density taper
@@ -1199,11 +1190,9 @@ module mod_radiative_cooling
       fl%tlow=bigdouble
       fl%Tfix=.false.
       fl%rc_split=.false.
-      fl%rad_cut=.false.
-      fl%rad_suppress_DM=.false.
+      fl%rad_suppress_temp=0.0d0
       fl%rad_cut_hgt=0.0d0
       fl%rad_cut_dey=0.15d0
-      fl%rho_cap=bigdouble
       fl%rad_modify=.false.
       fl%rad_modify_sym=.false.
       fl%rad_taper_rho=bigdouble
@@ -1545,16 +1534,6 @@ module mod_radiative_cooling
             call mpistop("This coolingcurve is unknown")
          end select
 
-         ! Auto-detect junction temperature for _DM tabulated curves.
-         ! tcoolmin_noDM = min log10(T) of the coronal partner table.
-         select case(fl%coolcurve)
-         case('Dere_corona_DM', 'Dere_photo_DM')
-            fl%tcoolmin_noDM = t_Dere(1)    ! 4.00
-         case('Colgan_DM')
-            fl%tcoolmin_noDM = t_Colgan(1)  ! 4.065
-         case default
-            fl%tcoolmin_noDM = t_table(1)
-         end select
 
          ! create cooling table(s) for use in amrvac
          fl%tcoolmax = t_table(ntable)
@@ -1625,11 +1604,13 @@ module mod_radiative_cooling
          fl%Lcool(1:fl%ncool) = fl%Lcool(1:fl%ncool) * unit_numberdensity**2 * unit_time / unit_pressure
 
          fl%tcoolmin       = fl%tcool(1)+smalldouble  ! avoid pointless interpolation
-         ! Convert tcoolmin_noDM from log10(K) to code units
-         fl%tcoolmin_noDM = 10.0d0**fl%tcoolmin_noDM / unit_temperature
-         if(fl%rad_suppress_DM .and. mype == 0) then
-           write(*,'(A,ES10.3,A)') ' DM suppression active: cooling disabled below T = ', &
-             fl%tcoolmin_noDM * unit_temperature, ' K within rad_cut_hgt'
+         ! Convert rad_suppress_temp from Kelvin to code units
+         if(fl%rad_suppress_temp > 0.0d0) then
+           fl%suppress_temp_code = fl%rad_suppress_temp / unit_temperature
+           if(mype == 0) then
+             write(*,'(A,ES10.3,A)') ' Cooling suppression active: disabled below T = ', &
+               fl%rad_suppress_temp, ' K within rad_cut_hgt'
+           end if
          end if
          ! smaller value for lowest temperatures from cooling table and user's choice
          if (fl%tlow==bigdouble) fl%tlow=fl%tcoolmin
@@ -1985,11 +1966,10 @@ module mod_radiative_cooling
           d_boundary = x_ndim - xprobmin^ND
         end if
         if(d_boundary .le. fl%rad_cut_hgt) then
-          if(fl%rad_suppress_DM) then
-            ! DM suppression: only kill cooling for T below the non-DM
-            ! junction (e.g. T < 10,000 K for Dere_corona_DM).
-            ! Coronal cooling (T >= junction) proceeds unmodified.
-            if(Te_val .lt. fl%tcoolmin_noDM) then
+          if(fl%suppress_temp_code > 0.0d0) then
+            ! Temperature suppression: kill cooling for T below threshold.
+            ! Coronal cooling above threshold proceeds unmodified.
+            if(Te_val .lt. fl%suppress_temp_code) then
               factor = 0.0d0
               return
             end if
