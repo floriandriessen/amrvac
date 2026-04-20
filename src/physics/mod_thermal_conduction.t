@@ -96,6 +96,11 @@ module mod_thermal_conduction
     !> Consider thermal conduction saturation effect (.true.) or not (.false.)
     logical :: tc_saturate=.false.
 
+    !> Patch cells where e_int < 0 during STS Chebyshev substeps by
+    !> neighbor-averaging the temperature. Prevents NaN from sqrt(T<0)
+    !> in the Spitzer conductivity when the RKL2 polynomial overshoots.
+    logical :: tc_patch_eint=.false.
+
     !> Minimum temperature (code units) below which TRAC does not modify conductivity.
     !> Below this T, the energy balance is dominated by optically thick radiation
     !> and recombination, not optically thin cooling + Spitzer conduction, so TRAC's
@@ -118,6 +123,7 @@ module mod_thermal_conduction
   public :: get_tc_dt_hd
   public :: sts_set_source_tc_mhd
   public :: sts_set_source_tc_hd
+  public :: tc_patch_negative_eint
 
 contains
 
@@ -318,6 +324,7 @@ contains
     dxinv=1.d0/dxlevel
 
     call fl%get_temperature_from_eint(w, x, ixI^L, ixI^L, Te)  !calculate Te in whole domain (+ghosts)
+    if (fl%tc_patch_eint) call tc_patch_negative_eint(w, x, ixI^L, ixI^L, Te, fl%e_)
     call fl%get_rho(w, x, ixI^L, ixI^L, rho)  !calculate rho in whole domain (+ghosts)
     call set_source_tc_mhd(ixI^L,ixO^L,w,x,fl,qvec,rho,Te,alpha)
     if(fl%has_equi) then
@@ -970,6 +977,7 @@ contains
 
     !calculate Te in whole domain (+ghosts)
     call fl%get_temperature_from_eint(w, x, ixI^L, ixI^L, Te)
+    if (fl%tc_patch_eint) call tc_patch_negative_eint(w, x, ixI^L, ixI^L, Te, fl%e_)
     call fl%get_rho(w, x, ixI^L, ixI^L, rho)
     call set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
     if(fl%has_equi) then
@@ -1169,4 +1177,78 @@ contains
       end if
     end do
   end subroutine set_source_tc_hd
+
+  !> Patch cells where e_int <= 0 by neighbor-averaging the temperature.
+  !> Called after get_temperature_from_eint in the TC source routines when
+  !> tc_patch_eint is .true.  During STS RKL2 Chebyshev substeps the
+  !> polynomial can overshoot e_int to negative values at low-density
+  !> coronal cells.  A negative T would produce NaN via sqrt(T) in the
+  !> Spitzer conductivity.  This routine replaces those cells' T with
+  !> the average of valid (e_int > 0) neighbors, keeping the cell in the
+  !> diffusion with a physically reasonable conductivity.
+  subroutine tc_patch_negative_eint(w, x, ixI^L, ixO^L, Te, ie)
+    use mod_global_parameters
+    integer, intent(in)             :: ixI^L, ixO^L, ie
+    double precision, intent(in)    :: w(ixI^S, 1:nw)
+    double precision, intent(in)    :: x(ixI^S, 1:ndim)
+    double precision, intent(inout) :: Te(ixI^S)
+
+    integer :: ix^D, count
+    integer :: ipatch(ixI^S)
+    double precision :: T_avg
+
+    ipatch(ixI^S) = 0
+
+    ! Mark cells with negative e_int
+    {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        if (w(ix^D, ie) <= 0.0d0) ipatch(ix^D) = 1
+    {end do\}
+
+    ! Quick exit if no cells need patching
+    if (all(ipatch(ixO^S) == 0)) return
+
+    ! Replace marked cells with neighbor-averaged T
+    {do ix^DB=ixOmin^DB+1,ixOmax^DB-1\}
+        if (ipatch(ix^D) == 1) then
+            T_avg = 0.0d0
+            count = 0
+            {^IFONED
+            if (ipatch(ix1-1)==0) then; T_avg=T_avg+Te(ix1-1); count=count+1; end if
+            if (ipatch(ix1+1)==0) then; T_avg=T_avg+Te(ix1+1); count=count+1; end if
+            }
+            {^IFTWOD
+            if (ipatch(ix1-1,ix2)==0) then; T_avg=T_avg+Te(ix1-1,ix2); count=count+1; end if
+            if (ipatch(ix1+1,ix2)==0) then; T_avg=T_avg+Te(ix1+1,ix2); count=count+1; end if
+            if (ipatch(ix1,ix2-1)==0) then; T_avg=T_avg+Te(ix1,ix2-1); count=count+1; end if
+            if (ipatch(ix1,ix2+1)==0) then; T_avg=T_avg+Te(ix1,ix2+1); count=count+1; end if
+            }
+            {^IFTHREED
+            if (ipatch(ix1-1,ix2,ix3)==0) then; T_avg=T_avg+Te(ix1-1,ix2,ix3); count=count+1; end if
+            if (ipatch(ix1+1,ix2,ix3)==0) then; T_avg=T_avg+Te(ix1+1,ix2,ix3); count=count+1; end if
+            if (ipatch(ix1,ix2-1,ix3)==0) then; T_avg=T_avg+Te(ix1,ix2-1,ix3); count=count+1; end if
+            if (ipatch(ix1,ix2+1,ix3)==0) then; T_avg=T_avg+Te(ix1,ix2+1,ix3); count=count+1; end if
+            if (ipatch(ix1,ix2,ix3-1)==0) then; T_avg=T_avg+Te(ix1,ix2,ix3-1); count=count+1; end if
+            if (ipatch(ix1,ix2,ix3+1)==0) then; T_avg=T_avg+Te(ix1,ix2,ix3+1); count=count+1; end if
+            }
+            if (count > 0) then
+                Te(ix^D) = T_avg / dble(count)
+            else
+                Te(ix^D) = 1.0d0 / unit_temperature
+            end if
+            write(*,*) ' WARNING: tc_patch_eint it=', it, &
+                ' e_int=', w(ix^D, ie), &
+                ' pe=', mype, ' x=', x(ix^D, 1:ndim)
+        end if
+    {end do\}
+
+    ! Cells at the block boundary that need patching fall back to 1 K
+    ! (the neighbor loop above skips ixOmin and ixOmax edges)
+    {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        if (ipatch(ix^D) == 1 .and. Te(ix^D) <= 0.0d0) then
+            Te(ix^D) = 1.0d0 / unit_temperature
+        end if
+    {end do\}
+
+  end subroutine tc_patch_negative_eint
+
 end module mod_thermal_conduction

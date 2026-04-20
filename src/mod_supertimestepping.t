@@ -901,6 +901,7 @@ contains
           end do
         !$OMP END PARALLEL DO
         end if
+
         if(temp%nflux>temp%nwbc.and.temp%s==j) then
           ! include the changed no-need-ghost-update variables in the last getbc
           type_send_srl=>temp%type_send_srl_sts_2
