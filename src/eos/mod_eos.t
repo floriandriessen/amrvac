@@ -61,7 +61,7 @@ module mod_eos
     public :: log_p_from_nH_eint
     public :: p_nH_from_eint
     public :: T_and_y_from_nH_eint
-    public :: log_p_bisect_cached
+    public :: log_p_bisect_cached, eint_from_p_bisect
     public :: eint_nH_from_T
     public :: saha_y_from_nH_T, saha_eint_from_nH_T, saha_p_from_nH_T_y
     public :: saha_T_from_nH_eint, saha_p_to_T
@@ -98,17 +98,18 @@ contains
         double precision :: nH2rhoFactor
 
         logical :: disable_FI_bypass
-        character(len=20) :: eos_method, gamma1_method, lte_h_inversion
+        character(len=20) :: eos_method, gamma1_method, lte_h_inversion, p2eint_method
 
         namelist /eos_list/ eos_type, table_location, ionE
         namelist /eos_list/ table_check, He_abundance, gamma
         namelist /eos_list/ disable_FI_bypass
-        namelist /eos_list/ eos_method, gamma1_method, lte_h_inversion
+        namelist /eos_list/ eos_method, gamma1_method, lte_h_inversion, p2eint_method
 
         eos_type = 'FI'
         eos_method = 'tables'
         gamma1_method = 'exact'
         lte_h_inversion = 'bisect'
+        p2eint_method = 'table'
         disable_FI_bypass = .false.
         call get_environment_variable("AMRVAC_DIR", AMRVAC_DIR)
         table_location = trim(AMRVAC_DIR)//"/src/tables/eos_tables/"
@@ -142,6 +143,7 @@ contains
         eos%disable_FI_bypass = disable_FI_bypass
         eos%method = eos_method
         eos%gamma1_method = gamma1_method
+        eos%p2eint_method = p2eint_method
         eos%inversion = lte_h_inversion
 
         ! Validate method combinations
@@ -226,7 +228,7 @@ contains
         if (allocated(eos)) then
             if (eos%eos_type == 'LTE') then
                 eos%update_eos => update_eos_LTE
-                eos%get_thermal_pressure => get_thermal_pressure_LTE
+                ! eos%get_thermal_pressure is set by (m)hd_link_eos
                 eos%get_temperature_from_eint => get_temperature_from_eint_LTE
                 eos%get_Te => get_Te_LTE
 
@@ -303,7 +305,6 @@ contains
 
             else if (eos%eos_type == 'FI') then
                 eos%update_eos => update_eos_FI !> do nothing
-                eos%get_thermal_pressure => get_thermal_pressure_FI
                 eos%get_temperature_from_eint => get_temperature_from_eint_FI
                 eos%get_Te => get_Te_FI
                 !> FI particle counts (same formulas as LTE precompute_FI_bypass_constants)
@@ -544,7 +545,7 @@ contains
         double precision :: prev_y(ixI^S), new_y(ixI^S)
         double precision :: pth(ixI^S)
         double precision :: nH_in(ixI^S), nH(ixI^S), eint_in(ixI^S)
-        double precision :: Rfactor_FI
+        double precision :: Rfactor_FI, Rfactor(ixI^S)
         double precision :: yy, eint_nH_floor
         double precision :: time0
         integer :: ix^D
@@ -580,12 +581,7 @@ contains
             eint_in(ixO^S) = dlog10(wlocal(ixO^S,iw_e)) - nH_in(ixO^S)
         end if
 
-        !> Constant FI Rfactor used by the fully-ionised fast path below.
-        !> Must NOT be read from the cached Rfactor(w) via iw_ne: at IC, iw_ne
-        !> is zero (uninitialised before the first update_eos_LTE), which
-        !> returns Rfactor for neutral plasma and inflates T by a factor
-        !> (1+He+neOnH_FI)/(1+He) in the first output snapshot.
-        Rfactor_FI = eos%n_per_nH_FI / eos%nH2rhoFactor
+        call eos%get_Rfactor(w, x, ixI^L, ixO^L,  Rfactor)
 
         {do ix^DB=ixOmin^DB,ixOmax^DB\}
             if (wlocal(ix^D,iw_e) / w(ix^D,iw_rho) > eos%eint_rho_FI_threshold) then
@@ -595,7 +591,7 @@ contains
                     !> T = (eint - eion*nH) * (gamma-1) / (Rfactor_FI * rho)
                     w(ix^D,iw_te) = eos%gamma_minus_1 &
                         * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
-                        / (Rfactor_FI * w(ix^D,iw_rho))
+                        / (Rfactor(ix^D) * w(ix^D,iw_rho))
                 else
                     w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)))
                 end if
@@ -622,7 +618,7 @@ contains
                             new_y(ix^D) = eos%neOnH_FI
                             w(ix^D,iw_te) = eos%gamma_minus_1 &
                                 * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
-                                / (Rfactor_FI * w(ix^D,iw_rho))
+                                / (Rfactor(ix^D) * w(ix^D,iw_rho))
                         end if
                     end if
                 end if
@@ -711,40 +707,6 @@ contains
 
     end subroutine get_Te_FI
 
-    subroutine get_thermal_pressure_FI(w, x, ixI^L, ixO^L, res)
-        use mod_physics
-        integer, intent(in)             :: ixI^L,ixO^L
-        double precision, intent(in)    :: x(ixI^S,1:ndim)
-        double precision, intent(in)    :: w(ixI^S,1:nw)
-        double precision, intent(out)   :: res(ixI^S)
-
-        double precision :: ei(ixO^S)
-
-        timeeos0 = MPI_WTIME()
-
-        ! Use non-modifying function to get internal energy
-        ei = phys_get_ei(w, ixI^L, ixO^L)
-        res(ixO^S) = eos%gamma_minus_1 * ei(ixO^S)
-
-        timeeos_pthermal=timeeos_pthermal+(MPI_WTIME()-timeeos0)
-    end subroutine get_thermal_pressure_FI
-
-    subroutine get_thermal_pressure_LTE(w, x, ixI^L, ixO^L, res) !> Assumes the inputs are in sync
-        integer, intent(in)             :: ixI^L,ixO^L
-        double precision, intent(in)    :: x(ixI^S,1:ndim)
-        double precision, intent(in)    :: w(ixI^S,1:nw)
-        double precision, intent(out)   :: res(ixI^S)
-
-        double precision :: nH(ixI^S)
-        integer :: ix^D
-
-        timeeos0 = MPI_WTIME() !> For monitoring cost of eos module
-
-        call eos%get_nH(w, x, ixI^L, ixO^L, nH)
-        res(ixO^S) = nH(ixO^S) * (1.0d0 + eos%He_abundance + (w(ixO^S,iw_ne) / nH(ixO^S))) * w(ixO^S,iw_te)
-
-        timeeos_pthermal=timeeos_pthermal+(MPI_WTIME()-timeeos0)
-    end subroutine get_thermal_pressure_LTE
 
     !> The next four subroutines get the temperature from the energy variable depending on the eos type
     !> These distinctions are necessary primarily for the STS methods (dt -> conserved, set_source -> eint)
@@ -1473,6 +1435,55 @@ contains
         end function pchip_2d_from_cache
 
     end subroutine log_p_bisect_cached
+
+    !> Given log10(nH) and log10(p), find log10(eint/nH) by table-guessed
+    !> bisection on the forward pressure table.  Wraps the bracketing logic
+    !> and log_p_bisect_cached into a single call for use by both HD and MHD
+    !> from_conserved routines.
+    subroutine eint_from_p_bisect(log_nH_val, log_p_val, log_eint_nH_out)
+        double precision, intent(in)  :: log_nH_val, log_p_val
+        double precision, intent(out) :: log_eint_nH_out
+
+        double precision :: log_p_target, p2eint_ratio, log_eint_guess
+        double precision :: log_p_at_guess, log_eint_lo, log_eint_hi
+        double precision :: f_bracket, margin
+        integer :: max_iter
+
+        log_p_target = log_p_val - log_nH_val
+
+        ! Initial guess from p2eint table
+        p2eint_ratio = p2eint_from_nH_p(log_nH_val, log_p_target)
+        log_eint_guess = dlog10(p2eint_ratio) + log_p_target
+
+        log_eint_guess = max(log_eint_guess, eos%log_p%var2_min)
+        log_eint_guess = min(log_eint_guess, eos%log_p%var2_max)
+
+        log_p_at_guess = log_p_from_nH_eint(log_nH_val, log_eint_guess)
+
+        ! Establish bracket around the guess
+        margin = 5.0d-4
+        if (log_p_at_guess < log_p_target) then
+            log_eint_lo = log_eint_guess
+            log_eint_hi = min(log_eint_guess + margin, eos%log_p%var2_max)
+            f_bracket = log_p_from_nH_eint(log_nH_val, log_eint_hi) - log_p_target
+        else
+            log_eint_lo = max(log_eint_guess - margin, eos%log_p%var2_min)
+            log_eint_hi = log_eint_guess
+            f_bracket = -(log_p_from_nH_eint(log_nH_val, log_eint_lo) - log_p_target)
+        end if
+
+        if (f_bracket >= 0.0d0) then
+            max_iter = 8
+        else
+            log_eint_lo = eos%log_p%var2_min
+            log_eint_hi = eos%log_p%var2_max
+            max_iter = 20
+        end if
+
+        call log_p_bisect_cached(log_nH_val, log_p_target, &
+            log_eint_lo, log_eint_hi, max_iter, log_eint_nH_out)
+
+    end subroutine eint_from_p_bisect
 
     !> Internal energy per nH from (log10 nH, log10 T) in code units.
     !> Uses the bisection-built inverse table (H+He, machine precision).

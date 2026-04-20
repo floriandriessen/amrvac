@@ -66,6 +66,7 @@ module mod_eos_container
         character(len=std_len) :: eos_type
         character(len=20)     :: method = 'tables'        !> 'tables' or 'analytic'
         character(len=20)     :: gamma1_method = 'exact'   !> 'exact' or 'effective'
+        character(len=20)     :: p2eint_method = 'table'   !> 'table' (fast) or 'bisect' (accurate)
         character(len=20)     :: inversion = 'bisect'      !> 'bisect' or 'newton' (analytic only)
         logical :: ionE
         character(len=std_len) :: table_location
