@@ -1275,7 +1275,8 @@ contains
 
       !> do prolongation for fine blocks after receipt data from coarse neighbors
       subroutine bc_prolong(igrid,i^D)
-        use mod_physics, only: phys_to_primitive, phys_to_conserved
+        use mod_physics, only: phys_to_primitive, phys_to_conserved, &
+             phys_to_prolong, phys_from_prolong
 
         double precision :: dxFi^D, dxCo^D, xFimin^D, xComin^D, invdxCo^D
         integer :: i^D,igrid
@@ -1330,11 +1331,6 @@ contains
         end if
 
         if(prolongprimitive) then
-          ! following line again assumes equidistant grid, but 
-          ! just computes indices, so also ok for stretched case
-          ! reason for +1-1 and +1+1: the coarse representation has 
-          ! also nghostcells at each side. During
-          ! prolongation, we need cells to left and right, hence -1/+1
           block=>psc(igrid)
           ixComin^D=int((xFimin^D+(dble(ixFimin^D)-half)*dxFi^D-xComin^D)*invdxCo^D)+1-1;
           ixComax^D=int((xFimin^D+(dble(ixFimax^D)-half)*dxFi^D-xComin^D)*invdxCo^D)+1+1;

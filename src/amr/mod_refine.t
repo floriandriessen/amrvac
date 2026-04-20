@@ -41,7 +41,8 @@ contains
   
   !> prolong one block
   subroutine prolong_grid(child_igrid,child_ipe,igrid,ipe)
-    use mod_physics, only: phys_to_primitive, phys_to_conserved
+    use mod_physics, only: phys_to_primitive, phys_to_conserved, &
+         phys_to_prolong, phys_from_prolong
     use mod_global_parameters
     use mod_amr_fct, only: old_neighbors
   
@@ -52,8 +53,15 @@ contains
     integer :: ix^L, ichild, ixCo^L, ic^D
   
     ix^L=ixM^LL^LADD1;
-  
-    if(prolongprimitive) call phys_to_primitive(ixG^LL,ix^L,ps(igrid)%w,ps(igrid)%x)
+
+    ! Convert parent to prolongation space:
+    !   phys_to_prolong: EoS-aware (rho, v, T) — avoids Jensen's inequality
+    !   phys_to_primitive: standard (rho, v, p) — used with prolongprimitive
+    if(associated(phys_to_prolong)) then
+      call phys_to_prolong(ixG^LL,ix^L,ps(igrid)%w,ps(igrid)%x)
+    else if(prolongprimitive) then
+      call phys_to_primitive(ixG^LL,ix^L,ps(igrid)%w,ps(igrid)%x)
+    end if
   
     xComin^D=rnode(rpxmin^D_,igrid)\
     dxCo^D=rnode(rpdx^D_,igrid)\
@@ -74,14 +82,20 @@ contains
       !call prolong_1st(ps(igrid)%w,ixCo^L,ps(ichild)%w,ps(ichild)%x)
     {end do\}
   
-    if (prolongprimitive) call phys_to_conserved(ixG^LL,ix^L,ps(igrid)%w,ps(igrid)%x)
-  
+    ! Convert parent back from prolongation space
+    if(associated(phys_to_prolong)) then
+      call phys_from_prolong(ixG^LL,ix^L,ps(igrid)%w,ps(igrid)%x)
+    else if (prolongprimitive) then
+      call phys_to_conserved(ixG^LL,ix^L,ps(igrid)%w,ps(igrid)%x)
+    end if
+
   end subroutine prolong_grid
   
   !> do 2nd order prolongation
   subroutine prolong_2nd(sCo,ixCo^L,sFi,dxCo^D,xComin^D,dxFi^D,xFimin^D,igridCo,igridFi)
     use mod_physics, only: phys_to_conserved, phys_to_primitive, &
-         phys_handle_small_values, phys_wb_prolong
+         phys_handle_small_values, phys_wb_prolong, &
+         phys_to_prolong, phys_from_prolong
     use mod_global_parameters
     use mod_amr_fct, only: already_fine, prolong_2nd_stg
   
@@ -164,10 +178,13 @@ contains
   
     if(fix_small_values) call phys_handle_small_values(prolongprimitive,wFi,sFi%x,ixG^LL,ixM^LL,'prolong_2nd')
 
-    ! WB post-prolongation: rebuild p from HSE recurrence using interpolated T.
-    ! Needs primitive form; avoids redundant prim->cons->prim round-trip.
-    if(associated(phys_wb_prolong)) then
-      if(.not. prolongprimitive) then
+    ! Convert child cells from prolongation space to conserved.
+    if(associated(phys_from_prolong)) then
+      ! EoS-aware: (rho, v, T) -> (rho, rho*v, E) using EoS tables
+      call phys_from_prolong(ixG^LL,ixM^LL,wFi,sFi%x)
+    else if(associated(phys_wb_prolong)) then
+      ! WB: rebuild p from HSE recurrence using interpolated T = p/rho
+      if(.not. prolongprimitive .and. .not. associated(phys_to_prolong)) then
         call phys_to_primitive(ixG^LL,ixM^LL,wFi,sFi%x)
       end if
       call phys_wb_prolong(ixG^LL,ixM^LL,wFi,sFi%x)
