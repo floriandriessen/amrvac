@@ -22,7 +22,8 @@ module mod_usr
   use mod_hd
 
   ! Get access to some CAK radiation functionality
-  use mod_cak_force, only: set_cak_force_norm, cak_alpha, gayley_qbar, gcak1_
+  use mod_cak_force, only: set_cak_force_norm, cak_alpha, gayley_qbar, &
+       kappa_e, gcak1_
 
   implicit none
 
@@ -31,10 +32,6 @@ module mod_usr
 
   ! Extra parameters required in computation
   real(8) :: mstar, rstar, rhobound, mdot, vinf, asound, Ggrav
-
-  ! Free-electron scattering opacity for fully-ionised plasma at solar
-  ! abundance (helium number fraction = 0.1)
-  real(8), parameter :: const_kappae_loc = 0.34d0
 
 contains
 
@@ -93,7 +90,7 @@ contains
 
     ! Stellar structure
     lstar_cgs  = 4.0d0*dpi * rstar_cgs**2.0d0 * sigma_SB_cgs * twind_cgs**4.0d0
-    gammae     = const_kappae_loc * lstar_cgs / (4.0d0*dpi * const_G * mstar_cgs * const_c)
+    gammae     = kappa_e * lstar_cgs / (4.0d0*dpi * const_G * mstar_cgs * const_c)
     logg_cgs   = log10(const_G * mstar_cgs/rstar_cgs**2.0d0)
     logge_cgs  = logg_cgs + log10(1.0d0 - gammae)
     mumol      = (1.0d0 + 4.0d0*He_abundance)/(2.0d0 + 3.0d0*He_abundance)

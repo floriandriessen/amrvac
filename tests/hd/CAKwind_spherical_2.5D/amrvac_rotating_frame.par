@@ -68,6 +68,7 @@
 &cak_list
   cak_alpha    = 0.65d0
   gayley_qbar  = 2000.0d0
+  kappa_e     = 0.34d0
   cak_vector_force = .true.
   nthetaray  = 6
   nphiray    = 6

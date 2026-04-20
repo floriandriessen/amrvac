@@ -30,6 +30,9 @@ module mod_cak_force
   !> Line-ensemble parameters in the Gayley (1995) formalism
   real(8), public :: cak_alpha, gayley_qbar, gayley_q0
 
+  !> Free-electron scattering opacity
+  real(8), public :: kappa_e
+
   !> Ray positions + weights for impact parameter and azimuthal radiation angle
   real(8), allocatable, private :: ay(:), wy(:), aphi(:), wphi(:)
 
@@ -80,9 +83,9 @@ contains
     ! Local variable
     integer :: n
 
-    namelist /cak_list/ cak_alpha, gayley_qbar, gayley_q0, cak_1d_opt, &
-                        cak_split, cak_1d_force, cak_vector_force, &
-                        nphiray, nthetaray, fix_vector_force_1d
+    namelist /cak_list/ cak_alpha, gayley_qbar, gayley_q0, kappa_e, &
+         cak_1d_opt, cak_split, cak_1d_force, cak_vector_force, &
+         nphiray, nthetaray, fix_vector_force_1d
 
     do n = 1,size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -105,6 +108,7 @@ contains
     cak_alpha   = 0.65d0
     gayley_qbar = 2000.0d0
     gayley_q0   = 2000.0d0
+    kappa_e     = 0.34d0
     cak_1d_opt  = fdisc
     nthetaray   = 6
     nphiray     = 6
