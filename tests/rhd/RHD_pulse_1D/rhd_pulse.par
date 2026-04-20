@@ -3,7 +3,7 @@
 /
 
 &filelist
-  base_filename='output/rhd_pulse'
+  base_filename='rhd_pulse'
   autoconvert      = F
   typefilelog='regression_test'
 /
@@ -11,14 +11,13 @@
  &savelist
    itsave(1,1)     = 0
    itsave(1,2)     = 0
-   dtsave_dat     = 0.025d0
-   dtsave_log     = 0.1d0
+   dtsave_dat     = 1.0d0
+   dtsave_log     = 0.05d0
 /
-   ditsave_log     = 1
 
-   it_max=10
- &stoplist
    time_max = 10.d0
+ &stoplist
+   time_max = 1.d0
    dtmin = 1.0d-20
 /
 

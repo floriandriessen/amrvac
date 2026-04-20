@@ -3,6 +3,7 @@
  /
 
  &methodlist
+   check_small_values=.false.
    fix_small_values=.true.
    small_values_method = 'replace'
    small_pressure = 1.d-12

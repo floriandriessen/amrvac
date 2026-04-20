@@ -133,12 +133,6 @@ contains
           call advect1(flux_method,half,idim^LIM,global_time+dt,ps1,global_time+half*dt,ps)
 
        case (IMEX_Midpoint)
-          !$OMP PARALLEL DO PRIVATE(igrid)
-          do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
-             ps2(igrid)%w = ps(igrid)%w
-             if(stagger_grid) ps2(igrid)%ws = ps(igrid)%ws
-          end do
-          !$OMP END PARALLEL DO
           call advect1(flux_method,half, idim^LIM,global_time,ps,global_time,ps1)
           call global_implicit_update(half,dt,global_time+half*dt,ps2,ps1)
           !$OMP PARALLEL DO PRIVATE(igrid)
@@ -581,9 +575,10 @@ contains
     integer                        :: iigrid, igrid
 
     !> First copy all variables from a to b, this is necessary to account for
-    ! quantities is w with no implicit sourceterm
+    ! quantities in w with no implicit sourceterm
     do iigrid=1,igridstail; igrid=igrids(iigrid);
        psa(igrid)%w = psb(igrid)%w
+       if(stagger_grid) psa(igrid)%ws = psb(igrid)%ws
     end do
 
     if (associated(phys_implicit_update)) then

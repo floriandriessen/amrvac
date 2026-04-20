@@ -27,10 +27,6 @@ contains
     ! A routine for initial conditions is always required
     usr_init_one_grid => initial_conditions
 
-    ! Boundary conditions when non-periodic stuff is used
-    !!usr_special_bc => boundary_conditions
-    !!usr_special_mg_bc => mg_boundary_conditions
-
    ! to add selected variables to the .dat file
     usr_modify_output => set_output_vars
 
@@ -156,52 +152,6 @@ contains
   endif
 
   end subroutine initial_conditions
-
-  subroutine boundary_conditions(qt,ixI^L,ixB^L,iB,w,x)
-    use mod_global_parameters
-    use mod_fld
-
-    integer, intent(in)             :: ixI^L, ixB^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
-    double precision, intent(inout) :: w(ixI^S,1:nw)
-
-    double precision :: temp(ixI^S), pth(ixI^S)
-
-print *,'UNUSED'
-    select case (iB)
-    case(1,2)
-      temp(ixB^S) = T0_norm + (T1_norm-T0_norm)*dexp(-(x(ixB^S,1)-v0_norm*qt)**2.d0/(2*(wdth**2)))
-      w(ixB^S,rho_) = rho0_norm*T0_norm/temp(ixB^S) &
-                   + arad_norm * (T0_norm**4.d0/temp(ixB^S) - temp(ixB^S)**3.d0)
-      w(ixB^S,mom(:)) = 0.d0
-      w(ixB^S,mom(1)) = w(ixB^S,rho_)*v0_norm
-      pth(ixB^S) = temp(ixB^S)*w(ixB^S,rho_)
-      w(ixB^S,e_) = pth(ixB^S)/(hd_gamma-1.d0) + half*w(ixB^S,rho_)*v0_norm**2
-      w(ixB^S,r_e) = arad_norm*(temp(ixB^S)**4.d0)
-    case default
-      call mpistop('boundary not known')
-    end select
-  end subroutine boundary_conditions
-
-  subroutine mg_boundary_conditions(iB)
-
-    use mod_global_parameters
-    use mod_multigrid_coupling
-
-    integer, intent(in)             :: iB
-
-print *,'UNUSED'
-    select case (iB)
-    case (1)
-        mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
-        mg%bc(iB, mg_iphi)%bc_value = arad_norm*(T0_norm)**4.d0
-    case (2)
-        mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
-        mg%bc(iB, mg_iphi)%bc_value = arad_norm*(T0_norm)**4.d0
-    case default
-        call mpistop("issue for mg_boundary in mod_usr")
-    end select
-  end subroutine mg_boundary_conditions
 
   subroutine set_output_vars(ixI^L,ixO^L,qt,w,x)
     use mod_global_parameters

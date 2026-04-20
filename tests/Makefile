@@ -33,7 +33,7 @@ mhd/Low_flux_rope_3D mhd/field_loop_2.5D mhd/solar_wind_2.5D mhd/Orszag_Tang_2.5
 mhd/semirelativistic_Alfven_wave_1.75D \
 mhd/blast_wave_Cartesian_3D mhd/Ambipolar1DWave-B0split mhd/Ambipolar1DWave mhd/icarus
 
-RHD_DIRS := rhd/RHD_heatcool
+RHD_DIRS := rhd/RHD_heatcool rhd/RHD_pulse_1D
 #   rhd/RHD_wave_1D rhd/RHD_shock_1D
 
 SRHD_DIRS := srhd/Jet_cylindrical_2D

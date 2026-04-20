@@ -837,6 +837,8 @@ module mod_fld
        !                    +half*(w(ixO^S,i_diff_mg) + w(hxO^S,i_diff_mg))) &
        !    +w(hxO^S,iw_r_e)*half*(w(ixO^S,i_diff_mg) + w(hxO^S,i_diff_mg)))/dxlevel(idir)**2
     enddo
+    ! only the E variable is handled implicitly, all else must be zero here
+    w(ixO^S,1:nw)=zero
     w(ixO^S,iw_r_e) = divF(ixO^S)
 
   end subroutine evaluate_diffterm_onegrid
