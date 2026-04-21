@@ -200,12 +200,11 @@ contains
 
     double precision :: time_last_print, time_write0, time_write, time_before_advance, dt_loop
     integer(kind=8) ncells_update
-    integer :: level, ifile, fixcount, ncells_block, igrid, iigrid
+    integer :: level, ifile, ncells_block, igrid, iigrid
     logical :: crashall
 
     time_in=MPI_WTIME()
     time_last_print = -bigdouble
-    fixcount=1
 
     n_saves(filelog_:fileout_) = snapshotini
 
@@ -325,23 +324,14 @@ contains
           call process_advanced(it,global_time)
        end if
 
-       ! update AMR mesh and tree
-       timegr0=MPI_WTIME()
-       if(ditregrid>1) then
-          if(fixcount<ditregrid) then
-             fixcount=fixcount+1
-          else
-             if (refine_max_level>1 .and. .not.(fixgrid())) call resettree
-             fixcount=1
-          end if
-       else
-          if (refine_max_level>1 .and. .not.(fixgrid())) call resettree
-       end if
-       timegr_tot=timegr_tot+(MPI_WTIME()-timegr0)
-
        ! update time variables
        it = it + 1
        global_time = global_time + dt
+
+       ! update AMR mesh and tree
+       timegr0=MPI_WTIME()
+       if (mod(it,ditregrid)==0 .and. refine_max_level>1 .and. .not.(fixgrid())) call resettree
+       timegr_tot=timegr_tot+(MPI_WTIME()-timegr0)
 
        if(it>9000000)then
           it = slowsteps+it_init

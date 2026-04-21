@@ -60,7 +60,7 @@ jobs:
         os: [ubuntu-latest]
         FC_compiler: [gfortran-14]
         CC_compiler: [gcc-14]
-        suite: [rho, nl, demo, hd, srhd, rhd, rmhd, ffhd, mhd, rd, ard, mg, twofl]
+        suite: [rho, nl, demo, hd, srhd, rhd, rmhd, ffhd, mhd, rd, ard, mg, twofl, mf]
 
     env:
       CC: ${{ matrix.CC_compiler }}

@@ -50,7 +50,7 @@ FFHD_DIRS := ffhd/solar_atmosphere_2D ffhd/ring_thermal_conduction_2D
 
 ARD_DIRS := ard/schnakenberg_2d
 
-MF_DIRS := mf/Mackay_bipole_Cartesian_3D mf/sheared_arcade_Antiochos_3D
+MF_DIRS := mf/Mackay_bipole_Cartesian_3D
 
 TWOFL_DIRS := twofl/Alfven_wave_1D twofl/Riemann_1D twofl/KHI_2D
 
