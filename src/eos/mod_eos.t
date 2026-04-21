@@ -545,7 +545,7 @@ contains
         double precision :: prev_y(ixI^S), new_y(ixI^S)
         double precision :: pth(ixI^S)
         double precision :: nH_in(ixI^S), nH(ixI^S), eint_in(ixI^S)
-        double precision :: Rfactor_FI, Rfactor(ixI^S)
+        double precision :: Rfactor_FI
         double precision :: yy, eint_nH_floor
         double precision :: time0
         integer :: ix^D
@@ -581,7 +581,9 @@ contains
             eint_in(ixO^S) = dlog10(wlocal(ixO^S,iw_e)) - nH_in(ixO^S)
         end if
 
-        call eos%get_Rfactor(w, x, ixI^L, ixO^L,  Rfactor)
+        !> Constant FI Rfactor for the fully-ionised fast path.
+        !> Must NOT use eos%get_Rfactor which reads iw_ne (uninitialised at IC).
+        Rfactor_FI = eos%n_per_nH_FI / eos%nH2rhoFactor
 
         {do ix^DB=ixOmin^DB,ixOmax^DB\}
             if (wlocal(ix^D,iw_e) / w(ix^D,iw_rho) > eos%eint_rho_FI_threshold) then
@@ -591,7 +593,7 @@ contains
                     !> T = (eint - eion*nH) * (gamma-1) / (Rfactor_FI * rho)
                     w(ix^D,iw_te) = eos%gamma_minus_1 &
                         * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
-                        / (Rfactor(ix^D) * w(ix^D,iw_rho))
+                        / (Rfactor_FI * w(ix^D,iw_rho))
                 else
                     w(ix^D,iw_te) = pth(ix^D) / (nH(ix^D) * (1.0d0 + eos%He_abundance + new_y(ix^D)))
                 end if
@@ -618,7 +620,7 @@ contains
                             new_y(ix^D) = eos%neOnH_FI
                             w(ix^D,iw_te) = eos%gamma_minus_1 &
                                 * (wlocal(ix^D,iw_e) - eos%eion_per_nH * nH(ix^D)) &
-                                / (Rfactor(ix^D) * w(ix^D,iw_rho))
+                                / (Rfactor_FI * w(ix^D,iw_rho))
                         end if
                     end if
                 end if
