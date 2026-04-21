@@ -89,7 +89,20 @@ module mod_fld
     ! initialize constant opacity with free electron Thomson scattering value
     fld_kappa0=const_kappae
     call fld_params_read(par_files)
+    ! sanity checks on input
+    if(fld_kappa0<smalldouble)then
+       if(mype==0) print *,'fld_kappa0=',fld_kappa0
+       call mpistop("please set the constant opacity to a reasonable value")
+    endif
+    if(fld_bisect_tol<smalldouble)then
+       if(mype==0) print *,'fld_bisect_tol=',fld_bisect_tol
+       call mpistop("convergence tolerance for root solver too strict")
+    endif
     if(.not.fld_no_mg)then
+       if(fld_diff_tol<smalldouble)then
+         if(mype==0) print *,'fld_diff_tol=',fld_diff_tol
+         call mpistop("convergence tolerance for MG solver too strict")
+      endif
       select case(nth_for_diff_mg)
         case(1)
          ! no need for stencil extension
@@ -209,6 +222,7 @@ module mod_fld
 
       !> Photon tiring : calculate tensor grad v (named div_v here)
       ! NOTE: This is ok for uniform Cartesian only!!!!!
+      ! TODO: introduce gradient of vector in geometry module and call that one
       do idir = 1,ndim
         do jdir = 1,ndim
           call gradient(wCTprim(ixI^S,iw_mom(jdir)),ixI^L,ixO^L,idir,tmp)
@@ -268,6 +282,7 @@ module mod_fld
       endif
 
       !> Coefficients for the polynomial in Moens et al. 2022, eq 37. but with photon tiring (a3)
+      ! NOTE: the next two lines are to be updated when generic EOS in place
       call phys_get_Rfactor(wCT,x,ixI^L,ixO^L,tmp)
       a1(ixO^S) = qdt*kappa(ixO^S)*c_norm*arad_norm*(fld_gamma-one)**4/(wCT(ixO^S,iw_rho)**3*tmp(ixO^S)**4)
       a2(ixO^S) = c_norm*kappa(ixO^S)*wCT(ixO^S,iw_rho)*qdt
@@ -447,6 +462,7 @@ module mod_fld
     double precision             :: eddington_tensor(ixI^S,1:ndim,1:ndim)
     double precision             :: lambda(ixI^S),fld_R(ixI^S)
 
+    ! always use 4th order CD here
     nth=2
     call fld_get_eddington(w, x, ixI^L, ixO^L, eddington_tensor, lambda, fld_R, nth)
     if(fld_debug)then
@@ -591,6 +607,7 @@ module mod_fld
     call phys_to_primitive(ixI^L,ixI^L,wprim,x)
 
     call fld_get_opacity_prim(wprim, x, ixI^L, ixO^L, kappa)
+    ! always use 4th order CD here
     nth_for_fld=2
     call fld_get_fluxlimiter_prim(wprim, x, ixI^L, ixO^L, lambda, fld_R, nth_for_fld)
     !> Calculate the Flux using the fld closure relation
@@ -697,7 +714,7 @@ module mod_fld
           print *,'at start of MG solver, we have E_rad range as',wmax(iw_r_e),wmin(iw_r_e)
           print *,'at start of MG solver, we have Diff coeff range as',wmax(i_diff_mg),wmin(i_diff_mg)
           print *,'at start of MG solver, we have density range as',wmax(iw_rho),wmin(iw_rho)
-          print *,'at start of MG solver, we have qdt as',qdt,' max_residual=',max_residual
+          print *,'at start of MG solver, we have qdt as',qdt,' and max_residual=',max_residual
           print *,'at start of MG solver, we have dtfactor as',dtfactor,' or lambda=',lambda
        endif
     endif
@@ -728,7 +745,8 @@ module mod_fld
       if(res < max_residual) exit
       call mg_fas_vcycle(mg, max_res=res)
     end do
-    if((res .lt. 0.d0) .or. (res .ge. max_residual)) then
+    if(fld_debug.and.mype==0)print *,'MG residual obtained is =',res
+    if(res .ge. max_residual) then
       if (mg%my_rank == 0) then 
         write(*,*) it, ' residual from MG ', res
         write(*,*) it, ' max_residual in MG ', max_residual
@@ -737,9 +755,6 @@ module mod_fld
       endif
       call mpistop("no convergence in MG")
     end if
-    if(res .eq. 0.d0) then
-      if (mg%my_rank == 0) write(*,*) it, 'ZERO  residual from MG ', res
-    endif
     ! copy back the Erad variable in iw_r_e
     call mg_copy_from_tree_gc(mg_iphi, iw_r_e, state_to=psa)
 
@@ -1007,7 +1022,6 @@ module mod_fld
       ii = ii + 1
       if(ii .gt. 1d3) then
         if(fld_debug)print*, 'skip to Newton algorithm'
-        !call mpistop("iterates to 1000, entering Newton method")
         call Newton_method(e_gas, E_rad, c0, c1)
         return
       endif

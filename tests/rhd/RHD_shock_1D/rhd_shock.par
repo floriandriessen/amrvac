@@ -4,7 +4,6 @@
 
 &filelist
   base_filename='rhd_shock'
-  saveprim         = F
   autoconvert      = F
   typefilelog='regression_test'
 /
@@ -12,20 +11,20 @@
  &savelist
    itsave(1,1)=0
    itsave(1,2)=0
-   dtsave_log     = 1.0d0
-   dtsave_dat     = 10.d0
+   dtsave_log     = 0.1d0
+   dtsave_dat     = 0.5d0
 /
 
  &stoplist
-   time_max = 10.d0
+   time_max = 1.d0
    dtmin = 1.0d-20
 /
 
  &methodlist
-   time_stepper = 'onestep'
-   time_integrator = 'IMEX_SP'
+   time_stepper    = 'twostep'
+   time_integrator = 'IMEX_Trapezoidal'
    flux_scheme     = 20*'hll'
-   limiter         = 20*'minmod'
+   limiter         = 20*'weno5'
 /
 
 &boundlist
@@ -42,12 +41,12 @@
  /
 
  &paramlist
-  courantpar       = 0.6d0
+  courantpar= 0.6d0
   slowsteps = 200
  /
 
  &hd_list
-  He_abundance = 0.d0
+  He_abundance = 0.0d0
   hd_gravity = .false.
   hd_energy = .true.
   hd_gamma = 1.4d0
@@ -60,7 +59,7 @@
   fld_kappa0 = 0.4d0
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
-  fld_diff_tol = 1.d-7
+  fld_diff_tol = 1.d-6
   /
 
   &shock_list

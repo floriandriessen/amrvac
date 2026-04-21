@@ -1,5 +1,4 @@
-TEST_DIRS := RHD_heatcool RHD_pulse_1D RHD_shock_1D
-##TEST_DIRS := RHD_wave_1D 
+TEST_DIRS := Mackay_bipole_Cartesian_3D
 
 # Directories with altered names (useful for cleaning)
 CLEAN_TEST := $(TEST_DIRS:%=clean-%)
