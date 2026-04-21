@@ -15,8 +15,6 @@ module mod_mhd_phys
   implicit none
   private
 
-  !> The adiabatic index
-  double precision, public                :: mhd_gamma = 5.d0/3.0d0
   !> The adiabatic constant
   double precision, public                :: mhd_adiab = 1.0d0
   !> The MHD resistivity
@@ -40,9 +38,6 @@ module mod_mhd_phys
   double precision, public                :: hypertc_kappa
   !> Coefficient of diffusive divB cleaning
   double precision                        :: divbdiff     = 0.8d0
-  !> He_abundance: USE eos%He_abundance instead. This variable is kept only
-  !> for namelist backwards compatibility and is synced from eos at init.
-  double precision, public, protected  :: He_abundance=0.1d0
   !> Ionization fraction of H
   !> H_ion_fr = H+/(H+ + H)
   double precision, public, protected  :: H_ion_fr=1d0
@@ -56,8 +51,6 @@ module mod_mhd_phys
   ! the units do not contain terms related to ionization fraction
   ! and it is p = RR * rho * T
   double precision, public, protected  :: RR=1d0
-  !> gamma minus one and its inverse
-  double precision :: gamma_1, inv_gamma_1
   !> inverse of squared speed of light c0 and reduced speed of light c
   double precision :: inv_squared_c0, inv_squared_c
   !> equi vars indices in the state%equi_vars array
@@ -222,14 +215,9 @@ module mod_mhd_phys
   ! procedure(sub_convert), pointer      :: mhd_to_primitive  => null()
   ! procedure(sub_convert), pointer      :: mhd_to_conserved  => null()
   procedure(sub_small_values), pointer :: mhd_handle_small_values => null()
-  procedure(sub_get_pthermal), pointer :: mhd_get_pthermal  => null()
-  procedure(sub_get_pthermal), pointer :: mhd_get_Rfactor   => null()
-  procedure(sub_get_pthermal), pointer :: mhd_get_temperature=> null()
   ! Public methods
   public :: usr_mask_ambipolar
   public :: mhd_phys_init
-  public :: mhd_get_pthermal
-  public :: mhd_get_temperature
   public :: mhd_get_v
   public :: mhd_get_rho
   ! public :: mhd_to_conserved
@@ -257,11 +245,11 @@ contains
     character(len=*), intent(in) :: files(:)
     integer                      :: n
 
-    namelist /mhd_list/ mhd_energy, mhd_n_tracer, mhd_gamma, mhd_adiab,&
+    namelist /mhd_list/ mhd_energy, mhd_n_tracer, mhd_adiab,&
       mhd_eta, mhd_eta_hyper, mhd_etah, mhd_eta_ambi, mhd_glm_alpha, mhd_glm_extended, mhd_magnetofriction,&
       mhd_thermal_conduction, mhd_radiative_cooling, mhd_Hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
       mhd_rotating_frame,mhd_viscosity, mhd_4th_order, typedivbfix, source_split_divb, divbdiff,&
-      typedivbdiff, type_ct, compactres, divbwave, He_abundance, &
+      typedivbdiff, type_ct, compactres, divbwave, &
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
       particles_eta, particles_etah,has_equi_rho0, has_equi_pe0,mhd_equi_thermal,&
@@ -276,17 +264,7 @@ contains
 111    close(unitpar)
     end do
 
-    ! He_abundance should be set once in eos_list. If also set in mhd_list,
-    ! sync to eos%He_abundance (which was read first in eos_init).
-    if (allocated(eos)) then
-      if (He_abundance /= eos%He_abundance) then
-        if (mype == 0) write(*,*) &
-          "WARNING: He_abundance in mhd_list (", He_abundance, &
-          ") differs from eos_list (", eos%He_abundance, &
-          "). Using eos_list value."
-      end if
-      He_abundance = eos%He_abundance
-    end if
+    ! He_abundance is set in eos_list and accessed via eos%He_abundance
 
   end subroutine mhd_read_params
 
@@ -304,7 +282,7 @@ contains
     call MPI_FILE_WRITE(fh, n_par, 1, MPI_INTEGER, st, er)
 
     names(1) = "gamma"
-    values(1) = mhd_gamma
+    values(1) = eos%gamma
     call MPI_FILE_WRITE(fh, values, n_par, MPI_DOUBLE_PRECISION, st, er)
     call MPI_FILE_WRITE(fh, names, n_par * name_len, MPI_CHARACTER, st, er)
   end subroutine mhd_write_info
@@ -404,7 +382,7 @@ contains
     phys_trac_type=mhd_trac_type
     phys_partial_ionization=mhd_partial_ionization
 
-    phys_gamma = mhd_gamma
+    phys_gamma = eos%gamma
     phys_trac_finegrid=mhd_trac_finegrid
 
     if(mhd_energy) then
@@ -726,22 +704,7 @@ contains
       phys_check_w             => mhd_check_w_noe
     end if
  
-    if(mhd_internal_e) then
-      phys_get_pthermal        => mhd_get_pthermal_inte
-      mhd_get_pthermal         => mhd_get_pthermal_inte
-    else if(mhd_hydrodynamic_e) then
-      phys_get_pthermal        => mhd_get_pthermal_hde
-      mhd_get_pthermal         => mhd_get_pthermal_hde
-    else if(mhd_semirelativistic) then
-      phys_get_pthermal        => mhd_get_pthermal_semirelati
-      mhd_get_pthermal         => mhd_get_pthermal_semirelati
-    else if(mhd_energy) then
-      phys_get_pthermal        => mhd_get_pthermal_origin
-      mhd_get_pthermal         => mhd_get_pthermal_origin
-    else
-      phys_get_pthermal        => mhd_get_pthermal_noe
-      mhd_get_pthermal         => mhd_get_pthermal_noe
-    end if
+    ! phys_get_pthermal is set by mhd_link_eos
 
     if(number_equi_vars>0) then
       phys_set_equi_vars => set_equi_vars_grid
@@ -751,33 +714,8 @@ contains
       phys_modify_wLR => mhd_modify_wLR
     end if
 
-    ! choose Rfactor in ideal gas law
-    if(mhd_partial_ionization) then
-      mhd_get_Rfactor=>Rfactor_from_temperature_ionization
-      phys_update_temperature => mhd_update_temperature
-    else if(associated(usr_Rfactor)) then
-      mhd_get_Rfactor=>usr_Rfactor
-    else
-      mhd_get_Rfactor=>Rfactor_from_constant_ionization
-    end if
-
-    if(mhd_partial_ionization) then
-      mhd_get_temperature => mhd_get_temperature_from_Te
-    else
-      if(mhd_internal_e) then
-        if(has_equi_pe0 .and. has_equi_rho0) then
-          mhd_get_temperature => mhd_get_temperature_from_eint_with_equi
-        else
-          mhd_get_temperature => mhd_get_temperature_from_eint
-        end if
-      else
-        if(has_equi_pe0 .and. has_equi_rho0) then
-          mhd_get_temperature => mhd_get_temperature_from_etot_with_equi
-        else
-          mhd_get_temperature => mhd_get_temperature_from_etot
-        end if
-      end if
-    end if
+    ! mhd_get_temperature and eos%get_Rfactor pointers are set by
+    ! mhd_link_eos (mod_mhd_eos.t), called immediately after mhd_phys_init.
 
     ! if using ct stagger grid, boundary divb=0 is not done here
     if(stagger_grid) then
@@ -832,36 +770,14 @@ contains
     ! initialize thermal conduction module
     if (mhd_thermal_conduction) then
       call sts_init()
-      call tc_init_params(mhd_gamma)
+      call tc_init_params(eos%gamma)
 
       allocate(tc_fl)
       call tc_get_mhd_params(tc_fl,tc_params_read_mhd)
       call add_sts_method(mhd_get_tc_dt_mhd,mhd_sts_set_source_tc_mhd,e_,1,e_,1,.false.)
-      if(phys_internal_e) then
-        if(has_equi_pe0 .and. has_equi_rho0) then
-          tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint_with_equi
-        else
-          tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_eint
-        end if
-      else
-        if(has_equi_pe0 .and. has_equi_rho0) then
-          tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_etot_with_equi
-        else
-          tc_fl%get_temperature_from_conserved => mhd_get_temperature_from_etot
-        end if
-      end if
-      if(has_equi_pe0 .and. has_equi_rho0) then
-        tc_fl%get_temperature_from_eint => mhd_get_temperature_from_eint_with_equi
-        if(mhd_equi_thermal) then
-          tc_fl%has_equi = .true.
-          tc_fl%get_temperature_equi => mhd_get_temperature_equi
-          tc_fl%get_rho_equi => mhd_get_rho_equi
-        else
-          tc_fl%has_equi = .false.
-        end if
-      else
-        tc_fl%get_temperature_from_eint => mhd_get_temperature_from_eint
-      end if
+      ! TC function pointers (get_temperature_from_eint, get_rho, etc.)
+      ! are set by bind_eos_to_source (called from eos_finalise) to ensure
+      ! they point to the correct EoS-aware implementations.
       if(.not.mhd_internal_e) then
         if(mhd_hydrodynamic_e) then
           call set_conversion_methods_to_head(mhd_e_to_ei_hde, mhd_ei_to_e_hde)
@@ -882,9 +798,6 @@ contains
         end if
       end if
       call set_error_handling_to_head(mhd_tc_handle_small_e)
-      tc_fl%get_rho => mhd_get_rho
-      tc_fl%get_ne_nH => eos%get_ne_nH
-      tc_fl%get_var_Rfactor => eos%get_Rfactor
       tc_fl%e_ = e_
       tc_fl%Tcoff_ = Tcoff_
     end if
@@ -905,27 +818,16 @@ contains
 
     ! Initialize radiative cooling module
     if (mhd_radiative_cooling) then
-      call radiative_cooling_init_params(mhd_gamma,eos%He_abundance)
+      call radiative_cooling_init_params(eos%gamma,eos%He_abundance)
       allocate(rc_fl)
       call radiative_cooling_init(rc_fl,rc_params_read)
-      rc_fl%get_rho => mhd_get_rho
-      rc_fl%get_pthermal => mhd_get_pthermal
-      rc_fl%get_var_Rfactor => mhd_get_Rfactor
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
-      if(has_equi_pe0 .and. has_equi_rho0 .and. mhd_equi_thermal) then
-        rc_fl%has_equi = .true.
-        rc_fl%get_rho_equi => mhd_get_rho_equi
-        rc_fl%get_pthermal_equi => mhd_get_pe_equi
-      else
-        rc_fl%has_equi = .false.
-      end if
+      ! rc_fl EoS pointers (get_rho, get_pthermal, get_var_Rfactor,
+      ! equi accessors) are set by bind_eos_to_source in mod_mhd_eos.t
     end if
     allocate(te_fl_mhd)
-    te_fl_mhd%get_rho=> mhd_get_rho
-    te_fl_mhd%get_pthermal=> mhd_get_pthermal
-    te_fl_mhd%get_var_Rfactor => mhd_get_Rfactor
-    te_fl_mhd%get_ne_nH => eos%get_ne_nH
+    ! te_fl_mhd EoS pointers are set by bind_eos_to_source in mod_mhd_eos.t
 {^IFTHREED
     phys_te_images => mhd_te_images
 }
@@ -994,7 +896,7 @@ contains
     if(mhd_partial_ionization) call ionization_degree_init()
 
     ! Initialize CAK radiation force module
-    if (mhd_cak_force) call cak_init(mhd_gamma)
+    if (mhd_cak_force) call cak_init(eos%gamma)
 
   end subroutine mhd_phys_init
 
@@ -1057,6 +959,14 @@ contains
     integer, intent(in)    :: step
     character(len=140) :: error_msg
 
+    ! When tc_patch_eint is active the temperature patch prevents NaN in
+    ! the source term, but the Chebyshev polynomial can still leave
+    ! negative e_int in the updated state.  Tolerate this — the
+    ! polynomial self-corrects over subsequent substeps.
+    if (allocated(tc_fl)) then
+      if (tc_fl%tc_patch_eint) return
+    end if
+
     write(error_msg,"(a,i3)") "Thermal conduction step ", step
     call mhd_handle_small_ei(w,x,ixI^L,ixO^L,e_,error_msg)
   end subroutine mhd_tc_handle_small_e
@@ -1072,9 +982,10 @@ contains
     ! list parameters
     logical :: tc_perpendicular=.false.
     logical :: tc_saturate=.false.
+    logical :: tc_patch_eint=.false.
     character(len=std_len)  :: tc_slope_limiter="MC"
 
-    namelist /tc_list/ tc_perpendicular, tc_saturate, tc_slope_limiter, tc_k_para, tc_k_perp
+    namelist /tc_list/ tc_perpendicular, tc_saturate, tc_slope_limiter, tc_k_para, tc_k_perp, tc_patch_eint
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -1084,6 +995,7 @@ contains
 
     fl%tc_perpendicular = tc_perpendicular
     fl%tc_saturate = tc_saturate
+    fl%tc_patch_eint = tc_patch_eint
     fl%tc_k_para = tc_k_para
     fl%tc_k_perp = tc_k_perp
     select case(tc_slope_limiter)
@@ -1125,7 +1037,6 @@ contains
     logical    :: Tfix=.false.
     !> Add cooling source in a split way (.true.) or un-split way (.false.)
     logical    :: rc_split=.false.
-    logical    :: rad_cut=.false.
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
     !> Name of cooling method
@@ -1134,7 +1045,7 @@ contains
     character(len=8) :: rc_Y_mod_quadrature='boole'
     integer :: rc_Y_mod_N_sub=16
 
-    namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split,rad_cut,rad_cut_hgt,rad_cut_dey, &
+    namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split,rad_cut_hgt,rad_cut_dey, &
         rc_Y_mod_quadrature, rc_Y_mod_N_sub
 
     do n = 1, size(par_files)
@@ -1150,7 +1061,6 @@ contains
     fl%Tfix=Tfix
     fl%rc_split=rc_split
     fl%cfrac=cfrac
-    fl%rad_cut=rad_cut
     fl%rad_cut_hgt=rad_cut_hgt
     fl%rad_cut_dey=rad_cut_dey
     fl%Y_mod_quadrature=rc_Y_mod_quadrature
@@ -1242,7 +1152,7 @@ contains
     if(mhd_energy) then
       wnew(ixO^S,e_)=w(ixO^S,e_)
       if(has_equi_pe0) then
-        wnew(ixO^S,e_)=wnew(ixO^S,e_)+block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1
+        wnew(ixO^S,e_)=wnew(ixO^S,e_)+block%equi_vars(ixO^S,equi_pe0_,0)*eos%inv_gamma_minus_1
       end if
       if(B0field .and. total_energy) then
         wnew(ixO^S,e_)=wnew(ixO^S,e_)+0.5d0*sum(block%B0(ixO^S,:,0)**2,dim=ndim+1) &
@@ -1257,17 +1167,15 @@ contains
     use mod_usr_methods
     use mod_convert, only: add_convert_method
 
-    ! after user parameter setting
-    gamma_1=mhd_gamma-1.d0
+    ! gamma, gamma_minus_1, inv_gamma_minus_1 are set by eos_init
     if (.not. mhd_energy) then
-       if (mhd_gamma <= 0.0d0) call mpistop ("Error: mhd_gamma <= 0")
+       if (eos%gamma <= 0.0d0) call mpistop ("Error: gamma <= 0")
        if (mhd_adiab < 0.0d0) call mpistop ("Error: mhd_adiab < 0")
-       small_pressure = mhd_adiab*small_density**mhd_gamma
+       small_pressure = mhd_adiab*small_density**eos%gamma
     else
-       if (mhd_gamma <= 0.0d0 .or. mhd_gamma == 1.0d0) &
-            call mpistop ("Error: mhd_gamma <= 0 or mhd_gamma == 1")
-       inv_gamma_1=1.d0/gamma_1
-       small_e = small_pressure * inv_gamma_1
+       if (eos%gamma <= 0.0d0 .or. eos%gamma == 1.0d0) &
+            call mpistop ("Error: gamma <= 0 or gamma == 1")
+       small_e = small_pressure * eos%inv_gamma_minus_1
     end if
 
     if (number_equi_vars > 0 .and. .not. associated(usr_set_equi_vars)) then
@@ -1553,7 +1461,7 @@ contains
         if(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,0)<small_pressure) flag(ix^D,e_) = .true.
       else
         tmp=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/tmp+(^C&w(ix^D,b^C_)**2+))
-        if(tmp+block%equi_vars(ix^D,equi_pe0_,0)*inv_gamma_1<small_e) flag(ix^D,e_) = .true.
+        if(tmp+block%equi_vars(ix^D,equi_pe0_,0)*eos%inv_gamma_minus_1<small_e) flag(ix^D,e_) = .true.
       end if
    {end do\}
 
@@ -1619,408 +1527,6 @@ contains
    {end do\}
 
   end subroutine mhd_check_w_hde
-
-  ! !> Transform primitive variables into conservative ones
-  ! subroutine mhd_to_conserved_origin(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   integer :: ix^D
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     ! Calculate total energy from pressure, kinetic and magnetic energy
-  !     w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
-  !                +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
-  !                +(^C&w(ix^D,b^C_)**2+))
-  !     ! Convert velocity to momentum
-  !     ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
-  !  {end do\}
-
-  ! end subroutine mhd_to_conserved_origin
-
-  ! !> Transform primitive variables into conservative ones
-  ! subroutine mhd_to_conserved_origin_noe(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   integer :: ix^D
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     ! Convert velocity to momentum
-  !     ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
-  !  {end do\}
-
-  ! end subroutine mhd_to_conserved_origin_noe
-
-  ! !> Transform primitive variables into conservative ones
-  ! subroutine mhd_to_conserved_hde(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   integer :: ix^D
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     ! Calculate total energy from pressure, kinetic and magnetic energy
-  !     w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
-  !                +half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
-  !     ! Convert velocity to momentum
-  !     ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
-  !  {end do\}
-
-  ! end subroutine mhd_to_conserved_hde
-
-  ! !> Transform primitive variables into conservative ones
-  ! subroutine mhd_to_conserved_inte(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   integer :: ix^D
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     ! Calculate total energy from pressure, kinetic and magnetic energy
-  !     w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1
-  !     ! Convert velocity to momentum
-  !     ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
-  !  {end do\}
-
-  ! end subroutine mhd_to_conserved_inte
-
-  ! !> Transform primitive variables into conservative ones
-  ! subroutine mhd_to_conserved_split_rho(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision :: rho
-  !   integer :: ix^D
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     rho=w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i)
-  !     ! Calculate total energy from pressure, kinetic and magnetic energy
-  !     w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
-  !                +half*((^C&w(ix^D,m^C_)**2+)*rho&
-  !                      +(^C&w(ix^D,b^C_)**2+))
-  !     ! Convert velocity to momentum
-  !     ^C&w(ix^D,m^C_)=rho*w(ix^D,m^C_)\
-  !  {end do\}
-
-  ! end subroutine mhd_to_conserved_split_rho
-
-  ! !> Transform primitive variables into conservative ones
-  ! subroutine mhd_to_conserved_semirelati(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision :: E(ixO^S,1:ndir), S(ixO^S,1:ndir)
-  !   integer :: ix^D
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     {^IFTHREEC
-  !     E(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
-  !     E(ix^D,2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
-  !     E(ix^D,3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-  !     S(ix^D,1)=E(ix^D,2)*w(ix^D,b3_)-E(ix^D,3)*w(ix^D,b2_)
-  !     S(ix^D,2)=E(ix^D,3)*w(ix^D,b1_)-E(ix^D,1)*w(ix^D,b3_)
-  !     S(ix^D,3)=E(ix^D,1)*w(ix^D,b2_)-E(ix^D,2)*w(ix^D,b1_)
-  !     }
-  !     {^IFTWOC
-  !     E(ix^D,1)=zero
-  !     ! switch 3 with 2 to add 3 when ^C from 1 to 2
-  !     E(ix^D,2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-  !     S(ix^D,1)=-E(ix^D,2)*w(ix^D,b2_)
-  !     S(ix^D,2)=E(ix^D,2)*w(ix^D,b1_)
-  !     }
-  !     {^IFONEC
-  !     E(ix^D,1)=zero
-  !     S(ix^D,1)=zero
-  !     }
-  !     if(mhd_internal_e) then
-  !       ! internal energy
-  !       w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1
-  !     else
-  !       ! equation (9)
-  !       ! Calculate total energy from internal, kinetic and magnetic energy
-  !       w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
-  !                  +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
-  !                  +(^C&w(ix^D,b^C_)**2+)&
-  !                  +(^C&e(ix^D,^C)**2+)*inv_squared_c)
-  !     end if
-
-  !     ! Convert velocity to momentum, equation (9)
-  !     ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)+S(ix^D,^C)*inv_squared_c\
-
-  !  {end do\}
-
-  ! end subroutine mhd_to_conserved_semirelati
-
-  ! subroutine mhd_to_conserved_semirelati_noe(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision :: E(ixO^S,1:ndir), S(ixO^S,1:ndir)
-  !   integer :: ix^D
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     {^IFTHREEC
-  !     E(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
-  !     E(ix^D,2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
-  !     E(ix^D,3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-  !     S(ix^D,1)=E(ix^D,2)*w(ix^D,b3_)-E(ix^D,3)*w(ix^D,b2_)
-  !     S(ix^D,2)=E(ix^D,3)*w(ix^D,b1_)-E(ix^D,1)*w(ix^D,b3_)
-  !     S(ix^D,3)=E(ix^D,1)*w(ix^D,b2_)-E(ix^D,2)*w(ix^D,b1_)
-  !     }
-  !     {^IFTWOC
-  !     E(ix^D,1)=zero
-  !     ! switch 3 with 2 to add 3 when ^C from 1 to 2
-  !     E(ix^D,2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-  !     S(ix^D,1)=-E(ix^D,2)*w(ix^D,b2_)
-  !     S(ix^D,2)=E(ix^D,2)*w(ix^D,b1_)
-  !     }
-  !     {^IFONEC
-  !     S(ix^D,1)=zero
-  !     }
-  !     ! Convert velocity to momentum, equation (9)
-  !     ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)+S(ix^D,^C)*inv_squared_c\
-
-  !  {end do\}
-
-  ! end subroutine mhd_to_conserved_semirelati_noe
-
-  ! !> Transform conservative variables into primitive ones
-  ! subroutine mhd_to_primitive_origin(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision                :: inv_rho
-  !   integer :: ix^D
-
-  !   if (fix_small_values) then
-  !     ! fix small values preventing NaN numbers in the following converting
-  !     call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_origin')
-  !   end if
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     inv_rho = 1.d0/w(ix^D,rho_)
-  !     ! Convert momentum to velocity
-  !     ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
-  !     ! Calculate pressure = (gamma-1) * (e-ek-eb)
-  !     w(ix^D,p_)=gamma_1*(w(ix^D,e_)&
-  !               -half*(w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)&
-  !                 +(^C&w(ix^D,b^C_)**2+)))
-  !  {end do\}
-
-  ! end subroutine mhd_to_primitive_origin
-
-  ! !> Transform conservative variables into primitive ones
-  ! subroutine mhd_to_primitive_origin_noe(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision                :: inv_rho
-  !   integer :: ix^D
-
-  !   if (fix_small_values) then
-  !     ! fix small values preventing NaN numbers in the following converting
-  !     call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_origin_noe')
-  !   end if
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     inv_rho = 1.d0/w(ix^D,rho_)
-  !     ! Convert momentum to velocity
-  !     ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
-  !  {end do\}
-
-  ! end subroutine mhd_to_primitive_origin_noe
-
-  ! !> Transform conservative variables into primitive ones
-  ! subroutine mhd_to_primitive_hde(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision                :: inv_rho
-  !   integer                         :: ix^D
-
-  !   if (fix_small_values) then
-  !     ! fix small values preventing NaN numbers in the following converting
-  !     call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_hde')
-  !   end if
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     inv_rho = 1d0/w(ix^D,rho_)
-  !     ! Convert momentum to velocity
-  !     ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
-  !     ! Calculate pressure = (gamma-1) * (e-ek)
-  !     w(ix^D,p_)=gamma_1*(w(ix^D,e_)-half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
-  !  {end do\}
-
-  ! end subroutine mhd_to_primitive_hde
-
-  ! !> Transform conservative variables into primitive ones
-  ! subroutine mhd_to_primitive_inte(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision                :: inv_rho
-  !   integer                         :: ix^D
-
-  !   if (fix_small_values) then
-  !     ! fix small values preventing NaN numbers in the following converting
-  !     call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_inte')
-  !   end if
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     ! Calculate pressure = (gamma-1) * e_internal
-  !     w(ix^D,p_)=w(ix^D,e_)*gamma_1
-  !     ! Convert momentum to velocity
-  !     inv_rho = 1.d0/w(ix^D,rho_)
-  !     ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
-  !  {end do\}
-
-  ! end subroutine mhd_to_primitive_inte
-
-  ! !> Transform conservative variables into primitive ones
-  ! subroutine mhd_to_primitive_split_rho(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision :: inv_rho
-  !   integer :: ix^D
-
-  !   if (fix_small_values) then
-  !     ! fix small values preventing NaN numbers in the following converting
-  !     call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_split_rho')
-  !   end if
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     inv_rho=1.d0/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
-  !     ! Convert momentum to velocity
-  !     ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
-  !     ! Calculate pressure = (gamma-1) * (e-ek-eb)
-  !     w(ix^D,p_)=gamma_1*(w(ix^D,e_)&
-  !                 -half*((w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))*&
-  !                 (^C&w(ix^D,m^C_)**2+)+(^C&w(ix^D,b^C_)**2+)))
-  !  {end do\}
-
-  ! end subroutine mhd_to_primitive_split_rho
-
-  ! !> Transform conservative variables into primitive ones
-  ! subroutine mhd_to_primitive_semirelati(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision :: b(ixO^S,1:ndir), tmp, b2, gamma2, inv_rho
-  !   integer :: ix^D
-
-  !   if (fix_small_values) then
-  !     ! fix small values preventing NaN numbers in the following converting
-  !     call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_semirelati')
-  !   end if
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     b2=(^C&w(ix^D,b^C_)**2+)
-  !     if(b2>smalldouble) then
-  !       tmp=1.d0/sqrt(b2)
-  !     else
-  !       tmp=0.d0
-  !     end if
-  !     ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-  !     tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-
-  !     inv_rho=1.d0/w(ix^D,rho_)
-  !     ! Va^2/c^2
-  !     b2=b2*inv_rho*inv_squared_c
-  !     ! equation (15)
-  !     gamma2=1.d0/(1.d0+b2)
-  !     ! Convert momentum to velocity
-  !     ^C&w(ix^D,m^C_)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
-
-  !     if(mhd_internal_e) then
-  !       ! internal energy to pressure
-  !       w(ix^D,p_)=gamma_1*w(ix^D,e_)
-  !     else
-  !       ! E=Bxv
-  !       {^IFTHREEC
-  !       b(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
-  !       b(ix^D,2)=w(ix^D,b3_)*w(ix^D,m1_)-w(ix^D,b1_)*w(ix^D,m3_)
-  !       b(ix^D,3)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-  !       }
-  !       {^IFTWOC
-  !       b(ix^D,1)=zero
-  !       b(ix^D,2)=w(ix^D,b1_)*w(ix^D,m2_)-w(ix^D,b2_)*w(ix^D,m1_)
-  !       }
-  !       {^IFONEC
-  !       b(ix^D,1)=zero
-  !       }
-  !       ! Calculate pressure = (gamma-1) * (e-eK-eB-eE)
-  !       w(ix^D,p_)=gamma_1*(w(ix^D,e_)&
-  !                  -half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
-  !                  +(^C&w(ix^D,b^C_)**2+)&
-  !                  +(^C&b(ix^D,^C)**2+)*inv_squared_c))
-  !     end if
-  !  {end do\}
-
-  ! end subroutine mhd_to_primitive_semirelati
-
-  ! !> Transform conservative variables into primitive ones
-  ! subroutine mhd_to_primitive_semirelati_noe(ixI^L,ixO^L,w,x)
-  !   use mod_global_parameters
-  !   integer, intent(in)             :: ixI^L, ixO^L
-  !   double precision, intent(inout) :: w(ixI^S, nw)
-  !   double precision, intent(in)    :: x(ixI^S, 1:ndim)
-
-  !   double precision :: b(ixO^S,1:ndir),tmp,b2,gamma2,inv_rho
-  !   integer :: ix^D, idir
-
-  !   if (fix_small_values) then
-  !     ! fix small values preventing NaN numbers in the following converting
-  !     call mhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'mhd_to_primitive_semirelati_noe')
-  !   end if
-
-  !  {do ix^DB=ixOmin^DB,ixOmax^DB\}
-  !     b2=(^C&w(ix^D,b^C_)**2+)
-  !     if(b2>smalldouble) then
-  !       tmp=1.d0/sqrt(b2)
-  !     else
-  !       tmp=0.d0
-  !     end if
-  !     ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-  !     tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-
-  !     inv_rho=1.d0/w(ix^D,rho_)
-  !     ! Va^2/c^2
-  !     b2=b2*inv_rho*inv_squared_c
-  !     ! equation (15)
-  !     gamma2=1.d0/(1.d0+b2)
-  !     ! Convert momentum to velocity
-  !     ^C&w(ix^D,m^C_)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
-  !  {end do\}
-
-  ! end subroutine mhd_to_primitive_semirelati_noe
 
   !> Transform internal energy to total energy
   subroutine mhd_ei_to_e(ixI^L,ixO^L,w,x)
@@ -2209,7 +1715,7 @@ contains
           b(ix^D,1)=zero
           }
           ! Calculate pressure = (gamma-1) * (e-eK-eB-eE)
-          pressure(ix^D)=gamma_1*(w(ix^D,e_)&
+          pressure(ix^D)=eos%gamma_minus_1*(w(ix^D,e_)&
                      -half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
                      +(^C&w(ix^D,b^C_)**2+)&
                      +(^C&b(ix^D,^C)**2+)*inv_squared_c))
@@ -2231,7 +1737,7 @@ contains
               if(flag(ix^D,e_)) w(ix^D,p_) = small_pressure
             else
               if(flag(ix^D,e_)) then
-                w(ix^D,e_)=small_pressure*inv_gamma_1+half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
+                w(ix^D,e_)=small_pressure*eos%inv_gamma_minus_1+half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
                            +(^C&w(ix^D,b^C_)**2+)+(^C&b(ix^D,^C)**2+)*inv_squared_c)
               end if
             end if
@@ -2247,7 +1753,7 @@ contains
             w(ixO^S,e_)=pressure(ixO^S)
             call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
-               w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1+half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
+               w(ix^D,e_)=w(ix^D,p_)*eos%inv_gamma_minus_1+half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
                           +(^C&w(ix^D,b^C_)**2+)+(^C&b(ix^D,^C)**2+)*inv_squared_c)
             {end do\}
           end if
@@ -2318,7 +1824,7 @@ contains
           !convert w to primitive
          {do ix^DB=ixOmin^DB,ixOmax^DB\}
             ^C&w(ix^D,m^C_)=w(ix^D,m^C_)/w(ix^D,rho_)\
-            w(ix^D,p_)=gamma_1*(w(ix^D,e_)&
+            w(ix^D,p_)=eos%gamma_minus_1*(w(ix^D,e_)&
                 -half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)))
          {end do\}
         end if
@@ -2359,7 +1865,7 @@ contains
           else
             if(flag(ix^D,e_)) &
               w(ix^D,e_)=small_e+half*((^C&w(ix^D,m^C_)**2+)/rho+(^C&w(ix^D,b^C_)**2+))&
-              -block%equi_vars(ix^D,equi_pe0_,0)*inv_gamma_1
+              -block%equi_vars(ix^D,equi_pe0_,0)*eos%inv_gamma_minus_1
           end if
        {end do\}
       case ("average")
@@ -2388,7 +1894,7 @@ contains
          {do ix^DB=ixOmin^DB,ixOmax^DB\}
             rho=w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0)
          ^C&w(ix^D,m^C_)=w(ix^D,m^C_)/rho\
-            w(ix^D,p_)=gamma_1*(w(ix^D,e_)&
+            w(ix^D,p_)=eos%gamma_minus_1*(w(ix^D,e_)&
                 -half*((^C&w(ix^D,m^C_)**2+)*rho+(^C&w(ix^D,b^C_)**2+)))
          {end do\}
         end if
@@ -2436,7 +1942,7 @@ contains
           !convert w to primitive
          {do ix^DB=ixOmin^DB,ixOmax^DB\}
             ^C&w(ix^D,m^C_)=w(ix^D,m^C_)/w(ix^D,rho_)\
-            w(ix^D,p_)=gamma_1*w(ix^D,e_)
+            w(ix^D,p_)=eos%gamma_minus_1*w(ix^D,e_)
          {end do\}
         end if
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
@@ -2524,7 +2030,7 @@ contains
           !convert w to primitive
          {do ix^DB=ixOmin^DB,ixOmax^DB\}
          ^C&w(ix^D,m^C_)=w(ix^D,m^C_)/w(ix^D,rho_)\
-            w(ix^D,p_)=gamma_1*(w(ix^D,e_)-half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_))
+            w(ix^D,p_)=eos%gamma_minus_1*(w(ix^D,e_)-half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_))
          {end do\}
         end if
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
@@ -2656,7 +2162,7 @@ contains
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        cmax(ix^D)=mhd_gamma*mhd_adiab*rho**gamma_1
+        cmax(ix^D)=eos%gamma*mhd_adiab*rho**eos%gamma_minus_1
         ! store |B|^2 in v
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
@@ -2679,7 +2185,7 @@ contains
         end if
         inv_rho=1.d0/rho
         ! sound speed**2 
-        cmax(ix^D)=mhd_gamma*mhd_adiab*rho**gamma_1
+        cmax(ix^D)=eos%gamma*mhd_adiab*rho**eos%gamma_minus_1
         ! store |B|^2 in v
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+cmax(ix^D)
@@ -2715,7 +2221,7 @@ contains
       gamma2=1.0d0/(1.d0+Alfven_speed2*inv_squared_c)
       cmax(ix^D)=1.d0-gamma2*w(ix^D,mom(idim))**2*inv_squared_c
       ! squared sound speed
-      csound=mhd_gamma*w(ix^D,p_)*inv_rho
+      csound=eos%gamma*w(ix^D,p_)*inv_rho
       idim_Alfven_speed2=w(ix^D,mag(idim))**2*inv_rho
       ! Va_hat^2+a_hat^2 equation (57)
       ! equation (69)
@@ -2746,7 +2252,7 @@ contains
       Alfven_speed2=(^C&w(ix^D,b^C_)**2+)*inv_rho
       gamma2=1.0d0/(1.d0+Alfven_speed2*inv_squared_c)
       cmax(ix^D)=1.d0-gamma2*w(ix^D,mom(idim))**2*inv_squared_c
-      csound=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
+      csound=eos%gamma*mhd_adiab*w(ix^D,rho_)**eos%gamma_minus_1
       idim_Alfven_speed2=w(ix^D,mag(idim))**2*inv_rho
       ! Va_hat^2+a_hat^2 equation (57)
       ! equation (69)
@@ -2800,12 +2306,10 @@ contains
     integer :: idims,ix^D,jxO^L,hxO^L,ixA^D,ixB^D
     integer :: jxP^L,hxP^L,ixP^L,ixQ^L
 
-    if (eos%eos_type == 'LTE') then
+    if (eos%eos_type == 'LTE' .or. mhd_partial_ionization) then
       Te(ixI^S) = w(ixI^S, Te_)
-    else if(mhd_partial_ionization) then
-      call mhd_get_temperature_from_Te(w,x,ixI^L,ixI^L,Te)
     else
-      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,Te)
+      call eos%get_Rfactor(w,x,ixI^L,ixI^L,Te)
       Te(ixI^S)=w(ixI^S,p_)/(Te(ixI^S)*w(ixI^S,rho_))
     end if
     Tco_local=zero
@@ -3438,7 +2942,7 @@ contains
         if(mhd_energy) then
           csound(ix^D)=cs2(ix^D)
         else
-          csound(ix^D)=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
+          csound(ix^D)=eos%gamma*mhd_adiab*w(ix^D,rho_)**eos%gamma_minus_1
         end if
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+csound(ix^D)
@@ -3456,7 +2960,7 @@ contains
         if(mhd_energy) then
           csound(ix^D)=cs2(ix^D)
         else
-          csound(ix^D)=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
+          csound(ix^D)=eos%gamma*mhd_adiab*w(ix^D,rho_)**eos%gamma_minus_1
         end if
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+csound(ix^D)
@@ -3490,7 +2994,7 @@ contains
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
         if(has_equi_pe0) then
-          csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
+          csound(ix^D)=eos%gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         end if
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+csound(ix^D)
@@ -3507,7 +3011,7 @@ contains
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
         if(has_equi_pe0) then
-          csound(ix^D)=mhd_gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
+          csound(ix^D)=eos%gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         end if
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+csound(ix^D)
@@ -3537,7 +3041,7 @@ contains
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho = 1.d0/w(ix^D,rho_)
       ! squared sound speed
-      csound(ix^D)=mhd_gamma*w(ix^D,p_)*inv_rho
+      csound(ix^D)=eos%gamma*w(ix^D,p_)*inv_rho
       Alfven_speed2=(^C&w(ix^D,b^C_)**2+)*inv_rho
       gamma2(ix^D) = 1.0d0/(1.d0+Alfven_speed2*inv_squared_c)
       AvMinCs2=1.d0-gamma2(ix^D)*w(ix^D,mom(idim))**2*inv_squared_c
@@ -3568,7 +3072,7 @@ contains
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho = 1.d0/w(ix^D,rho_)
       ! squared sound speed
-      csound(ix^D)=mhd_gamma*mhd_adiab*w(ix^D,rho_)**gamma_1
+      csound(ix^D)=eos%gamma*mhd_adiab*w(ix^D,rho_)**eos%gamma_minus_1
       Alfven_speed2=(^C&w(ix^D,b^C_)**2+)*inv_rho
       gamma2(ix^D) = 1.0d0/(1.d0+Alfven_speed2*inv_squared_c)
       AvMinCs2=1.d0-gamma2(ix^D)*w(ix^D,mom(idim))**2*inv_squared_c
@@ -3584,320 +3088,15 @@ contains
 
   end subroutine mhd_get_csound_semirelati_noe
 
-  !> Calculate isothermal thermal pressure
-  subroutine mhd_get_pthermal_noe(w,x,ixI^L,ixO^L,pth)
-    use mod_global_parameters
+  ! Thermal pressure subroutines (mhd_get_pthermal_noe, _inte, _origin,
+  ! _semirelati, _hde, _LTE) are defined in mod_mhd_eos.t.
+  ! The mhd_get_pthermal pointer is set by mhd_link_eos.
 
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: pth(ixI^S)
 
-    if(has_equi_rho0) then
-      pth(ixO^S)=mhd_adiab*(w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,0))**mhd_gamma
-    else 
-      pth(ixO^S)=mhd_adiab*w(ixO^S,rho_)**mhd_gamma
-    end if
+  ! Temperature subroutines (mhd_get_temperature_from_Te, _from_eint,
+  ! _from_etot, _with_equi, _equi) are defined in mod_mhd_eos.t.
+  ! The mhd_get_temperature pointer is set by mhd_link_eos.
 
-  end subroutine mhd_get_pthermal_noe
-
-  !> Calculate thermal pressure from internal energy
-  subroutine mhd_get_pthermal_inte(w,x,ixI^L,ixO^L,pth)
-    use mod_global_parameters
-    use mod_small_values, only: trace_small_values
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: pth(ixI^S)
-
-    integer :: iw, ix^D
-
-   {do ix^DB= ixOmin^DB,ixOmax^DB\}
-      if(has_equi_pe0) then
-        pth(ix^D)=gamma_1*w(ix^D,e_)+block%equi_vars(ix^D,equi_pe0_,0)
-      else
-        pth(ix^D)=gamma_1*w(ix^D,e_)
-      end if
-      if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
-   {end do\}
-
-    if(check_small_values.and..not.fix_small_values) then
-     {do ix^DB= ixOmin^DB,ixOmax^DB\}
-        if(pth(ix^D)<small_pressure) then
-          write(*,*) "Error: small value of gas pressure",pth(ix^D),&
-               " encountered when call mhd_get_pthermal_inte"
-          write(*,*) "Iteration: ", it, " Time: ", global_time
-          write(*,*) "Location: ", x(ix^D,:)
-          write(*,*) "Cell number: ", ix^D
-          do iw=1,nw
-            write(*,*) trim(cons_wnames(iw)),": ",w(ix^D,iw)
-          end do
-          ! use erroneous arithmetic operation to crash the run
-          if(trace_small_values) write(*,*) sqrt(pth(ix^D)-bigdouble)
-          write(*,*) "Saving status at the previous time step"
-          crash=.true.
-        end if
-     {end do\}
-    end if
-
-  end subroutine mhd_get_pthermal_inte
-
-  !> Calculate thermal pressure=(gamma-1)*(e-0.5*m**2/rho-b**2/2) within ixO^L
-  subroutine mhd_get_pthermal_origin(w,x,ixI^L,ixO^L,pth)
-    use mod_global_parameters
-    use mod_small_values, only: trace_small_values
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: pth(ixI^S)
-
-    integer :: iw, ix^D
-
-   {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      if(has_equi_rho0) then
-        pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))&
-             +(^C&w(ix^D,b^C_)**2+)))+block%equi_vars(ix^D,equi_pe0_,0)
-      else
-        pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
-             +(^C&w(ix^D,b^C_)**2+)))
-      end if
-      if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
-   {end do\}
-
-    if(check_small_values.and..not.fix_small_values) then
-     {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        if(pth(ix^D)<small_pressure) then
-          write(*,*) "Error: small value of gas pressure",pth(ix^D),&
-               " encountered when call mhd_get_pthermal"
-          write(*,*) "Iteration: ", it, " Time: ", global_time
-          write(*,*) "Location: ", x(ix^D,:)
-          write(*,*) "Cell number: ", ix^D
-          do iw=1,nw
-            write(*,*) trim(cons_wnames(iw)),": ",w(ix^D,iw)
-          end do
-          ! use erroneous arithmetic operation to crash the run
-          if(trace_small_values) write(*,*) sqrt(pth(ix^D)-bigdouble)
-          write(*,*) "Saving status at the previous time step"
-          crash=.true.
-        end if
-     {end do\}
-    end if
-
-  end subroutine mhd_get_pthermal_origin
-
-  !> Calculate thermal pressure
-  subroutine mhd_get_pthermal_semirelati(w,x,ixI^L,ixO^L,pth)
-    use mod_global_parameters
-    use mod_small_values, only: trace_small_values
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: pth(ixI^S)
-
-    double precision :: b(ixO^S,1:ndir), v(ixO^S,1:ndir), tmp, b2, gamma2, inv_rho
-    integer :: iw, ix^D
-
-   {do ix^DB=ixOmin^DB,ixOmax^DB\}
-      b2=(^C&w(ix^D,b^C_)**2+)
-      if(b2>smalldouble) then
-        tmp=1.d0/sqrt(b2)
-      else
-        tmp=0.d0
-      end if
-      ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-      tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-
-      inv_rho=1.d0/w(ix^D,rho_)
-      ! Va^2/c^2
-      b2=b2*inv_rho*inv_squared_c
-      ! equation (15)
-      gamma2=1.d0/(1.d0+b2)
-      ! Convert momentum to velocity
-      ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
-
-      ! E=Bxv
-      {^IFTHREEC
-      b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
-      b(ix^D,2)=w(ix^D,b3_)*v(ix^D,1)-w(ix^D,b1_)*v(ix^D,3)
-      b(ix^D,3)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
-      }
-      {^IFTWOC
-      b(ix^D,1)=zero
-      b(ix^D,2)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
-      }
-      {^IFONEC
-      b(ix^D,1)=zero
-      }
-      ! Calculate pressure = (gamma-1) * (e-eK-eB-eE)
-      pth(ix^D)=gamma_1*(w(ix^D,e_)&
-                 -half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-                 +(^C&w(ix^D,b^C_)**2+)&
-                 +(^C&b(ix^D,^C)**2+)*inv_squared_c))
-      if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
-   {end do\}
-
-    if(check_small_values.and..not.fix_small_values) then
-     {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        if(pth(ix^D)<small_pressure) then
-          write(*,*) "Error: small value of gas pressure",pth(ix^D),&
-               " encountered when call mhd_get_pthermal_semirelati"
-          write(*,*) "Iteration: ", it, " Time: ", global_time
-          write(*,*) "Location: ", x(ix^D,:)
-          write(*,*) "Cell number: ", ix^D
-          do iw=1,nw
-            write(*,*) trim(cons_wnames(iw)),": ",w(ix^D,iw)
-          end do
-          ! use erroneous arithmetic operation to crash the run
-          if(trace_small_values) write(*,*) sqrt(pth(ix^D)-bigdouble)
-          write(*,*) "Saving status at the previous time step"
-          crash=.true.
-        end if
-     {end do\}
-    end if
-
-  end subroutine mhd_get_pthermal_semirelati
-
-  !> Calculate thermal pressure=(gamma-1)*(e-0.5*m**2/rho) within ixO^L
-  subroutine mhd_get_pthermal_hde(w,x,ixI^L,ixO^L,pth)
-    use mod_global_parameters
-    use mod_small_values, only: trace_small_values
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: pth(ixI^S)
-
-    integer :: iw, ix^D
-
-   {do ix^DB= ixOmin^DB,ixOmax^DB\}
-      pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)))
-      if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
-   {end do\}
-    if(check_small_values.and..not.fix_small_values) then
-      {do ix^DB= ixOmin^DB,ixOmax^DB\}
-        if(pth(ix^D)<small_pressure) then
-          write(*,*) "Error: small value of gas pressure",pth(ix^D),&
-               " encountered when call mhd_get_pthermal_hde"
-          write(*,*) "Iteration: ", it, " Time: ", global_time
-          write(*,*) "Location: ", x(ix^D,:)
-          write(*,*) "Cell number: ", ix^D
-          do iw=1,nw
-            write(*,*) trim(cons_wnames(iw)),": ",w(ix^D,iw)
-          end do
-          ! use erroneous arithmetic operation to crash the run
-          if(trace_small_values) write(*,*) sqrt(pth(ix^D)-bigdouble)
-          write(*,*) "Saving status at the previous time step"
-          crash=.true.
-        end if
-     {end do\}
-    end if
-
-  end subroutine mhd_get_pthermal_hde
-
-  !> copy temperature from stored Te variable
-  subroutine mhd_get_temperature_from_Te(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-    res(ixO^S) = w(ixO^S, Te_)
-  end subroutine mhd_get_temperature_from_Te
-
-  !> Calculate temperature=p/rho when in e_ the internal energy is stored
-  subroutine mhd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-
-    double precision :: R(ixI^S)
-
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
-  end subroutine mhd_get_temperature_from_eint
-
-  !> Calculate temperature=p/rho when in e_ the total energy is stored
-  subroutine mhd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-
-    double precision :: R(ixI^S)
-
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,res)
-    res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
-
-  end subroutine mhd_get_temperature_from_etot
-
-  subroutine mhd_get_temperature_from_etot_with_equi(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-
-    double precision :: R(ixI^S)
-
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,res)
-    res(ixO^S)=res(ixO^S)/(R(ixO^S)*(w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,b0i)))
-
-  end subroutine mhd_get_temperature_from_etot_with_equi
-
-  subroutine mhd_get_temperature_from_eint_with_equi(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-
-    double precision :: R(ixI^S)
-
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S) = (gamma_1 * w(ixO^S, e_) + block%equi_vars(ixO^S,equi_pe0_,b0i)) /&
-                ((w(ixO^S,rho_) +block%equi_vars(ixO^S,equi_rho0_,b0i))*R(ixO^S))
-
-  end subroutine mhd_get_temperature_from_eint_with_equi
-
-  subroutine mhd_get_temperature_equi(w,x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-
-    double precision :: R(ixI^S)
-
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S)= block%equi_vars(ixO^S,equi_pe0_,b0i)/(block%equi_vars(ixO^S,equi_rho0_,b0i)*R(ixO^S))
-
-  end subroutine mhd_get_temperature_equi
-
-  subroutine mhd_get_rho_equi(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-    res(ixO^S) = block%equi_vars(ixO^S,equi_rho0_,b0i)
-  end subroutine mhd_get_rho_equi
-
-  subroutine mhd_get_pe_equi(w,x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-    res(ixO^S) = block%equi_vars(ixO^S,equi_pe0_,b0i)
-  end subroutine mhd_get_pe_equi
 
   !> Calculate fluxes within ixO^L without any splitting
   subroutine mhd_get_flux(wC,w,x,ixI^L,ixO^L,idim,f)
@@ -4003,7 +3202,7 @@ contains
       ! f_i[m_k]=v_i*m_k-b_k*b_i
       ^C&f(ix^D,m^C_)=wC(ix^D,mom(idim))*w(ix^D,m^C_)-w(ix^D,mag(idim))*w(ix^D,b^C_)\
       ! normal one includes total pressure
-      f(ix^D,mom(idim))=f(ix^D,mom(idim))+mhd_adiab*w(ix^D,rho_)**mhd_gamma+half*(^C&w(ix^D,b^C_)**2+)
+      f(ix^D,mom(idim))=f(ix^D,mom(idim))+mhd_adiab*w(ix^D,rho_)**eos%gamma+half*(^C&w(ix^D,b^C_)**2+)
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
    {end do\}
@@ -4233,7 +3432,7 @@ contains
         }
         ! Get flux of total energy
         f(ix^D,e_)=w(ix^D,mom(idim))*(half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)+&
-                    mhd_gamma*w(ix^D,p_)*inv_gamma_1)+SA(ix^D,idim)
+                    eos%gamma*w(ix^D,p_)*eos%inv_gamma_minus_1)+SA(ix^D,idim)
       end if
       ! Get flux of momentum
       ^C&f(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,mom(idim))*w(ix^D,m^C_)&
@@ -4306,7 +3505,7 @@ contains
       ^C&f(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,mom(idim))*w(ix^D,m^C_)&
        -w(ix^D,mag(idim))*w(ix^D,b^C_)-E(ix^D,idim)*E(ix^D,^C)*inv_squared_c\
       ! gas pressure + magnetic pressure + electric pressure
-      f(ix^D,mom(idim))=f(ix^D,mom(idim))+mhd_adiab*w(ix^D,rho_)**mhd_gamma+half*((^C&w(ix^D,b^C_)**2+)+e2*inv_squared_c)
+      f(ix^D,mom(idim))=f(ix^D,mom(idim))+mhd_adiab*w(ix^D,rho_)**eos%gamma+half*((^C&w(ix^D,b^C_)**2+)+e2*inv_squared_c)
       ! compute flux of magnetic field
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
@@ -4785,7 +3984,7 @@ contains
     if(mhd_partial_ionization) then
       if(.not.qsourcesplit) then
         active = .true.
-        call mhd_update_temperature(ixI^L,ixO^L,wCT,w,x)
+        call phys_update_temperature(ixI^L,ixO^L,wCT,w,x)
       end if
     end if
 
@@ -4837,7 +4036,7 @@ contains
       ! Compute from primitives (FI case)
       block0: block
         double precision, dimension(ixI^S) :: R
-        call mhd_get_Rfactor(wCTprim,x,ixI^L,ixI^L,R)
+        call eos%get_Rfactor(wCTprim,x,ixI^L,ixI^L,R)
         Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
       end block block0
     end if
@@ -5068,7 +4267,7 @@ contains
 
     flag=.false.
     if(has_equi_pe0) then
-      where(w(ixO^S,ie)+block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1<small_e)&
+      where(w(ixO^S,ie)+block%equi_vars(ixO^S,equi_pe0_,0)*eos%inv_gamma_minus_1<small_e)&
              flag(ixO^S,ie)=.true.
     else
       where(w(ixO^S,ie)<small_e) flag(ixO^S,ie)=.true.
@@ -5078,7 +4277,7 @@ contains
       case ("replace")
         if(has_equi_pe0) then
           where(flag(ixO^S,ie)) w(ixO^S,ie)=small_e - &
-                  block%equi_vars(ixO^S,equi_pe0_,0)*inv_gamma_1
+                  block%equi_vars(ixO^S,equi_pe0_,0)*eos%inv_gamma_minus_1
         else
           where(flag(ixO^S,ie)) w(ixO^S,ie)=small_e
         endif
@@ -5086,7 +4285,7 @@ contains
         call small_values_average(ixI^L, ixO^L, w, x, flag, ie)
       case default
         ! small values error shows primitive variables
-        w(ixO^S,e_)=w(ixO^S,e_)*gamma_1
+        w(ixO^S,e_)=w(ixO^S,e_)*eos%gamma_minus_1
         call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
         do idir = 1, ndir
            w(ixO^S, mom(idir)) = w(ixO^S, mom(idir))/rho(ixO^S)
@@ -5097,24 +4296,6 @@ contains
 
   end subroutine mhd_handle_small_ei
 
-  subroutine mhd_update_temperature(ixI^L,ixO^L,wCT,w,x)
-    use mod_global_parameters
-    use mod_ionization_degree
-
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: w(ixI^S,1:nw)
-
-    double precision :: iz_H(ixO^S),iz_He(ixO^S), pth(ixI^S)
-
-    call ionization_degree_from_temperature(ixI^L,ixO^L,wCT(ixI^S,Te_),iz_H,iz_He)
-
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
-
-    w(ixO^S,Te_)=(2.d0+3.d0*eos%He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
-     eos%He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
-
-  end subroutine mhd_update_temperature
 
   !> Source terms after split off time-independent magnetic field
   subroutine add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x)
@@ -5958,7 +5139,7 @@ contains
         if(mhd_energy) then
           tmp=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma+half*(^C&wprim(ix^D,b^C_)**2+)
+          tmp=mhd_adiab*wprim(ix^D,rho_)**eos%gamma+half*(^C&wprim(ix^D,b^C_)**2+)
         end if
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp-&
@@ -5987,7 +5168,7 @@ contains
         if(mhd_energy) then
           tmp1=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         else
-          tmp1=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma+half*(^C&wprim(ix^D,b^C_)**2+)
+          tmp1=mhd_adiab*wprim(ix^D,rho_)**eos%gamma+half*(^C&wprim(ix^D,b^C_)**2+)
         end if
         ! m1
         {^IFONEC
@@ -6088,7 +5269,7 @@ contains
         if(mhd_energy) then
           tmp=wprim(ix^D,p_)
         else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma
+          tmp=mhd_adiab*wprim(ix^D,rho_)**eos%gamma
         end if
         ! E=Bxv
         {^IFTHREEC
@@ -6147,7 +5328,7 @@ contains
         if(mhd_energy) then
           tmp1=wprim(ix^D,p_)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
         else
-          tmp1=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
+          tmp1=mhd_adiab*wprim(ix^D,rho_)**eos%gamma+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
         end if
         ! m1
         {^IFONEC
@@ -6253,7 +5434,7 @@ contains
         if(mhd_energy) then
           tmp=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**mhd_gamma+half*(^C&wprim(ix^D,b^C_)**2+)
+          tmp=mhd_adiab*wprim(ix^D,rho_)**eos%gamma+half*(^C&wprim(ix^D,b^C_)**2+)
         end if
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp-&
@@ -7814,30 +6995,4 @@ contains
 
   end subroutine b_from_vector_potential
 
-  subroutine Rfactor_from_temperature_ionization(w,x,ixI^L,ixO^L,Rfactor)
-    use mod_global_parameters
-    use mod_ionization_degree
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,1:nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: Rfactor(ixI^S)
-
-    double precision :: iz_H(ixO^S),iz_He(ixO^S)
-
-    call ionization_degree_from_temperature(ixI^L,ixO^L,w(ixI^S,Te_),iz_H,iz_He)
-    ! assume the first and second ionization of Helium have the same degree
-    Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/(2.d0+3.d0*eos%He_abundance)
-
-  end subroutine Rfactor_from_temperature_ionization
-
-  subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
-    use mod_global_parameters
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,1:nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: Rfactor(ixI^S)
-
-    Rfactor(ixO^S)=RR
-
-  end subroutine Rfactor_from_constant_ionization
 end module mod_mhd_phys

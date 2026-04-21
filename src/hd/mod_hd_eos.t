@@ -12,7 +12,7 @@ module mod_hd_eos
     implicit none
     private
 
-    public :: hd_link_eos
+    public :: hd_link_eos, hd_get_pthermal
 
     contains
 
@@ -35,7 +35,8 @@ module mod_hd_eos
             phys_to_primitive => eos%to_primitive
             phys_to_conserved => eos%to_conserved
             phys_get_rho      => eos%get_rho
-            phys_get_pthermal => eos%get_thermal_pressure
+            phys_get_pthermal => hd_get_pthermal
+            eos%get_thermal_pressure => hd_get_pthermal
             phys_bind_eos_to_source  => bind_eos_to_source
             
             eos%p_to_e => p_to_e !> suitable for both FI and LTE
@@ -44,6 +45,9 @@ module mod_hd_eos
             if (eos%eos_type == 'LTE' .and. eos%ionE) then
                 eos%get_csound2 => hd_get_csound2_LTE
                 phys_get_gamma1 => hd_get_gamma1_LTE
+                ! EoS-aware prolongation: interpolate in (rho, v, T) space
+                phys_to_prolong   => hd_to_prolong_LTE
+                phys_from_prolong => hd_from_prolong_LTE
             else
                 eos%get_csound2 => hd_get_csound2_FI
                 phys_get_gamma1 => hd_get_gamma1_FI
@@ -203,19 +207,15 @@ module mod_hd_eos
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-            integer :: ix^D, iter, max_iter
+            integer :: ix^D
             double precision :: p_to_eint, p_over_rho
             double precision :: nH(ixI^S), nH_in(ixI^S), p_in(ixI^S)
-            double precision :: log_nH_val, log_p_target
-            double precision :: log_eint_lo, log_eint_hi, log_eint_mid
-            double precision :: T_val, y_val, log_p_eval, eint_total
-            double precision :: log_eint_guess, log_p_at_guess, margin
-            double precision :: p2eint_ratio, f_bracket
+            double precision :: log_eint_mid, eint_total
 
             if (eos%ionE) then
                 call eos%get_nH(w, x, ixI^L, ixO^L, nH)
                 nH_in(ixO^S) = dlog10(nH(ixO^S))
-                if (.not. hd_well_balanced) then
+                if (eos%p2eint_method /= 'bisect') then
                     p_in(ixO^S) = dlog10(w(ixO^S,p_)) - nH_in(ixO^S)
                 end if
             endif
@@ -240,53 +240,19 @@ module mod_hd_eos
                                 w(ix^D,e_) = eint_nH_solve * nH(ix^D) + &
                                     half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                             end block
-                        else if (hd_well_balanced) then
-                            !> WB mode: cached bisection on forward log_p table
-                            !> for exact round-trip with to_primitive_LTE.
-                            log_nH_val = nH_in(ix^D)
-                            log_p_target = dlog10(w(ix^D,p_)) - log_nH_val
-
-                            p2eint_ratio = p2eint_from_nH_p(log_nH_val, log_p_target)
-                            log_eint_guess = dlog10(p2eint_ratio) + log_p_target
-
-                            log_eint_guess = max(log_eint_guess, eos%log_p%var2_min)
-                            log_eint_guess = min(log_eint_guess, eos%log_p%var2_max)
-
-                            log_p_at_guess = log_p_from_nH_eint(log_nH_val, &
-                                log_eint_guess)
-
-                            margin = 5.0d-4
-                            if (log_p_at_guess < log_p_target) then
-                                log_eint_lo = log_eint_guess
-                                log_eint_hi = min(log_eint_guess + margin, &
-                                    eos%log_p%var2_max)
-                                f_bracket = log_p_from_nH_eint(log_nH_val, &
-                                    log_eint_hi) - log_p_target
-                            else
-                                log_eint_lo = max(log_eint_guess - margin, &
-                                    eos%log_p%var2_min)
-                                log_eint_hi = log_eint_guess
-                                f_bracket = -(log_p_from_nH_eint(log_nH_val, &
-                                    log_eint_lo) - log_p_target)
-                            end if
-
-                            if (f_bracket >= 0.0d0) then
-                                max_iter = 8
-                            else
-                                log_eint_lo = eos%log_p%var2_min
-                                log_eint_hi = eos%log_p%var2_max
-                                max_iter = 20
-                            end if
-
-                            call log_p_bisect_cached(log_nH_val, log_p_target, &
-                                log_eint_lo, log_eint_hi, max_iter, log_eint_mid)
+                        else if (eos%p2eint_method == 'bisect') then
+                            !> Bisection on forward p table: finds eint such that
+                            !> p(nH, eint) = p_target exactly. More accurate than
+                            !> the p2eint table in the ionisation zone.
+                            call eint_from_p_bisect(nH_in(ix^D), &
+                                dlog10(w(ix^D,p_)), log_eint_mid)
                             eint_total = nH(ix^D) * 10.0d0**log_eint_mid
                             eint_total = max(eint_total, &
                                 nH(ix^D) * 10.0d0**eos%T%var2_min)
                             w(ix^D,e_) = eint_total + &
                                 half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
                         else
-                            !> Standard: use p2eint table (fast)
+                            !> Standard table lookup (fast, default)
                             p_to_eint = p2eint_from_nH_p(nH_in(ix^D), p_in(ix^D))
                             w(ix^D,e_) = w(ix^D,p_)*p_to_eint + &
                                 half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
@@ -377,6 +343,66 @@ module mod_hd_eos
             timeeos_conv=timeeos_conv+(MPI_WTIME()-timeeos0)
 
         end subroutine hd_to_primitive_LTE
+
+        !> Calculate thermal pressure within ixO^L.
+        !> For energy runs delegates to eos%get_thermal_pressure; for no-energy
+        !> (isothermal) uses the adiabatic relation p = adiab * rho^gamma.
+        subroutine hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
+        use mod_global_parameters
+        use mod_physics, only: phys_get_ei
+        use mod_usr_methods, only: usr_set_pthermal
+        use mod_small_values, only: trace_small_values
+
+        integer, intent(in)          :: ixI^L, ixO^L
+        double precision, intent(in) :: w(ixI^S, 1:nw)
+        double precision, intent(in) :: x(ixI^S, 1:ndim)
+        double precision, intent(out):: pth(ixI^S)
+        integer                      :: iw, ix^D
+        double precision :: nH(ixI^S)
+
+        if (hd_energy) then
+            if (eos%eos_type == 'LTE') then
+                ! LTE: p = nH * (1 + He + ne/nH) * T from stored state
+                call eos%get_nH(w, x, ixI^L, ixO^L, nH)
+                pth(ixO^S) = nH(ixO^S) * (1.0d0 + eos%He_abundance &
+                    + (w(ixO^S,iw_ne) / nH(ixO^S))) * w(ixO^S,iw_te)
+            else
+                ! FI: p = (gamma-1) * (e - KE)
+                pth(ixO^S) = eos%gamma_minus_1 * phys_get_ei(w, ixI^L, ixO^L)
+            end if
+        else
+            if (.not. associated(usr_set_pthermal)) then
+                pth(ixO^S) = hd_adiab * w(ixO^S, rho_)**eos%gamma
+            else
+                call usr_set_pthermal(w,x,ixI^L,ixO^L,pth)
+            end if
+        end if
+
+        if (fix_small_values) then
+            {do ix^DB= ixO^LIM^DB\}
+            if(pth(ix^D)<small_pressure) then
+                pth(ix^D)=small_pressure
+            endif
+            {enddo^D&\}
+        else if (check_small_values) then
+            {do ix^DB= ixO^LIM^DB\}
+            if(pth(ix^D)<small_pressure) then
+                write(*,*) "Error: small value of gas pressure",pth(ix^D),&
+                    " encountered when call hd_get_pthermal"
+                write(*,*) "Iteration: ", it, " Time: ", global_time
+                write(*,*) "Location: ", x(ix^D,:)
+                write(*,*) "Cell number: ", ix^D
+                do iw=1,nw
+                write(*,*) trim(cons_wnames(iw)),": ",w(ix^D,iw)
+                end do
+                if(trace_small_values) write(*,*) dsqrt(pth(ix^D)-bigdouble)
+                write(*,*) "Saving status at the previous time step"
+                crash=.true.
+            end if
+            {enddo^D&\}
+        end if
+
+        end subroutine hd_get_pthermal
 
         !> Sound speed squared for FI (fully ionized / constant gamma) EoS.
         !> Expects w in primitive form: w(p_) = pressure, w(rho_) = density.
@@ -515,6 +541,85 @@ module mod_hd_eos
             {end do\}
 
         end subroutine Rfactor_from_LTE
+
+        !> Convert conserved (rho, rho*v, E) to prolong form (rho, v, T).
+        !> T is stored in the e_ slot. Interpolation in this space avoids
+        !> Jensen's inequality across the ionisation plateau.
+        subroutine hd_to_prolong_LTE(ixI^L, ixO^L, w, x)
+        use mod_eos, only: T_from_nH_eint
+        integer, intent(in)             :: ixI^L, ixO^L
+        double precision, intent(inout) :: w(ixI^S, nw)
+        double precision, intent(in)    :: x(ixI^S, 1:ndim)
+
+        double precision :: inv_rho, eint_val, nH_val, log_nH
+        integer :: ix^D
+
+        {do ix^DB=ixOmin^DB,ixOmax^DB\}
+            inv_rho = 1.d0 / w(ix^D, rho_)
+            nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
+            log_nH = dlog10(nH_val)
+
+            ! Convert momentum to velocity
+            w(ix^D, mom(1)) = w(ix^D, mom(1)) * inv_rho
+
+            ! Compute eint = E - 0.5*rho*v^2
+            eint_val = w(ix^D, e_) - half * w(ix^D, rho_) * w(ix^D, mom(1))**2
+            eint_val = max(eint_val, smalldouble)
+
+            ! Convert eint to T via EoS table
+            if (eint_val * inv_rho > eos%eint_rho_FI_threshold) then
+            ! FI bypass: T = (gamma-1)*(eint - eion*nH) / (nH * n_per_nH_FI)
+            w(ix^D, e_) = eos%gamma_minus_1 &
+                * (eint_val - eos%eion_per_nH * nH_val) &
+                / (nH_val * eos%n_per_nH_FI)
+            else
+            ! Ionisation zone: T from table
+            w(ix^D, e_) = T_from_nH_eint(log_nH, &
+                dlog10(eint_val) - log_nH)
+            end if
+        {end do\}
+
+        end subroutine hd_to_prolong_LTE
+
+        !> Convert prolong form (rho, v, T) back to conserved (rho, rho*v, E).
+        !> T is read from the e_ slot. Uses eint_nH_from_T for back-conversion.
+        subroutine hd_from_prolong_LTE(ixI^L, ixO^L, w, x)
+        use mod_eos, only: eint_nH_from_T
+        integer, intent(in)             :: ixI^L, ixO^L
+        double precision, intent(inout) :: w(ixI^S, nw)
+        double precision, intent(in)    :: x(ixI^S, 1:ndim)
+
+        double precision :: T_val, eint_val, T_FI, nH_val, log_nH
+        integer :: ix^D
+
+        T_FI = (eos%eint_rho_FI_threshold &
+            * eos%nH2rhoFactor - eos%eion_per_nH) &
+            * eos%gamma_minus_1 / eos%n_per_nH_FI
+
+        {do ix^DB=ixOmin^DB,ixOmax^DB\}
+            T_val = w(ix^D, e_)  ! T stored in e_ slot
+            nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
+            log_nH = dlog10(nH_val)
+
+            if (T_val > T_FI) then
+            ! FI: eint = nH*(n_per_nH*T/(gamma-1) + eion)
+            eint_val = nH_val &
+                * (eos%n_per_nH_FI * T_val * eos%inv_gamma_minus_1 &
+                + eos%eion_per_nH)
+            else
+            ! Ionisation zone: eint/nH from T table
+            eint_val = eint_nH_from_T(log_nH, &
+                dlog10(max(T_val, 10.0d0**eos%eint_from_T%var2_min))) &
+                * nH_val
+            end if
+
+            ! E = eint + 0.5*rho*v^2
+            w(ix^D, e_) = eint_val + half * w(ix^D, rho_) * w(ix^D, mom(1))**2
+            ! Convert velocity to momentum
+            w(ix^D, mom(1)) = w(ix^D, rho_) * w(ix^D, mom(1))
+        {end do\}
+
+        end subroutine hd_from_prolong_LTE
 
     end module mod_hd_eos
 !> Needs a line after to pass the preprocesor

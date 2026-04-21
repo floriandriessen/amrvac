@@ -12,6 +12,13 @@ module mod_mhd_eos
     implicit none
     private
 
+    !> Thermal pressure pointer: set by mhd_link_eos based on energy formulation.
+    !> Internal to mod_mhd_eos — external callers use eos%get_thermal_pressure.
+    procedure(sub_get_pthermal), pointer :: mhd_get_pthermal  => null()
+
+    !> Temperature pointer: set by mhd_link_eos based on EoS type and energy formulation.
+    procedure(sub_get_pthermal), pointer, public :: mhd_get_temperature => null()
+
     public :: mhd_link_eos
 contains
 
@@ -110,6 +117,7 @@ contains
         eos%get_Rfactor => Rfactor_from_constant_ionization
       end if
 
+
       ! === Thermal pressure routing ===
       if(mhd_internal_e) then
         phys_get_pthermal        => mhd_get_pthermal_inte
@@ -128,11 +136,13 @@ contains
         mhd_get_pthermal         => mhd_get_pthermal_noe
       end if
 
-      ! Override pthermal for LTE (delegates to eos%get_thermal_pressure at runtime)
+      ! For LTE, override with version that delegates to eos%get_thermal_pressure
       if (eos%eos_type == 'LTE') then
         phys_get_pthermal => mhd_get_pthermal_LTE
         mhd_get_pthermal  => mhd_get_pthermal_LTE
       end if
+      ! Single entry point: all callers use eos%get_thermal_pressure
+      eos%get_thermal_pressure => mhd_get_pthermal
 
       ! === Temperature routing ===
       if(mhd_partial_ionization .or. eos%eos_type == 'LTE') then
@@ -207,6 +217,13 @@ contains
         !> build_Y_mod_table checks coolmethod=='exact' and .not.isPPL
         !> internally and early-returns otherwise.
         if (eos%ionE) call build_Y_mod_table(rc_fl)
+      end if
+
+      if (allocated(te_fl_mhd)) then
+        te_fl_mhd%get_rho          => eos%get_rho
+        te_fl_mhd%get_pthermal     => eos%get_thermal_pressure
+        te_fl_mhd%get_var_Rfactor  => eos%get_Rfactor
+        te_fl_mhd%get_ne_nH        => eos%get_ne_nH
       end if
 
     end subroutine bind_eos_to_source
@@ -1154,7 +1171,7 @@ contains
 
       call ionization_degree_from_temperature(ixI^L,ixO^L,w(ixI^S,Te_),iz_H,iz_He)
       ! assume the first and second ionization of Helium have the same degree
-      Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/(2.d0+3.d0*He_abundance)
+      Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/(2.d0+3.d0*eos%He_abundance)
 
     end subroutine Rfactor_from_temperature_ionization
 
@@ -1172,9 +1189,9 @@ contains
       double precision, intent(out):: pth(ixI^S)
 
       if(has_equi_rho0) then
-        pth(ixO^S)=mhd_adiab*(w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,0))**mhd_gamma
+        pth(ixO^S)=mhd_adiab*(w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,0))**eos%gamma
       else
-        pth(ixO^S)=mhd_adiab*w(ixO^S,rho_)**mhd_gamma
+        pth(ixO^S)=mhd_adiab*w(ixO^S,rho_)**eos%gamma
       end if
 
     end subroutine mhd_get_pthermal_noe
@@ -1272,10 +1289,14 @@ contains
       double precision, intent(in) :: w(ixI^S,nw)
       double precision, intent(in) :: x(ixI^S,1:ndim)
       double precision, intent(out):: pth(ixI^S)
+      double precision :: nH(ixI^S)
 
       integer :: iw, ix^D
 
-      call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pth)
+      ! LTE: p = nH * (1 + He + ne/nH) * T from stored state variables
+      call eos%get_nH(w, x, ixI^L, ixO^L, nH)
+      pth(ixO^S) = nH(ixO^S) * (1.0d0 + eos%He_abundance &
+          + (w(ixO^S,Ne_) / nH(ixO^S))) * w(ixO^S,Te_)
 
       if(fix_small_values) then
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -1563,8 +1584,8 @@ contains
 
       call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
 
-      w(ixO^S,Te_)=(2.d0+3.d0*He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
-       He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
+      w(ixO^S,Te_)=(2.d0+3.d0*eos%He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
+       eos%He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
 
     end subroutine mhd_update_temperature
 

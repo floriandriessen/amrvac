@@ -1,6 +1,7 @@
 !> Subroutines for Roe-type Riemann solver for MHD
 module mod_mhd_roe
   use mod_mhd_phys
+  use mod_eos
   use mod_functions_bfield, only: mag
   use mod_physics_roe
 
@@ -86,8 +87,8 @@ contains
       wroe(ix^S,mag(idir))=half*(wL(ix^S,mag(idir))+wR(ix^S,mag(idir)))
     end do
     ! Use afast and aslow for pressures pL and pR
-    call mhd_get_pthermal(wL,x,ixG^LL,ix^L,afast)
-    call mhd_get_pthermal(wR,x,ixG^LL,ix^L,aslow)
+    call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L,afast)
+    call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L,aslow)
 
     if(mhd_energy) then
       wroe(ix^S,e_)=half*(afast(ix^S)+aslow(ix^S))
@@ -107,7 +108,7 @@ contains
     if(mhd_energy) then
       call eos%get_csound2(wroe, x, ixG^LL, ix^L, csound2)
     else
-      csound2(ix^S)=mhd_gamma*mhd_adiab*wroe(ix^S,rho_)**(mhd_gamma-one)
+      csound2(ix^S)=eos%gamma*mhd_adiab*wroe(ix^S,rho_)**(eos%gamma-one)
     end if
 
     ! aa=B**2/rho+a**2
@@ -303,10 +304,10 @@ contains
        case(fastRW_)
           ! These quantities will be used for all the fast and slow waves
           ! Calculate soundspeed**2 and cs**2+ca**2.
-          call mhd_get_pthermal(wL,x,ixG^LL,ix^L,cs2L)
-          cs2L(ix^S)=mhd_gamma*cs2L(ix^S)/wL(ix^S,rho_)
-          call mhd_get_pthermal(wR,x,ixG^LL,ix^L,cs2R)
-          cs2R(ix^S)=mhd_gamma*cs2R(ix^S)/wR(ix^S,rho_)
+          call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L,cs2L)
+          cs2L(ix^S)=eos%gamma*cs2L(ix^S)/wL(ix^S,rho_)
+          call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L,cs2R)
+          cs2R(ix^S)=eos%gamma*cs2R(ix^S)/wR(ix^S,rho_)
           cs2ca2L(ix^S)=cs2L(ix^S)+sum(wL(ix^S,mag(:))**2,dim=ndim+1)/wL(ix^S,rho_)
           cs2ca2R(ix^S)=cs2R(ix^S)+sum(wR(ix^S,mag(:))**2,dim=ndim+1)/wR(ix^S,rho_)
           ! Save the discriminants into cs2L and cs2R
@@ -391,7 +392,7 @@ contains
       if(il==fastRW_)then
         ! Store 0.5*v**2+(2-gamma)/(gamma-1)*a**2
         v2a2(ix^S)=half*sum(wroe(ix^S,mom(:))**2,dim=ndim+1)+ &
-             (two-mhd_gamma)/(mhd_gamma-one)*csound2(ix^S)
+             (two-eos%gamma)/(eos%gamma-one)*csound2(ix^S)
         ! Store sgn(bx)*(betay*vy+betaz*vz) in bv
         bv(ix^S)=wroe(ix^S,mag(idir))*wroe(ix^S,mom(idir))
         if(ndir==3)bv(ix^S)=bv(ix^S)+wroe(ix^S,mag(jdir))*wroe(ix^S,mom(jdir))

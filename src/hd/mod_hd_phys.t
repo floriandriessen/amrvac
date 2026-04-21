@@ -75,11 +75,7 @@ module mod_hd_phys
   !> Index into wextra for escape probability column mass
   integer, public, protected              :: iw_colmass = -1
 
-  !> The adiabatic index
-  double precision, public                :: hd_gamma = 5.d0/3.0d0
-
-  !> gamma minus one and its inverse
-  double precision :: gamma_1, inv_gamma_1
+  !> gamma is set in &eos_list and accessed via eos%gamma
 
   !> The adiabatic constant
   double precision, public                :: hd_adiab = 1.0d0
@@ -111,7 +107,7 @@ module mod_hd_phys
   integer, public :: equi_e0_ = -1
 
   !> Helium abundance over Hydrogen
-  double precision, public, protected  :: He_abundance=0.1d0
+  !> He_abundance is set in &eos_list and accessed via eos%He_abundance
   !> Ionization fraction of H
   !> H_ion_fr = H+/(H+ + H)
   double precision, public, protected  :: H_ion_fr=1d0
@@ -134,7 +130,6 @@ module mod_hd_phys
   ! Public methods
   public :: hd_phys_init
   public :: hd_kin_en
-  public :: hd_get_pthermal
   public :: hd_get_csound2
   ! public :: hd_to_conserved
   ! public :: hd_to_primitive
@@ -150,9 +145,9 @@ contains
     character(len=*), intent(in) :: files(:)
     integer                      :: n
 
-    namelist /hd_list/ hd_energy, hd_n_tracer, hd_gamma, hd_adiab, &
+    namelist /hd_list/ hd_energy, hd_n_tracer, hd_adiab, &
     hd_dust, hd_thermal_conduction, hd_radiative_cooling, hd_viscosity, &
-    hd_gravity, He_abundance,H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
+    hd_gravity, H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
     hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_trac_delta, hd_trac_v_thresh, hd_cak_force, &
     hd_partial_ionization, hd_well_balanced
@@ -178,7 +173,7 @@ contains
     call MPI_FILE_WRITE(fh, n_par, 1, MPI_INTEGER, st, er)
 
     names(1) = "gamma"
-    values(1) = hd_gamma
+    values(1) = eos%gamma
     call MPI_FILE_WRITE(fh, values, n_par, MPI_DOUBLE_PRECISION, st, er)
     call MPI_FILE_WRITE(fh, names, n_par * name_len, MPI_CHARACTER, st, er)
   end subroutine hd_write_info
@@ -294,7 +289,7 @@ contains
     ! phys_to_primitive        => hd_to_primitive
     phys_check_params        => hd_check_params
     phys_check_w             => hd_check_w
-    phys_get_pthermal        => hd_get_pthermal
+    ! phys_get_pthermal is set by hd_link_eos
     phys_get_v               => hd_get_v
     ! phys_get_rho             => hd_get_rho
     phys_write_info          => hd_write_info
@@ -419,6 +414,10 @@ contains
         phys_wb_transform => hd_wb_transform
         phys_wb_inverse   => hd_wb_inverse
         phys_wb_prolong   => hd_wb_prolong
+        if (eos%ionE .and. eos%p2eint_method /= 'bisect') then
+          eos%p2eint_method = 'bisect'
+          if(mype==0) write(*,*) 'WB + ionE: forcing p2eint_method = bisect'
+        end if
         if(mype==0) write(*,*) 'Well-balanced reconstruction enabled'
       end if
     end if
@@ -538,10 +537,11 @@ contains
       type(tc_fluid), intent(inout) :: fl
       integer                      :: n
       logical :: tc_saturate=.false.
+      logical :: tc_patch_eint=.false.
       double precision :: tc_k_para=0d0
       double precision :: trac_T_floor=1.d4
 
-      namelist /tc_list/ tc_saturate, tc_k_para, trac_T_floor
+      namelist /tc_list/ tc_saturate, tc_k_para, trac_T_floor, tc_patch_eint
 
       do n = 1, size(par_files)
          open(unitpar, file=trim(par_files(n)), status="old")
@@ -549,6 +549,7 @@ contains
 111      close(unitpar)
       end do
       fl%tc_saturate = tc_saturate
+      fl%tc_patch_eint = tc_patch_eint
       fl%tc_k_para = tc_k_para
       fl%trac_T_floor = trac_T_floor / unit_temperature
 
@@ -591,9 +592,6 @@ contains
       !> Add cooling source in a split way (.true.) or un-split way (.false.)
       logical    :: rc_split=.false.
 
-      !> Density cap: losses zeroed where rho > rho_cap (code units). Default: disabled.
-      double precision :: rho_cap=bigdouble
-
       !> Master switch for radiative loss modification (spatial + density taper)
       logical :: rad_modify=.false.
       !> Apply spatial taper at both boundaries (default: lower only)
@@ -606,10 +604,9 @@ contains
       double precision :: rad_taper_rho=bigdouble
       !> Density taper: Gaussian decay width
       double precision :: rad_taper_dey=0.0d0
-      !> Suppress only the low-T DM extension within the rad_modify region.
-      !> Cells inside rad_cut_hgt with T below the non-DM curve minimum
-      !> get zero cooling; coronal cooling above that T is unaffected.
-      logical :: rad_suppress_DM=.false.
+      !> Suppress cooling below this temperature (Kelvin) within rad_cut_hgt.
+      !> Cells inside rad_cut_hgt with T < rad_suppress_temp get factor=0.
+      double precision :: rad_suppress_temp=0.0d0
       !> Enable escape probability cooling modification
       logical :: rad_escape_prob=.false.
       !> Effective opacity for escape probability (code units)
@@ -629,7 +626,7 @@ contains
       integer :: rc_Y_mod_N_sub=16
 
       namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, &
-          rho_cap, rad_modify, rad_modify_sym, rad_suppress_DM, &
+          rad_modify, rad_modify_sym, rad_suppress_temp, &
           rad_cut_hgt, rad_cut_dey, rad_taper_rho, rad_taper_dey, &
           rad_escape_prob, rad_kappa_eff, rad_kappa_Tcutoff, rad_kappa_alpha, &
           rad_escape_type, rad_escape_tau_cutoff, rad_escape_height, &
@@ -648,10 +645,9 @@ contains
       fl%Tfix=Tfix
       fl%rc_split=rc_split
       fl%cfrac=cfrac
-      fl%rho_cap=rho_cap
       fl%rad_modify=rad_modify
       fl%rad_modify_sym=rad_modify_sym
-      fl%rad_suppress_DM=rad_suppress_DM
+      fl%rad_suppress_temp=rad_suppress_temp
       fl%rad_cut_hgt=rad_cut_hgt
       fl%rad_cut_dey=rad_cut_dey
       fl%rad_taper_rho=rad_taper_rho
@@ -682,7 +678,7 @@ contains
        ! For LTE+ionE, this floor excludes ionisation energy. At tlow (~1000 K)
        ! ionisation is negligible, so the thermal-only floor is adequate.
        small_e = small_pressure/(eos%gamma - 1.0d0)
-       inv_gamma_1=1.d0/(eos%gamma-1.d0)
+       ! gamma_minus_1 and inv_gamma_minus_1 are set by eos_init
     end if
 
     if (hd_dust) call dust_check_params()
@@ -1106,7 +1102,7 @@ contains
         ! Threshold: ignore enthalpy flux for subsonic sloshing (v < v_thresh*cs)
         ! to prevent feedback-driven Tcoff asymmetry from machine-precision seeds.
         v_abs = abs(w(ix1,m1_))
-        v_thresh = hd_trac_v_thresh * dsqrt(hd_gamma * w(ix1,p_) / w(ix1,rho_))
+        v_thresh = hd_trac_v_thresh * dsqrt(eos%gamma * w(ix1,p_) / w(ix1,rho_))
         a_coeff = 2.5d0 * w(ix1,p_) * max(v_abs - v_thresh, 0.d0) / Te(ix1)
 
         ! Radiative cooling: n_e * n_H * Lambda(T)
@@ -1390,56 +1386,6 @@ contains
 
   end subroutine hd_get_csound2
 
-  !> Calculate thermal pressure=(gamma-1)*(e-0.5*m**2/rho) within ixO^L
-  subroutine hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
-    use mod_global_parameters
-    use mod_usr_methods, only: usr_set_pthermal
-    use mod_small_values, only: trace_small_values
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: pth(ixI^S)
-    integer                      :: iw, ix^D
-
-    if (hd_energy) then
-      !  pth(ixO^S) = (hd_gamma - 1.0d0) * (w(ixO^S, e_) - &
-      !       hd_kin_en(w, ixI^L, ixO^L))
-      call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, pth)
-    else
-       if (.not. associated(usr_set_pthermal)) then
-          pth(ixO^S) = hd_adiab * w(ixO^S, rho_)**eos%gamma
-       else
-          call usr_set_pthermal(w,x,ixI^L,ixO^L,pth)
-       end if
-    end if
-
-    if (fix_small_values) then
-      {do ix^DB= ixO^LIM^DB\}
-         if(pth(ix^D)<small_pressure) then
-            pth(ix^D)=small_pressure
-         endif
-      {enddo^D&\}
-    else if (check_small_values) then
-      {do ix^DB= ixO^LIM^DB\}
-         if(pth(ix^D)<small_pressure) then
-           write(*,*) "Error: small value of gas pressure",pth(ix^D),&
-                " encountered when call hd_get_pthermal"
-           write(*,*) "Iteration: ", it, " Time: ", global_time
-           write(*,*) "Location: ", x(ix^D,:)
-           write(*,*) "Cell number: ", ix^D
-           do iw=1,nw
-             write(*,*) trim(cons_wnames(iw)),": ",w(ix^D,iw)
-           end do
-           ! use erroneous arithmetic operation to crash the run
-           if(trace_small_values) write(*,*) dsqrt(pth(ix^D)-bigdouble)
-           write(*,*) "Saving status at the previous time step"
-           crash=.true.
-         end if
-      {enddo^D&\}
-    end if
-
-  end subroutine hd_get_pthermal
 
   ! !> Calculate temperature=p/rho when in e_ the  total energy is stored
   ! subroutine hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
@@ -1497,7 +1443,7 @@ contains
         f(ix^D,e_)=w(ix^D,mom(idim))*(wC(ix^D,e_)+w(ix^D,p_))
      {end do\}
     else
-      call hd_get_pthermal(wC, x, ixI^L, ixO^L, pth)
+      call eos%get_thermal_pressure(wC, x, ixI^L, ixO^L, pth)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,rho_)=w(ix^D,mom(idim))*w(ix^D,rho_)
         ! Momentum flux is v_i*m_i, +p in direction idim
