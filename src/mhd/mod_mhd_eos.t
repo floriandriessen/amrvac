@@ -1027,24 +1027,7 @@ contains
           cs2(ix^D) = eos%gamma * p_over_rho
         else
           nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
-          if (eos%gamma1_method == 'effective') then
-            if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0 .and. iw_ne > 0) then
-              block
-                double precision :: y_loc, eint_loc
-                y_loc = w(ix^D,iw_ne) / nH_val
-                eint_loc = eos%inv_gamma_minus_1 * (1.0d0 + y_loc) * nH_val * w(ix^D,iw_te)
-                if (eos%ionE) eint_loc = eint_loc &
-                    + y_loc * eos%eion_per_nH * nH_val
-                if (eint_loc > 0.0d0) then
-                  g1 = 1.0d0 + w(ix^D,p_) / eint_loc
-                else
-                  g1 = eos%gamma
-                end if
-              end block
-            else
-              g1 = eos%gamma
-            end if
-          else if (eos%method == 'analytic') then
+          if (eos%method == 'analytic') then
             if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0) then
               g1 = gamma1_from_nH_T_analytic(nH_val, w(ix^D,iw_te))
             else
@@ -1091,24 +1074,7 @@ contains
           gamma1(ix^D) = eos%gamma
         else
           nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
-          if (eos%gamma1_method == 'effective') then
-            if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0 .and. iw_ne > 0) then
-              block
-                double precision :: y_g, eint_g
-                y_g = w(ix^D,iw_ne) / nH_val
-                eint_g = eos%inv_gamma_minus_1 * (1.0d0 + y_g) * nH_val * w(ix^D,iw_te)
-                if (eos%ionE) eint_g = eint_g &
-                    + y_g * eos%eion_per_nH * nH_val
-                if (eint_g > 0.0d0) then
-                  gamma1(ix^D) = 1.0d0 + w(ix^D,p_) / eint_g
-                else
-                  gamma1(ix^D) = eos%gamma
-                end if
-              end block
-            else
-              gamma1(ix^D) = eos%gamma
-            end if
-          else if (eos%method == 'analytic') then
+          if (eos%method == 'analytic') then
             if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0) then
               gamma1(ix^D) = gamma1_from_nH_T_analytic(nH_val, w(ix^D,iw_te))
             else
