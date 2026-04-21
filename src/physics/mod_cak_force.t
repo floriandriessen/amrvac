@@ -24,14 +24,17 @@
 !>
 !> Developed by Florian Driessen (2022)
 module mod_cak_force
-  use mod_physics, only: phys_get_pthermal, physics_type
+
+  use mod_physics,     only: phys_get_pthermal, physics_type
+  use mod_cak_opacity, only: init_cak_table, set_cak_opacity
+
   implicit none
 
   !> Line-ensemble parameters in the Gayley (1995) formalism
   real(8), public :: cak_alpha, gayley_qbar, gayley_q0
 
   !> Free-electron scattering opacity
-  real(8), public :: kappa_e
+  real(8), public :: kappae_cgs = -1.0d0
 
   !> Ray positions + weights for impact parameter and azimuthal radiation angle
   real(8), allocatable, private :: ay(:), wy(:), aphi(:), wphi(:)
@@ -45,6 +48,9 @@ module mod_cak_force
   !> To enforce a floor temperature when doing adiabatic (M)HD
   real(8), private :: tfloor
 
+  ! Telectron/Teff = 0.8 from Puls+ (2000), A&AS 141; assume Twind = Telectron
+  real(8), parameter, private :: ratio_twind_teff = 0.8d0
+
   !> Switch to choose between the 1-D CAK line force options
   integer :: cak_1d_opt
 
@@ -56,6 +62,7 @@ module mod_cak_force
 
   !> Extra slots to store quantities in w-array
   integer :: gcak1_, gcak2_, gcak3_, fdf_
+  integer, public :: alpha_, qbar_, q0_, kappae_
 
   !> To treat source term in split or unsplit (default) fashion
   logical :: cak_split=.false.
@@ -68,6 +75,12 @@ module mod_cak_force
 
   !> To activate the pure radial vector CAK line force computation
   logical :: fix_vector_force_1d=.false.
+
+  !> To compute CAK line-force parameters from LTE tables instead of constant
+  logical :: use_lte_table=.false.
+
+  !> String of the LTE table to use from src/tables/CAK_tables
+  character(len=256) :: name_lte_table=''
 
   !> Public method
   public :: set_cak_force_norm
@@ -83,9 +96,10 @@ contains
     ! Local variable
     integer :: n
 
-    namelist /cak_list/ cak_alpha, gayley_qbar, gayley_q0, kappa_e, &
+    namelist /cak_list/ cak_alpha, gayley_qbar, gayley_q0, kappae_cgs, &
          cak_1d_opt, cak_split, cak_1d_force, cak_vector_force, &
-         nphiray, nthetaray, fix_vector_force_1d
+         nphiray, nthetaray, fix_vector_force_1d, &
+         use_lte_table, name_lte_table
 
     do n = 1,size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -108,7 +122,6 @@ contains
     cak_alpha   = 0.65d0
     gayley_qbar = 2000.0d0
     gayley_q0   = 2000.0d0
-    kappa_e     = 0.34d0
     cak_1d_opt  = fdisc
     nthetaray   = 6
     nphiray     = 6
@@ -129,6 +142,24 @@ contains
 
     if (cak_split) any_source_split = .true.
 
+    if (use_lte_table) then
+      call init_cak_table(trim(name_lte_table))
+
+      select case(trim(name_lte_table))
+      ! Electron opacity = 0.2*(1+X) for a fully-ionised plasma with X the
+      ! hydrogen mass fraction
+      case('Y02400')
+        kappae_cgs = 0.34d0
+      case('Y09800')
+        kappae_cgs = 0.2d0
+      end select
+    endif
+
+    alpha_  = var_set_extravar("alpha", "alpha")
+    qbar_   = var_set_extravar("Qbar", "Qbar")
+    q0_     = var_set_extravar("Q0", "Q0")
+    kappae_ = var_set_extravar("kappae", "kappae")
+
     ! Some sanity checks
     if (slab) call mpistop('cak_init: Cartesian geometry not supported.')
 
@@ -144,6 +175,8 @@ contains
       call mpistop('cak_init: choose either 1-D or vector force')
     endif
 
+    if (kappae_cgs <= 0.0d0) call mpistop('cak_init: set input kappa_e')
+
   end subroutine cak_init
 
   !> Compute some (unitless) variables for CAK force normalisation
@@ -152,17 +185,15 @@ contains
     use mod_constants
 
     real(8), intent(in) :: rstar_cgs, twind_cgs
-    double precision :: const_kappae_local
-    const_kappae_local=0.34d0
 
     lstar_cgs = 4.0d0*dpi * rstar_cgs**2.0d0 * sigma_SB_cgs * twind_cgs**4.0d0
 
     ! Dimensionless quantities used in this module computations
-    kappae = const_kappae_local * unit_density * unit_length
+    kappae = kappae_cgs * unit_density * unit_length
     clight = const_c/unit_velocity
     lstar  = lstar_cgs/(unit_density * unit_length**5.0d0 / unit_time**3.0d0)
     rstar  = rstar_cgs/unit_length
-    tfloor = twind_cgs/unit_temperature
+    tfloor = ratio_twind_teff * twind_cgs/unit_temperature
 
   end subroutine set_cak_force_norm
   
@@ -178,16 +209,37 @@ contains
     logical, intent(inout) :: active
 
     ! Local variables
+    integer :: idir, ix^D
     real(8) :: gl(ixO^S,1:3), ge(ixO^S), ptherm(ixI^S), pmin(ixI^S)
-    integer :: idir
+    real(8) :: rho, twind
 
     ! By default add source in unsplit fashion together with the fluxes
     if (qsourcesplit .eqv. cak_split) then
 
       active = .true.
 
+      if (use_lte_table) then
+        ! Set line-statistic parameters from local density and wind temperature
+        {do ix^DB = ixO^LIM^DB\}
+          rho = wCT(ix^D,iw_rho)*unit_density
+          twind = tfloor*unit_temperature
+          call set_cak_opacity(rho,twind,w(ix^D,alpha_),w(ix^D,qbar_), &
+               w(ix^D,q0_),w(ix^D,kappae_))
+        {enddo^D&\}
+
+        ! Electron opacity from table is in cgs units
+        w(ixO^S,kappae_) = w(ixO^S,kappae_) * unit_density * unit_length
+
+      else
+        ! Constant input values
+        w(ixO^S,alpha_)  = cak_alpha
+        w(ixO^S,qbar_)   = gayley_qbar
+        w(ixO^S,q0_)     = gayley_q0
+        w(ixO^S,kappae_) = kappae
+      endif
+
       ! Thomson force
-      call get_gelectron(ixI^L,ixO^L,wCT,x,ge)
+      call get_gelectron(ixI^L,ixO^L,w,x,ge)
 
       ! CAK line force
       if (cak_1d_force) then
@@ -203,7 +255,7 @@ contains
         if (idir == 1) gl(ixO^S,idir) = gl(ixO^S,idir) + ge(ixO^S)
         
         w(ixO^S,iw_mom(idir)) = w(ixO^S,iw_mom(idir)) &
-                                + qdt * gl(ixO^S,idir) * wCT(ixO^S,iw_rho)
+             + qdt * gl(ixO^S,idir) * wCT(ixO^S,iw_rho)
                                 
         if (energy) then
           w(ixO^S,iw_e) = w(ixO^S,iw_e) + qdt * gl(ixO^S,idir) * wCT(ixO^S,iw_mom(idir))
@@ -249,20 +301,20 @@ contains
     endif
   
     ! Thomson force
-    call get_gelectron(ixI^L,ixO^L,wCT,x,ge)
+    call get_gelectron(ixI^L,ixO^L,w,x,ge)
 
     ! Sobolev optical depth for line ensemble (tau = Qbar * t_r) and the force
     select case (cak_1d_opt)
     case(radstream, fdisc)
-      taus(ixO^S) = gayley_qbar*kappae*clight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
-      gcak(ixO^S,1) = gayley_qbar/(1.0d0 - cak_alpha) * ge(ixO^S) &
-           / taus(ixO^S)**cak_alpha
+      taus(ixO^S) = w(ixO^S,qbar_)*w(ixO^S,kappae_)*clight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
+      gcak(ixO^S,1) = w(ixO^S,qbar_)/(1.0d0 - w(ixO^S,alpha_)) * ge(ixO^S) &
+           / taus(ixO^S)**w(ixO^S,alpha_)
 
     case(fdisc_cutoff)
-      taus(ixO^S)   = gayley_q0*kappae*clight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
-      gcak(ixO^S,1) = gayley_qbar * ge(ixO^S) &
-           * ( (1.0d0 + taus(ixO^S))**(1.0d0 - cak_alpha) - 1.0d0 ) &
-           / ( (1.0d0 - cak_alpha) * taus(ixO^S) )
+      taus(ixO^S)   = w(ixO^S,q0_)*w(ixO^S,kappae_)*clight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
+      gcak(ixO^S,1) = w(ixO^S,qbar_) * ge(ixO^S) &
+           * ( (1.0d0 + taus(ixO^S))**(1.0d0 - w(ixO^S,alpha_)) - 1.0d0 ) &
+           / ( (1.0d0 - w(ixO^S,alpha_)) * taus(ixO^S) )
     end select
 
     ! Finite disk factor parameterisation (Owocki & Puls 1996)
@@ -274,15 +326,15 @@ contains
       fdfac(ixO^S) = 1.0d0
     case(fdisc, fdisc_cutoff)
       where (beta_fd(ixO^S) >= 1.0d0)
-        fdfac(ixO^S) = 1.0d0/(1.0d0 + cak_alpha)
+        fdfac(ixO^S) = 1.0d0/(1.0d0 + w(ixO^S,alpha_))
       elsewhere (beta_fd(ixO^S) < -1.0d10)
-        fdfac(ixO^S) = abs(beta_fd(ixO^S))**cak_alpha / (1.0d0 + cak_alpha)
+        fdfac(ixO^S) = abs(beta_fd(ixO^S))**w(ixO^S,alpha_) / (1.0d0 + w(ixO^S,alpha_))
       elsewhere (abs(beta_fd(ixO^S)) > 1.0d-3)
-        fdfac(ixO^S) = (1.0d0 - (1.0d0 - beta_fd(ixO^S))**(1.0d0 + cak_alpha)) &
-             / (beta_fd(ixO^S)*(1.0d0 + cak_alpha))
+        fdfac(ixO^S) = (1.0d0 - (1.0d0 - beta_fd(ixO^S))**(1.0d0 + w(ixO^S,alpha_))) &
+             / (beta_fd(ixO^S)*(1.0d0 + w(ixO^S,alpha_)))
       elsewhere
-        fdfac(ixO^S) = 1.0d0 - 0.5d0*cak_alpha*beta_fd(ixO^S) &
-             * (1.0d0 + 1.0d0/3.0d0 * (1.0d0 - cak_alpha)*beta_fd(ixO^S))
+        fdfac(ixO^S) = 1.0d0 - 0.5d0*w(ixO^S,alpha_)*beta_fd(ixO^S) &
+             * (1.0d0 + 1.0d0/3.0d0 * (1.0d0 - w(ixO^S,alpha_))*beta_fd(ixO^S))
       endwhere
     end select
 
@@ -452,7 +504,7 @@ contains
     real(8), intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
     real(8), intent(out):: ge(ixO^S)
 
-    ge(ixO^S) = kappae * lstar/(4.0d0*dpi * clight * x(ixO^S,1)**2.0d0)
+    ge(ixO^S) = w(ixO^S,kappae_) * lstar/(4.0d0*dpi * clight * x(ixO^S,1)**2.0d0)
 
   end subroutine get_gelectron
 

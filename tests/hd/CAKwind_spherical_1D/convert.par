@@ -14,19 +14,15 @@
   level_io      = 1
 /
 
-&stoplist
-  time_max = 1.0d0
-/
-
 &methodlist
-  time_stepper = 'threestep'
+  time_stepper = 'twostep'
   flux_scheme  = 'tvdlf'
-  limiter      = 'minmod'
+  limiter      = 'vanleer'
 /
 
 &boundlist
   typeboundary_min1 = 2*'special'
-  typeboundary_max1 = 2*'cont'
+  typeboundary_max1 = 2*'special'
 /
 
 &meshlist
@@ -52,9 +48,12 @@
 &cak_list
   cak_alpha    = 0.65d0
   gayley_qbar  = 2000.0d0
-  gayley_q0    = 2000.0d0 
+  gayley_q0    = 2000.0d0
+  kappae_cgs   = 0.34d0
   cak_1d_force = .true.
   cak_1d_opt   = 1
+  use_lte_table  = .false.
+  name_lte_table = 'Y02400'
 /
 
 &star_list
@@ -62,5 +61,5 @@
   rstar_sol    = 20.0d0
   twind_cgs    = 4.0d4
   rhobound_cgs = 2.0d-11
-  beta         = 0.5d0
+  beta         = 0.8d0
 /
