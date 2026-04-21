@@ -160,19 +160,18 @@ contains
                 " (expected 'tables' or 'analytic')")
         end if
         if (eos%gamma1_method /= 'exact' .and. eos%gamma1_method /= 'effective' &
-            .and. eos%gamma1_method /= 'approx_table' &
             .and. eos%gamma1_method /= 'constant') then
             call mpistop("Unknown gamma1_method: "//trim(eos%gamma1_method)// &
-                " (expected 'exact', 'approx_table', 'effective', or 'constant')")
+                " (expected 'exact', 'effective', or 'constant')")
         end if
         if (eos%inversion /= 'bisect' .and. eos%inversion /= 'newton') then
             call mpistop("Unknown lte_h_inversion: "//trim(eos%inversion)// &
                 " (expected 'bisect' or 'newton')")
         end if
-        ! approx_table only meaningful with table-based EoS
-        if (eos%method == 'analytic' .and. eos%gamma1_method == 'approx_table') then
+        ! effective gamma1 requires table-based EoS (needs T, neOnH tables to build gamma_eff table)
+        if (eos%method == 'analytic' .and. eos%gamma1_method == 'effective') then
             if (mype == 0) write(*,*) &
-                "WARNING: gamma1_method='approx_table' not applicable with analytic EoS."
+                "WARNING: gamma1_method='effective' not applicable with analytic EoS."
             if (mype == 0) write(*,*) &
                 "         Falling back to gamma1_method='exact' (analytic 2D table)."
             eos%gamma1_method = 'exact'
@@ -184,11 +183,11 @@ contains
                 write(*,*) "  reduces to ideal gas. Consider eos_type='FI'."
             end if
         end if
-        ! effective gamma1 with LTE+ionE will use constant gamma -- warn
+        ! effective gamma1: table built with gamma_eff = 1 + p/eint approximation
         if (eos%eos_type == 'LTE' .and. eos%ionE .and. &
             eos%gamma1_method == 'effective') then
             if (mype == 0) write(*,*) &
-                "NOTE: gamma1_method='effective' uses constant gamma for sound speed."
+                "NOTE: gamma1_method='effective' builds gamma_eff = 1+p/eint table."
         end if
 
     end subroutine eos_read_params
@@ -208,7 +207,6 @@ contains
                 call load_lte_tables("neOnH")
                 if (eos%ionE) then
                     call load_lte_tables("p2eint")
-                    call try_load_lte_tables("gamma1")
                     call try_load_lte_tables("eint_from_T")
                 endif
             end if
@@ -264,15 +262,9 @@ contains
                             eos%p2eint%var2_max = eos%p2eint%var2_max - dlog10(unit_pressure/unit_numberdensity)
                         end if
 
-                        if (allocated(eos%gamma1%table)) then
-                            eos%gamma1%var1_min = eos%gamma1%var1_min - dlog10(unit_numberdensity)
-                            eos%gamma1%var1_max = eos%gamma1%var1_max - dlog10(unit_numberdensity)
-                            eos%gamma1%var2_min = eos%gamma1%var2_min - dlog10(unit_pressure/unit_numberdensity)
-                            eos%gamma1%var2_max = eos%gamma1%var2_max - dlog10(unit_pressure/unit_numberdensity)
-                            if (mype == 0) write(*,*) 'Gamma1 table loaded from file'
-                        else
-                            call build_gamma1_table()
-                        endif
+                        !> Always build gamma1 from loaded T and neOnH tables
+                        !> to guarantee consistency (never use precomputed binary).
+                        call build_gamma1_table()
 
                         call build_gamma1_p_table()
                         call build_log_p_table()
@@ -1577,7 +1569,7 @@ contains
                 eint_vol = 10.0d0**x2  !> eint/nH in code units
                 p_val = T_val * (1.0d0 + eos%He_abundance + y_val)
 
-                if (eos%gamma1_method == 'approx_table') then
+                if (eos%gamma1_method == 'effective') then
                     !> Approximate: gamma_eff = 1 + p/eint_vol
                     g1_val = 1.0d0 + p_val / eint_vol
                 else
