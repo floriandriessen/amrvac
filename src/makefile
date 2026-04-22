@@ -251,6 +251,8 @@ mod_hd_eos.o: mod_eos_container.mod
 mod_hd_eos.o: mod_global_parameters.mod
 mod_hd_eos.o: mod_hd_phys.mod
 mod_hd_eos.o: mod_physics.mod
+mod_hd_eos.o: mod_radiative_cooling.mod
+mod_hd_eos.o: mod_small_values.mod
 mod_hd_eos.o: mod_timing.mod
 mod_hd_eos.o: mod_usr_methods.mod
 mod_hd_hllc.o: mod_dust.mod
@@ -281,6 +283,7 @@ mod_hd_phys.o: mod_timing.mod
 mod_hd_phys.o: mod_usr_methods.mod
 mod_hd_phys.o: mod_variables.mod
 mod_hd_phys.o: mod_viscosity.mod
+mod_hd_roe.o: mod_eos.mod
 mod_hd_roe.o: mod_global_parameters.mod
 mod_hd_roe.o: mod_hd_phys.mod
 mod_hd_roe.o: mod_physics_roe.mod
@@ -372,6 +375,7 @@ mod_mhd_eos.o: mod_global_parameters.mod
 mod_mhd_eos.o: mod_ionization_degree.mod
 mod_mhd_eos.o: mod_mhd_phys.mod
 mod_mhd_eos.o: mod_physics.mod
+mod_mhd_eos.o: mod_radiative_cooling.mod
 mod_mhd_eos.o: mod_small_values.mod
 mod_mhd_eos.o: mod_timing.mod
 mod_mhd_eos.o: mod_usr_methods.mod
@@ -405,6 +409,7 @@ mod_mhd_phys.o: mod_thermal_emission.mod
 mod_mhd_phys.o: mod_timing.mod
 mod_mhd_phys.o: mod_usr_methods.mod
 mod_mhd_phys.o: mod_viscosity.mod
+mod_mhd_roe.o: mod_eos.mod
 mod_mhd_roe.o: mod_functions_bfield.mod
 mod_mhd_roe.o: mod_global_parameters.mod
 mod_mhd_roe.o: mod_mhd_phys.mod
