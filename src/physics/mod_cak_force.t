@@ -86,6 +86,10 @@ module mod_cak_force
   !> String of the LTE table to use from src/tables/CAK_tables
   character(len=256) :: name_lte_table=''
 
+  !> Allow reading different LTE table than default in src/tables/CAK_tables
+  !> If true, name_lte_table requires absolute/relative path to file location
+  logical :: use_custom_lte_table=.false.
+
   !> Public methods for mod_hd_phys or mod_mhd_phys
   public :: cak_init
   public :: cak_add_source
@@ -109,7 +113,7 @@ contains
     namelist /cak_list/ cak_alpha, gayley_qbar, gayley_q0, kappae_cgs, &
          cak_1d_type, cak_split, cak_1d_force, cak_vector_force, &
          nphiray, nthetaray, fix_vector_force_1d, &
-         use_lte_table, name_lte_table
+         use_lte_table, name_lte_table, use_custom_lte_table
 
     do n = 1,size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -166,7 +170,7 @@ contains
     if (cak_split) any_source_split = .true.
 
     if (use_lte_table) then
-      call init_cak_table(trim(name_lte_table))
+      call init_cak_table(trim(name_lte_table), use_custom_lte_table)
 
       select case(trim(name_lte_table))
       ! Electron opacity ~= 0.2*(1+X) [cgs] for a fully-ionised plasma with X
