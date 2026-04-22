@@ -13,6 +13,7 @@ module mod_usr
   double precision :: rho1_norm,rho2_norm
   double precision :: v1_norm,v2_norm
   double precision :: T1_norm,T2_norm
+  double precision :: p1_norm,p2_norm
   double precision :: eg1_norm,eg2_norm,Er1_norm,Er2_norm
 
   ! Storing additional var in the dat file
@@ -105,8 +106,10 @@ contains
     v1_norm = v1/unit_velocity
     v2_norm = v2/unit_velocity
 
-    eg1_norm=T1_norm*rho1_norm*RR/(hd_gamma-1.0d0)+half*rho1_norm*v1_norm**2
-    eg2_norm=T2_norm*rho2_norm*RR/(hd_gamma-1.0d0)+half*rho2_norm*v2_norm**2
+    p1_norm=T1_norm*rho1_norm*RR
+    p2_norm=T2_norm*rho2_norm*RR
+    eg1_norm=p1_norm/(hd_gamma-1.0d0)+half*rho1_norm*v1_norm**2
+    eg2_norm=p2_norm/(hd_gamma-1.0d0)+half*rho2_norm*v2_norm**2
     Er1_norm = arad_norm*T1_norm**4.d0
     Er2_norm = arad_norm*T2_norm**4.d0
 
@@ -136,6 +139,14 @@ contains
   print *,'rho 1-2=',rho1,rho2
   print *,'T   1-2=',T1,T2
   print *,'v   1-2=',v1,v2
+    print *,'================================================================='
+    print*, 'RHD-fluxes: ', 'Left', ' | ', 'Right'
+    print*, 'density', rho1_norm*v1_norm, ' | ', rho2_norm*v2_norm
+    print*, 'momentum',rho1_norm*v1_norm*v1_norm+p1_norm+Er1_norm/3,' | ',rho2_norm*v2_norm*v2_norm+p2_norm+Er2_norm/3
+    print*, 'gas energy', p1_norm*v1_norm+eg1_norm*v1_norm, ' | ', p2_norm*v2_norm+eg2_norm*v2_norm
+    print*, 'radiation energy', Er1_norm*v1_norm, ' | ', Er2_norm*v2_norm
+    print*, 'total energy', (p1_norm+eg1_norm+Er1_norm)*v1_norm, ' | ', (p2_norm+eg2_norm+Er2_norm)*v2_norm
+    print *,'================================================================='
   print *,'arad_norm=',arad_norm
   print *,'c_norm=',c_norm
   print *,'const_kappae  =',const_kappae
