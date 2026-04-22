@@ -1352,16 +1352,19 @@ contains
 
   !> Calculate the square of the thermal sound speed csound2 within ixO^L.
   !> For conserved w: extracts pthermal first, then applies Gamma_1.
-  !> For LTE+IonE: computes eint from conserved state to look up Gamma_1 from table.
+  !> For LTE+IonE: look up Gamma_1 from pressure-indexed table, then cs2 = Gamma_1 * p/rho.
+  !> Uses pressure-indexed table (gamma1_from_nH_p) because pressure is continuous
+  !> at contact discontinuities, avoiding spurious gamma1 spikes from the eint-indexed table.
   subroutine hd_get_csound2(w,x,ixI^L,ixO^L,csound2)
     use mod_global_parameters
     use mod_timing
+    use mod_eos, only: gamma1_from_nH_p
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(out)   :: csound2(ixI^S)
     double precision :: pthermal(ixI^S)
-    double precision :: nH_val, eint_val, log_nH, log_eint_nH, g1
+    double precision :: nH_val, g1
     double precision :: local_t0
     integer :: ix^D
 
@@ -1370,13 +1373,9 @@ contains
 
     if (eos%ionE) then
       local_t0 = MPI_WTIME()
-      !> For LTE+IonE: compute eint from conserved state, look up Gamma_1
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        eint_val = w(ix^D,e_) - half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
         nH_val = w(ix^D,rho_) / eos%nH2rhoFactor
-        log_nH = dlog10(nH_val)
-        log_eint_nH = dlog10(eint_val) - log_nH
-        g1 = gamma1_from_nH_eint(log_nH, log_eint_nH)
+        g1 = gamma1_from_nH_p(dlog10(nH_val), dlog10(pthermal(ix^D)/nH_val))
         csound2(ix^D) = g1 * pthermal(ix^D) / w(ix^D,rho_)
       {end do\}
       timeeos_csound=timeeos_csound+(MPI_WTIME()-local_t0)
