@@ -85,11 +85,11 @@ contains
     end do
 
     ! Calculate enthalpyL, then enthalpyR, then Roe-average. Use tmp2 for pressure.
-    call hd_get_pthermal(wL,x,ixG^LL,ix^L, workroe(ixG^T, 2))
+    call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L, workroe(ixG^T, 2))
 
     wroe(ix^S,e_)    = (workroe(ix^S, 2)+wL(ix^S,e_))/wL(ix^S,rho_)
 
-    call hd_get_pthermal(wR,x,ixG^LL,ix^L, workroe(ixG^T, 2))
+    call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L, workroe(ixG^T, 2))
 
     workroe(ix^S, 2) = (workroe(ix^S, 2)+wR(ix^S,e_))/wR(ix^S,rho_)
     wroe(ix^S,e_)    = (wroe(ix^S,e_)*workroe(ix^S, 1) + workroe(ix^S, 2))/(one+workroe(ix^S, 1))
@@ -155,9 +155,9 @@ contains
        csound(ix^S)=max(eos%gamma*smalldouble/wroe(ix^S,rho_),csound(ix^S))
 
        ! Calculate (pR-pL)/c**2
-       ! To save memory we use tmp amnd tmp2 for pL and pR (hd_get_pthermal is OK)
-       call hd_get_pthermal(wL,x,ixG^LL,ix^L,tmp)
-       call hd_get_pthermal(wR,x,ixG^LL,ix^L,tmp2)
+       ! To save memory we use tmp amnd tmp2 for pL and pR (eos%get_thermal_pressure is OK)
+       call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L,tmp)
+       call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L,tmp2)
        dpperc2(ix^S)=(tmp2(ix^S)-tmp(ix^S))/csound(ix^S)
 
        !Now get the correct sound speed
@@ -188,7 +188,7 @@ contains
 
     ! Calculate "smalla" or modify "a" based on the "typeentropy" switch
     ! Put left and right eigenvalues, if needed, into tmp and tmp2
-    ! OK, since subroutines hd_get_pthermal and entropyfix do not use tmp and tmp2
+    ! OK, since subroutines eos%get_thermal_pressure and entropyfix do not use tmp and tmp2
 
     select case(typeentropy(il))
     case('yee')
@@ -197,17 +197,17 @@ contains
     case('harten','powell')
        ! Based on Harten & Hyman JCP 50, 235 and Zeeuw & Powell JCP 104,56
        if (il == soundRW_) then
-          call hd_get_pthermal(wL,x,ixG^LL,ix^L,tmp)
+          call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L,tmp)
           tmp(ix^S)=wL(ix^S,mom(idim))/wL(ix^S,rho_)&
                + sqrt(eos%gamma*tmp(ix^S)/wL(ix^S,rho_))
-          call hd_get_pthermal(wR,x,ixG^LL,ix^L,tmp2)
+          call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L,tmp2)
           tmp2(ix^S)=wR(ix^S,mom(idim))/wR(ix^S,rho_)&
                + sqrt(eos%gamma*tmp2(ix^S)/wR(ix^S,rho_))
        else if (il == soundLW_) then
-          call hd_get_pthermal(wL,x,ixG^LL,ix^L,tmp)
+          call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L,tmp)
           tmp(ix^S)=wL(ix^S,mom(idim))/wL(ix^S,rho_)&
                - sqrt(eos%gamma*tmp(ix^S)/wL(ix^S,rho_))
-          call hd_get_pthermal(wR,x,ixG^LL,ix^L,tmp2)
+          call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L,tmp2)
           tmp2(ix^S)=wR(ix^S,mom(idim))/wR(ix^S,rho_)&
                - sqrt(eos%gamma*tmp2(ix^S)/wR(ix^S,rho_))
        else
@@ -382,7 +382,7 @@ contains
 
     select case (typeaverage)
     case ('arithmetic')
-       call hd_get_pthermal(wroe,x,ixG^LL,ix^L,csound)
+       call eos%get_thermal_pressure(wroe,x,ixG^LL,ix^L,csound)
        csound(ix^S) = sqrt(eos%gamma*csound(ix^S)/wroe(ix^S,rho_))
        ! This is the original simple Roe-solver
        if (il == soundRW_) then
@@ -403,9 +403,9 @@ contains
                +(wR(ix^S,mom(idir))-wL(ix^S,mom(idir)))
        end if
     case ('roe','default')
-       call hd_get_pthermal(wroe,x,ixG^LL,ix^L,csound)
-       call hd_get_pthermal(wL,x,ixG^LL,ix^L,tmp)
-       call hd_get_pthermal(wR,x,ixG^LL,ix^L,tmp2)
+       call eos%get_thermal_pressure(wroe,x,ixG^LL,ix^L,csound)
+       call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L,tmp)
+       call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L,tmp2)
        where(abs(wL(ix^S,rho_)-wR(ix^S,rho_))<=qsmall*(wL(ix^S,rho_)+wR(ix^S,rho_)))
           csound(ix^S) = sqrt(eos%gamma*csound(ix^S)/wroe(ix^S,rho_))
        elsewhere
@@ -442,17 +442,17 @@ contains
     case('harten','powell')
        ! Based on Harten & Hyman JCP 50, 235 and Zeeuw & Powell JCP 104,56
        if (il == soundRW_) then
-          call hd_get_pthermal(wL,x,ixG^LL,ix^L,tmp)
+          call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L,tmp)
           tmp(ix^S) =wL(ix^S,mom(idim))/wL(ix^S,rho_)&
                + sqrt(eos%gamma*tmp(ix^S)/wL(ix^S,rho_))
-          call hd_get_pthermal(wR,x,ixG^LL,ix^L,tmp2)
+          call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L,tmp2)
           tmp2(ix^S)=wR(ix^S,mom(idim))/wR(ix^S,rho_)&
                + sqrt(eos%gamma*tmp2(ix^S)/wR(ix^S,rho_))
        else if (il == soundLW_) then
-          call hd_get_pthermal(wL,x,ixG^LL,ix^L,tmp)
+          call eos%get_thermal_pressure(wL,x,ixG^LL,ix^L,tmp)
           tmp(ix^S) =wL(ix^S,mom(idim))/wL(ix^S,rho_)&
                - sqrt(eos%gamma*tmp(ix^S)/wL(ix^S,rho_))
-          call hd_get_pthermal(wR,x,ixG^LL,ix^L,tmp2)
+          call eos%get_thermal_pressure(wR,x,ixG^LL,ix^L,tmp2)
           tmp2(ix^S)=wR(ix^S,mom(idim))/wR(ix^S,rho_)&
                - sqrt(eos%gamma*tmp2(ix^S)/wR(ix^S,rho_))
        else

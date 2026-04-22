@@ -46,6 +46,8 @@ module mod_hd_eos
                 eos%get_csound2 => hd_get_csound2_LTE
                 phys_get_gamma1 => hd_get_gamma1_LTE
                 ! EoS-aware prolongation: interpolate in (rho, v, T) space
+                eos%to_prolong    => hd_to_prolong_LTE
+                eos%from_prolong  => hd_from_prolong_LTE
                 phys_to_prolong   => hd_to_prolong_LTE
                 phys_from_prolong => hd_from_prolong_LTE
             else
@@ -527,7 +529,7 @@ module mod_hd_eos
         !> T is stored in the e_ slot. Interpolation in this space avoids
         !> Jensen's inequality across the ionisation plateau.
         subroutine hd_to_prolong_LTE(ixI^L, ixO^L, w, x)
-        use mod_eos, only: T_from_nH_eint
+        use mod_eos, only: T_from_nH_eint, saha_T_from_nH_eint
         integer, intent(in)             :: ixI^L, ixO^L
         double precision, intent(inout) :: w(ixI^S, nw)
         double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -541,22 +543,35 @@ module mod_hd_eos
             log_nH = dlog10(nH_val)
 
             ! Convert momentum to velocity
-            w(ix^D, mom(1)) = w(ix^D, mom(1)) * inv_rho
+            ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
 
             ! Compute eint = E - 0.5*rho*v^2
-            eint_val = w(ix^D, e_) - half * w(ix^D, rho_) * w(ix^D, mom(1))**2
+            eint_val = w(ix^D, e_) &
+                - half * w(ix^D, rho_) * (^C&w(ix^D,m^C_)**2+)
+            ! Floor eint to prevent unphysical values
+            if (eos%method /= 'analytic') then
+                eint_val = max(eint_val, nH_val * 10.0d0**eos%T%var2_min)
+            end if
             eint_val = max(eint_val, smalldouble)
 
-            ! Convert eint to T via EoS table
+            ! Convert eint to T via EoS
             if (eint_val * inv_rho > eos%eint_rho_FI_threshold) then
-            ! FI bypass: T = (gamma-1)*(eint - eion*nH) / (nH * n_per_nH_FI)
-            w(ix^D, e_) = eos%gamma_minus_1 &
-                * (eint_val - eos%eion_per_nH * nH_val) &
-                / (nH_val * eos%n_per_nH_FI)
+                ! FI bypass: T = (gamma-1)*(eint - eion*nH) / (nH * n_per_nH_FI)
+                w(ix^D, e_) = eos%gamma_minus_1 &
+                    * (eint_val - eos%eion_per_nH * nH_val) &
+                    / (nH_val * eos%n_per_nH_FI)
+            else if (eos%method == 'analytic') then
+                ! Analytical Saha: solve for T from eint
+                block
+                    double precision :: T_loc, y_loc
+                    call saha_T_from_nH_eint(nH_val, &
+                        eint_val / nH_val, T_loc, y_loc)
+                    w(ix^D, e_) = T_loc
+                end block
             else
-            ! Ionisation zone: T from table
-            w(ix^D, e_) = T_from_nH_eint(log_nH, &
-                dlog10(eint_val) - log_nH)
+                ! Ionisation zone: T from table
+                w(ix^D, e_) = T_from_nH_eint(log_nH, &
+                    dlog10(eint_val) - log_nH)
             end if
         {end do\}
 
@@ -565,7 +580,7 @@ module mod_hd_eos
         !> Convert prolong form (rho, v, T) back to conserved (rho, rho*v, E).
         !> T is read from the e_ slot. Uses eint_nH_from_T for back-conversion.
         subroutine hd_from_prolong_LTE(ixI^L, ixO^L, w, x)
-        use mod_eos, only: eint_nH_from_T
+        use mod_eos, only: eint_nH_from_T, saha_eint_from_nH_T
         integer, intent(in)             :: ixI^L, ixO^L
         double precision, intent(inout) :: w(ixI^S, nw)
         double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -583,21 +598,25 @@ module mod_hd_eos
             log_nH = dlog10(nH_val)
 
             if (T_val > T_FI) then
-            ! FI: eint = nH*(n_per_nH*T/(gamma-1) + eion)
-            eint_val = nH_val &
-                * (eos%n_per_nH_FI * T_val * eos%inv_gamma_minus_1 &
-                + eos%eion_per_nH)
+                ! FI: eint = nH*(n_per_nH*T/(gamma-1) + eion)
+                eint_val = nH_val &
+                    * (eos%n_per_nH_FI * T_val * eos%inv_gamma_minus_1 &
+                    + eos%eion_per_nH)
+            else if (eos%method == 'analytic') then
+                ! Analytical Saha: eint from T directly
+                eint_val = saha_eint_from_nH_T(nH_val, T_val) * nH_val
             else
-            ! Ionisation zone: eint/nH from T table
-            eint_val = eint_nH_from_T(log_nH, &
-                dlog10(max(T_val, 10.0d0**eos%eint_from_T%var2_min))) &
-                * nH_val
+                ! Ionisation zone: eint/nH from T table
+                eint_val = eint_nH_from_T(log_nH, &
+                    dlog10(max(T_val, 10.0d0**eos%eint_from_T%var2_min))) &
+                    * nH_val
             end if
 
             ! E = eint + 0.5*rho*v^2
-            w(ix^D, e_) = eint_val + half * w(ix^D, rho_) * w(ix^D, mom(1))**2
+            w(ix^D, e_) = eint_val &
+                + half * w(ix^D, rho_) * (^C&w(ix^D,m^C_)**2+)
             ! Convert velocity to momentum
-            w(ix^D, mom(1)) = w(ix^D, rho_) * w(ix^D, mom(1))
+            ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
         {end do\}
 
         end subroutine hd_from_prolong_LTE

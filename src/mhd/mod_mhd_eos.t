@@ -673,7 +673,7 @@ contains
     !> Uses p2eint table for LTE ionE, with FI bypass for hot cells.
     subroutine mhd_p_to_e(ixI^L,ixO^L,w,x)
       use mod_global_parameters
-      use mod_eos, only: p2eint_from_nH_p, saha_p_to_T
+      use mod_eos, only: p2eint_from_nH_p, saha_p_to_T, eint_from_p_bisect
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(inout) :: w(ixI^S, nw)
       double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -682,11 +682,12 @@ contains
       double precision :: p_to_eint, p_over_rho
       double precision :: nH(ixI^S), nH_in(ixI^S), p_in(ixI^S)
       double precision :: T_solve, y_solve, eint_nH_solve
+      double precision :: log_eint_mid, eint_total
 
       if (eos%ionE) then
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
-        if (eos%method /= 'analytic') then
-          nH_in(ixO^S) = dlog10(nH(ixO^S))
+        nH_in(ixO^S) = dlog10(nH(ixO^S))
+        if (eos%p2eint_method /= 'bisect') then
           p_in(ixO^S) = dlog10(w(ixO^S,p_)) - nH_in(ixO^S)
         end if
       endif
@@ -698,20 +699,35 @@ contains
           if (p_over_rho > eos%p_rho_FI_threshold) then
             p_to_eint = eos%inv_gamma_minus_1 &
                 + eos%eion_per_nH * nH(ix^D) / w(ix^D,p_)
+            w(ix^D,e_)=w(ix^D,p_)*p_to_eint&
+                      +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
+                      +(^C&w(ix^D,b^C_)**2+))
           else if (eos%method == 'analytic') then
             call saha_p_to_T(nH(ix^D), w(ix^D,p_), &
                 T_solve, y_solve, eint_nH_solve)
             w(ix^D,e_) = eint_nH_solve * nH(ix^D) &
                 +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
                 +(^C&w(ix^D,b^C_)**2+))
-            cycle
+          else if (eos%p2eint_method == 'bisect') then
+            call eint_from_p_bisect(nH_in(ix^D), &
+                dlog10(w(ix^D,p_)), log_eint_mid)
+            eint_total = nH(ix^D) * 10.0d0**log_eint_mid
+            eint_total = max(eint_total, &
+                nH(ix^D) * 10.0d0**eos%T%var2_min)
+            w(ix^D,e_) = eint_total + &
+                half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
+                +(^C&w(ix^D,b^C_)**2+))
           else
             p_to_eint = p2eint_from_nH_p(nH_in(ix^D), p_in(ix^D))
+            w(ix^D,e_)=w(ix^D,p_)*p_to_eint&
+                      +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
+                      +(^C&w(ix^D,b^C_)**2+))
           end if
+        else
+          w(ix^D,e_)=w(ix^D,p_)*p_to_eint&
+                    +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
+                    +(^C&w(ix^D,b^C_)**2+))
         end if
-        w(ix^D,e_)=w(ix^D,p_)*p_to_eint&
-                  +half*((^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)&
-                  +(^C&w(ix^D,b^C_)**2+))
       {end do\}
 
     end subroutine mhd_p_to_e
@@ -720,7 +736,7 @@ contains
     !> Uses p2eint table for LTE ionE, with FI bypass for hot cells.
     subroutine mhd_p_to_eint(ixI^L,ixO^L,w,x)
       use mod_global_parameters
-      use mod_eos, only: p2eint_from_nH_p, saha_p_to_T
+      use mod_eos, only: p2eint_from_nH_p, saha_p_to_T, eint_from_p_bisect
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(inout) :: w(ixI^S, nw)
       double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -729,11 +745,12 @@ contains
       double precision :: p_to_eint, p_over_rho
       double precision :: nH(ixI^S), nH_in(ixI^S), p_in(ixI^S)
       double precision :: T_solve, y_solve, eint_nH_solve
+      double precision :: log_eint_mid, eint_total
 
       if (eos%ionE) then
         call eos%get_nH(w, x, ixI^L, ixO^L, nH)
-        if (eos%method /= 'analytic') then
-          nH_in(ixO^S) = dlog10(nH(ixO^S))
+        nH_in(ixO^S) = dlog10(nH(ixO^S))
+        if (eos%p2eint_method /= 'bisect') then
           p_in(ixO^S) = dlog10(w(ixO^S,p_)) - nH_in(ixO^S)
         end if
       endif
@@ -745,16 +762,25 @@ contains
           if (p_over_rho > eos%p_rho_FI_threshold) then
             p_to_eint = eos%inv_gamma_minus_1 &
                 + eos%eion_per_nH * nH(ix^D) / w(ix^D,p_)
+            w(ix^D,e_) = w(ix^D,p_) * p_to_eint
           else if (eos%method == 'analytic') then
             call saha_p_to_T(nH(ix^D), w(ix^D,p_), &
                 T_solve, y_solve, eint_nH_solve)
             w(ix^D,e_) = eint_nH_solve * nH(ix^D)
-            cycle
+          else if (eos%p2eint_method == 'bisect') then
+            call eint_from_p_bisect(nH_in(ix^D), &
+                dlog10(w(ix^D,p_)), log_eint_mid)
+            eint_total = nH(ix^D) * 10.0d0**log_eint_mid
+            eint_total = max(eint_total, &
+                nH(ix^D) * 10.0d0**eos%T%var2_min)
+            w(ix^D,e_) = eint_total
           else
             p_to_eint = p2eint_from_nH_p(nH_in(ix^D), p_in(ix^D))
+            w(ix^D,e_) = w(ix^D,p_) * p_to_eint
           end if
+        else
+          w(ix^D,e_) = w(ix^D,p_) * p_to_eint
         end if
-        w(ix^D,e_)=w(ix^D,p_)*p_to_eint
       {end do\}
 
     end subroutine mhd_p_to_eint
@@ -1021,26 +1047,30 @@ contains
 
       timeeos0 = MPI_WTIME()
 
-      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        p_over_rho = w(ix^D, p_) / w(ix^D, rho_)
-        if (p_over_rho > eos%p_rho_FI_threshold) then
-          cs2(ix^D) = eos%gamma * p_over_rho
-        else
-          nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
-          if (eos%method == 'analytic') then
-            if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0) then
-              g1 = gamma1_from_nH_T_analytic(nH_val, w(ix^D,iw_te))
-            else
-              g1 = eos%gamma
-            end if
+      if (eos%gamma1_method == 'constant') then
+        cs2(ixO^S) = eos%gamma * w(ixO^S, p_) / w(ixO^S, rho_)
+      else
+        {do ix^DB=ixOmin^DB,ixOmax^DB\}
+          p_over_rho = w(ix^D, p_) / w(ix^D, rho_)
+          if (p_over_rho > eos%p_rho_FI_threshold) then
+            cs2(ix^D) = eos%gamma * p_over_rho
           else
-            log_nH = dlog10(nH_val)
-            log_p_nH = dlog10(w(ix^D, p_) / nH_val)
-            g1 = gamma1_from_nH_p(log_nH, log_p_nH)
+            nH_val = w(ix^D, rho_) / eos%nH2rhoFactor
+            if (eos%method == 'analytic') then
+              if (iw_te > 0 .and. w(ix^D,iw_te) > 0.0d0) then
+                g1 = gamma1_from_nH_T_analytic(nH_val, w(ix^D,iw_te))
+              else
+                g1 = eos%gamma
+              end if
+            else
+              log_nH = dlog10(nH_val)
+              log_p_nH = dlog10(w(ix^D, p_) / nH_val)
+              g1 = gamma1_from_nH_p(log_nH, log_p_nH)
+            end if
+            cs2(ix^D) = g1 * p_over_rho
           end if
-          cs2(ix^D) = g1 * p_over_rho
-        end if
-      {end do\}
+        {end do\}
+      end if
 
       timeeos_csound = timeeos_csound + (MPI_WTIME()-timeeos0)
 
@@ -1067,6 +1097,11 @@ contains
 
       double precision :: nH_val, p_over_rho
       integer :: ix^D
+
+      if (eos%gamma1_method == 'constant') then
+          gamma1(ixO^S) = eos%gamma
+          return
+      end if
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
         p_over_rho = w(ix^D, p_) / w(ix^D, rho_)
