@@ -51,7 +51,7 @@
   gayley_q0    = 2000.0d0
   kappae_cgs   = 0.34d0
   cak_1d_force = .true.
-  cak_1d_opt   = 1
+  cak_1d_type  = 'finitedisc'
   use_lte_table  = .false.
   name_lte_table = 'Y02400'
 /

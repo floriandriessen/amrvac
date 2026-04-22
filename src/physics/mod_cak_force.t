@@ -22,46 +22,50 @@
 !      either in usr_init or in usr_set_parameters and after the hydro unit
 !      variables have been set/computed
 !>
-!> Developed by Florian Driessen (2022)
+!> Developed by Florian Driessen (2022, 2026)
 module mod_cak_force
 
   use mod_physics,     only: phys_get_pthermal, physics_type
   use mod_cak_opacity, only: init_cak_table, set_cak_opacity
 
   implicit none
+  private
 
   !> Line-ensemble parameters in the Gayley (1995) formalism
   real(8), public :: cak_alpha, gayley_qbar, gayley_q0
 
   !> Free-electron scattering opacity
-  real(8), public :: kappae_cgs = -1.0d0
+  real(8), public :: kappae_cgs = 0.0d0
 
   !> Ray positions + weights for impact parameter and azimuthal radiation angle
-  real(8), allocatable, private :: ay(:), wy(:), aphi(:), wphi(:)
+  real(8), allocatable :: ay(:), wy(:), aphi(:), wphi(:)
 
   !> The adiabatic index
-  real(8), private :: cak_gamma
+  real(8) :: cak_gamma
 
   !> Variables needed to compute force normalisation fnorm in initialisation
-  real(8), private :: lstar_cgs, lstar, rstar, kappae, clight
+  real(8) :: lstar_cgs, lstar, rstar, kappae, clight
 
-  !> To enforce a floor temperature when doing adiabatic (M)HD
-  real(8), private :: tfloor
+  !> To enforce a floor temperature (~wind temperature) for adiabatic (M)HD
+  real(8) :: tfloor
 
   ! Telectron/Teff = 0.8 from Puls+ (2000), A&AS 141; assume Twind = Telectron
-  real(8), parameter, private :: ratio_twind_teff = 0.8d0
+  real(8), parameter :: ratio_twind_teff = 0.8d0
 
   !> Switch to choose between the 1-D CAK line force options
-  integer :: cak_1d_opt
+  character(len=256) :: cak_1d_type
+  integer :: type_cak_1d
 
   ! Avoid magic numbers in code for 1-D CAK line force option
-  integer, parameter, private :: radstream=0, fdisc=1, fdisc_cutoff=2
+  integer, parameter :: type_pointstar=0
+  integer, parameter :: type_fdisc=1
+  integer, parameter :: type_fdisc_cutoff=2
 
   !> Amount of rays in radiation polar and radiation azimuthal direction
   integer :: nthetaray, nphiray
 
   !> Extra slots to store quantities in w-array
-  integer :: gcak1_, gcak2_, gcak3_, fdf_
+  integer, public :: gcak1_, gcak2_, gcak3_, fdf_
   integer, public :: alpha_, qbar_, q0_, kappae_
 
   !> To treat source term in split or unsplit (default) fashion
@@ -82,14 +86,20 @@ module mod_cak_force
   !> String of the LTE table to use from src/tables/CAK_tables
   character(len=256) :: name_lte_table=''
 
-  !> Public method
+  !> Public methods for mod_hd_phys or mod_mhd_phys
+  public :: cak_init
+  public :: cak_add_source
+  public :: cak_get_dt
+
+  !> Public method for mod_usr
   public :: set_cak_force_norm
   
 contains
 
   !> Read this module's parameters from a file
   subroutine cak_params_read(files)
-    use mod_global_parameters, only: unitpar
+    use mod_global_parameters, only: unitpar, unitterm
+    use mod_comm_lib, only: mpistop
 
     character(len=*), intent(in) :: files(:)
 
@@ -97,7 +107,7 @@ contains
     integer :: n
 
     namelist /cak_list/ cak_alpha, gayley_qbar, gayley_q0, kappae_cgs, &
-         cak_1d_opt, cak_split, cak_1d_force, cak_vector_force, &
+         cak_1d_type, cak_split, cak_1d_force, cak_vector_force, &
          nphiray, nthetaray, fix_vector_force_1d, &
          use_lte_table, name_lte_table
 
@@ -106,6 +116,19 @@ contains
        read(unitpar, cak_list, end=111)
        111 close(unitpar)
     enddo
+
+    ! Set CAK method for pure radial force
+    select case(trim(cak_1d_type))
+    case('pointstar')
+      type_cak_1d = type_pointstar
+    case('finitedisc')
+      type_cak_1d = type_fdisc
+    case('finitedisc_cutoff')
+      type_cak_1d = type_fdisc_cutoff
+    case default
+      write(unitterm,*) 'cak_1d_type = ', trim(cak_1d_type)
+      call mpistop('cak_params_read: unknown CAK wind method in cak_list')
+    end select
 
   end subroutine cak_params_read
 
@@ -122,7 +145,7 @@ contains
     cak_alpha   = 0.65d0
     gayley_qbar = 2000.0d0
     gayley_q0   = 2000.0d0
-    cak_1d_opt  = fdisc
+    cak_1d_type  = 'finitedisc'
     nthetaray   = 6
     nphiray     = 6
 
@@ -146,8 +169,8 @@ contains
       call init_cak_table(trim(name_lte_table))
 
       select case(trim(name_lte_table))
-      ! Electron opacity = 0.2*(1+X) for a fully-ionised plasma with X the
-      ! hydrogen mass fraction
+      ! Electron opacity ~= 0.2*(1+X) [cgs] for a fully-ionised plasma with X
+      ! the hydrogen mass fraction
       case('Y02400')
         kappae_cgs = 0.34d0
       case('Y09800')
@@ -161,21 +184,33 @@ contains
     kappae_ = var_set_extravar("kappae", "kappae")
 
     ! Some sanity checks
-    if (slab) call mpistop('cak_init: Cartesian geometry not supported.')
+    if (SI_unit .and. use_lte_table) then
+      call mpistop('cak_init: SI_unit=T but LTE tables assume cgs units')
+    endif
 
-    if ((cak_alpha <= 0.0d0) .or. (cak_alpha > 1.0d0)) then
-      call mpistop('cak_init: choose alpha in [0,1[')
+    if (slab) then
+      call mpistop('cak_init: Cartesian geometry not supported')
+    endif
+
+    if ((cak_alpha < 0.0d0) .or. (cak_alpha >= 1.0d0)) then
+      call mpistop('cak_init: input alpha in [0,1[')
     endif
 
     if ((gayley_qbar < 0.0d0) .or. (gayley_q0 < 0.0d0)) then
-      call mpistop('cak_init: chosen Qbar or Q0 is < 0')
+      call mpistop('cak_init: input Qbar or Q0 is < 0')
     endif
 
     if (cak_1d_force .and. cak_vector_force) then
-      call mpistop('cak_init: choose either 1-D or vector force')
+      call mpistop('cak_init: choose either 1D radial or vector force')
     endif
 
-    if (kappae_cgs <= 0.0d0) call mpistop('cak_init: set input kappa_e')
+    if (cak_vector_force .and. ndir < 3) then
+      call mpistop('cak_init: vector CAK force only for 2.5D and 3D')
+    endif
+
+    if (kappae_cgs < smalldouble) then
+      call mpistop('cak_init: set input kappae to a reasonable constant')
+    endif
 
   end subroutine cak_init
 
@@ -247,7 +282,7 @@ contains
       elseif (cak_vector_force) then
         call get_cak_force_vector(ixI^L,ixO^L,wCT,w,x,gl)
       else
-        call mpistop("cak_add_source: no valid force option.")
+        call mpistop("cak_add_source: no valid force option")
       endif
 
       ! Update conservative vars: w = w + qdt*gsource
@@ -295,7 +330,7 @@ contains
     if (physics_type == 'hd') then
       ! Monotonic flow to avoid multiple resonances and radiative coupling
       dvrdr(ixO^S) = max(abs(dvrdr(ixO^S)), smalldouble)
-    else
+    elseif (physics_type == 'mhd') then
       ! Allow material to fallback to the star in a magnetosphere model
       dvrdr(ixO^S) = max(dvrdr(ixO^S), smalldouble)
     endif
@@ -304,13 +339,13 @@ contains
     call get_gelectron(ixI^L,ixO^L,w,x,ge)
 
     ! Sobolev optical depth for line ensemble (tau = Qbar * t_r) and the force
-    select case (cak_1d_opt)
-    case(radstream, fdisc)
+    select case (type_cak_1d)
+    case(type_pointstar, type_fdisc)
       taus(ixO^S) = w(ixO^S,qbar_)*w(ixO^S,kappae_)*clight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
       gcak(ixO^S,1) = w(ixO^S,qbar_)/(1.0d0 - w(ixO^S,alpha_)) * ge(ixO^S) &
            / taus(ixO^S)**w(ixO^S,alpha_)
 
-    case(fdisc_cutoff)
+    case(type_fdisc_cutoff)
       taus(ixO^S)   = w(ixO^S,q0_)*w(ixO^S,kappae_)*clight * wCT(ixO^S,iw_rho)/dvrdr(ixO^S)
       gcak(ixO^S,1) = w(ixO^S,qbar_) * ge(ixO^S) &
            * ( (1.0d0 + taus(ixO^S))**(1.0d0 - w(ixO^S,alpha_)) - 1.0d0 ) &
@@ -321,10 +356,10 @@ contains
     beta_fd(ixO^S) = ( 1.0d0 - vr(ixO^S)/(x(ixO^S,1) * dvrdr(ixO^S)) ) &
          * (rstar/x(ixO^S,1))**2.0d0
 
-    select case (cak_1d_opt)
-    case(radstream)
+    select case (type_cak_1d)
+    case(type_pointstar)
       fdfac(ixO^S) = 1.0d0
-    case(fdisc, fdisc_cutoff)
+    case(type_fdisc, type_fdisc_cutoff)
       where (beta_fd(ixO^S) >= 1.0d0)
         fdfac(ixO^S) = 1.0d0/(1.0d0 + w(ixO^S,alpha_))
       elsewhere (beta_fd(ixO^S) < -1.0d10)
