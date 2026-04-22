@@ -918,7 +918,8 @@ module mod_fld
     max_its = 100
     bisect_a = zero
     bisect_b = min(dabs(c0/c1),dabs(c0)**(1.d0/4.d0))+smalldouble
-    do while(dabs(bisect_b-bisect_a) .ge. fld_bisect_tol*min(e_gas,E_rad))
+    !!do while(dabs(bisect_b-bisect_a) .ge. fld_bisect_tol*min(e_gas,E_rad))
+    do while(dabs(bisect_b-bisect_a) .ge. fld_bisect_tol)
       bisect_c = (bisect_a + bisect_b)/two
       n = n +1
       if(n .gt. max_its) then

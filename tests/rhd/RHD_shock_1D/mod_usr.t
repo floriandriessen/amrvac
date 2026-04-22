@@ -7,7 +7,11 @@ module mod_usr
   implicit none
 
   ! input in cgs
-  double precision :: rho1,rho2,v1,v2,T1,T2
+  double precision :: rho1,rho2,v1,T1
+
+  ! derived in cgs from steady shock condition
+  double precision :: v2,T2,momc,momc_n
+  double precision :: v2_orig,T2_orig
 
   ! normalized and derived values
   double precision :: rho1_norm,rho2_norm
@@ -69,7 +73,7 @@ contains
     character(len=*), intent(in) :: files(:)
     integer                      :: n
 
-    namelist /shock_list/ rho1, rho2, v1, v2, T1, T2
+    namelist /shock_list/ rho1, rho2, v1, T1
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -78,12 +82,19 @@ contains
 113    close(unitpar)
     end do
 
+  v2=rho1*v1/rho2
+  momc=rho1*v1
+  v2_orig=1.458051139d8
+  T2_orig=4.239d7
   if(mype==0)then
     print *,'============================================'
     write(*,*) 'INPUT GIVEN IN cgs units is'
     write(*,*) 'input density 1-2     =',rho1,rho2
-    write(*,*) 'input Temperature 1-2 =',T1,T2
-    write(*,*) 'input velocity 1-2    =',v1,v2
+    write(*,*) 'input Temperature 1   =',T1
+    write(*,*) 'input velocity 1    =',v1
+    write(*,*) 'derived velocity 2  =',v2
+    write(*,*) 'original velocity 2  =',v2_orig
+    write(*,*) 'original temperature 2  =',T2_orig
     print *,'============================================'
   endif
 
@@ -96,21 +107,70 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
-    double precision :: a,b,Xfrac,Yfrac
+    double precision :: a,b,Xfrac,Yfrac,Tval
+    double precision :: c1A_norm,c0A_norm
+    double precision :: c1B_norm,c0B_norm
+    double precision :: T2A_norm,T2B_norm,T2C_norm
     logical, save:: first=.true.
 
     rho1_norm = rho1/unit_density
     rho2_norm = rho2/unit_density
     T1_norm = T1/unit_temperature
-    T2_norm = T2/unit_temperature
-    v1_norm = v1/unit_velocity
-    v2_norm = v2/unit_velocity
-
     p1_norm=T1_norm*rho1_norm*RR
-    p2_norm=T2_norm*rho2_norm*RR
-    eg1_norm=p1_norm/(hd_gamma-1.0d0)+half*rho1_norm*v1_norm**2
-    eg2_norm=p2_norm/(hd_gamma-1.0d0)+half*rho2_norm*v2_norm**2
     Er1_norm = arad_norm*T1_norm**4.d0
+    v1_norm = v1/unit_velocity
+    momc_n=momc/(unit_density*unit_velocity)
+    eg1_norm=p1_norm/(hd_gamma-1.0d0)+half*rho1_norm*v1_norm**2
+
+    !!v2=v2_orig
+    v2_norm = v2/unit_velocity
+    ! use the Halley root finder for the 4th order polynomial in T2 (normalized)
+    c1A_norm=3.0d0*rho2_norm/arad_norm
+    c0A_norm=((rho2_norm-rho1_norm)*momc_n**2/(rho2_norm*rho1_norm) &
+             +rho1_norm*T1_norm+Er1_norm/3.0d0)*3.0d0/arad_norm
+    T2A_norm=T1_norm ! this is a bad guess
+    call Halley_method(T2A_norm,T2A_norm,c0A_norm,c1A_norm)
+
+    if(mype==0.and.first)then
+       print *,'CHECK ON ZERO of',T2A_norm**4+c1A_norm*T2A_norm-c0A_norm
+    endif
+    if(mype==0.and.first)print *,'HERE WE GET',T2A_norm
+
+    Tval=0.5d0*T2A_norm
+
+    ! use the Halley root finder for the 4th order polynomial in T2 (normalized)
+    c1B_norm=3.0d0*rho2_norm*hd_gamma/(arad_norm*4.0d0*(hd_gamma-1.d0))
+    c0B_norm=(3.0d0/(4.0d0*arad_norm))* &
+       ((hd_gamma*rho1_norm*T1_norm/(hd_gamma-1.d0) &
+         +4.0d0*Er1_norm/3.0d0+half*momc_n**2/rho1_norm)*rho2_norm/rho1_norm &
+       -half*momc_n**2/rho2_norm)
+    T2B_norm=T1_norm ! this is a bad guess
+    call Halley_method(T2B_norm,T2B_norm,c0B_norm,c1B_norm)
+    if(mype==0.and.first)then
+       print *,'CHECK ON ZERO of',T2B_norm**4+c1B_norm*T2B_norm-c0B_norm
+    endif
+
+    if(mype==0.and.first)print *,'HERE WE use INSTEAD',T2B_norm
+    Tval=Tval+0.5d0*T2B_norm
+    if(mype==0.and.first)print *,'average is',Tval
+    T2=T2_orig
+    T2_norm=T2_orig/unit_temperature
+    if(mype==0.and.first)print *,'WHILE we had original value',T2_norm
+
+    if(mype==0.and.first)then
+       print *,'difference in T is',T2A_norm-T2B_norm
+       print *,'makes the factor ',(c1A_norm*T2A_norm-c0A_norm-c1B_norm*T2B_norm+c0B_norm)
+       print *,'equal to',T2A_norm**4-T2B_norm**4
+       print *,'c0A_norm, c0B_norm, difference=',c0A_norm,c0B_norm,c0A_norm-c0B_norm
+       print *,'c1A_norm, c1B_norm, difference=',c1A_norm,c1B_norm,c1A_norm-c1B_norm
+       print *,'versus ratio=',(c0A_norm-c0B_norm)/(c1A_norm-c1B_norm)
+    endif
+    T2_norm=T2B_norm
+    if(mype==0.and.first)print *,'USING',T2_norm
+     
+    T2=T2_norm*unit_temperature
+    p2_norm=T2_norm*rho2_norm*RR
+    eg2_norm=p2_norm/(hd_gamma-1.0d0)+half*rho2_norm*v2_norm**2
     Er2_norm = arad_norm*T2_norm**4.d0
 
     w(ixI^S,rho_)   = rho1_norm
@@ -129,9 +189,9 @@ contains
   if(mype==0.and.first)then
     print *,'===IN INITIAL CONDITIONS========================================='
     write(*,*) 'converted to normalized values'
-    write(*,*) 'normalized densities    =',rho1_norm,rho2_norm
-    write(*,*) 'normalized velocities   =',v1_norm,v2_norm
-    write(*,*) 'normalized temperatures =',T1_norm,T2_norm
+    write(*,*) 'normalized densities          =',rho1_norm,rho2_norm
+    write(*,*) 'normalized velocities         =',v1_norm,v2_norm
+    write(*,*) 'normalized temperatures       =',T1_norm,T2_norm
     write(*,*) 'normalized gas energies       =',eg1_norm,eg2_norm
     write(*,*) 'normalized radiation energies =',Er1_norm,Er2_norm
     print *,'================================================================='
@@ -140,12 +200,12 @@ contains
   print *,'T   1-2=',T1,T2
   print *,'v   1-2=',v1,v2
     print *,'================================================================='
-    print*, 'RHD-fluxes: ', 'Left', ' | ', 'Right'
-    print*, 'density', rho1_norm*v1_norm, ' | ', rho2_norm*v2_norm
-    print*, 'momentum',rho1_norm*v1_norm*v1_norm+p1_norm+Er1_norm/3,' | ',rho2_norm*v2_norm*v2_norm+p2_norm+Er2_norm/3
-    print*, 'gas energy', p1_norm*v1_norm+eg1_norm*v1_norm, ' | ', p2_norm*v2_norm+eg2_norm*v2_norm
-    print*, 'radiation energy', Er1_norm*v1_norm, ' | ', Er2_norm*v2_norm
-    print*, 'total energy', (p1_norm+eg1_norm+Er1_norm)*v1_norm, ' | ', (p2_norm+eg2_norm+Er2_norm)*v2_norm
+    print*, 'RHD-fluxes for stationary shock: ', 'Left', ' | ', 'Right'
+    print*, 'density flux must be exactly equal  :', rho1_norm*v1_norm, ' | ', rho2_norm*v2_norm
+    print*, 'momentum flux must be exact   equal :',rho1_norm*v1_norm**2+p1_norm+Er1_norm/3,' | ',rho2_norm*v2_norm**2+p2_norm+Er2_norm/3
+    print*, 'energy flux must be equal           :', (p1_norm+eg1_norm+4.0d0*Er1_norm/3.0d0)*v1_norm, ' | ', (p2_norm+eg2_norm+4.0d0*Er2_norm/3.0d0)*v2_norm
+    print*, 'with radiation and gas temperatures equal on each side: LEFT  is', T1_norm,(Er1_norm/arad_norm)**0.25d0
+    print*, 'with radiation and gas temperatures equal on each side: RIGHT is', T2_norm,(Er2_norm/arad_norm)**0.25d0
     print *,'================================================================='
   print *,'arad_norm=',arad_norm
   print *,'c_norm=',c_norm
@@ -175,9 +235,9 @@ contains
   print *,'unit_mass          =',unit_mass
   print *,'unit_temperature   =',unit_temperature
   print *,'unit_radflux       =',unit_radflux
-  print *, 'CHECK that ',unit_pressure,' equals ',unit_density*unit_velocity**2
-  print *, 'CHECK that ',unit_length,' equals ',unit_velocity*unit_time
-  print *, 'CHECK that ',unit_mass,' equals ',unit_density*unit_length**3
+  print *, 'CHECK that p_u ',unit_pressure,' equals ',unit_density*unit_velocity**2
+  print *, 'CHECK that L_u ',unit_length,' equals ',unit_velocity*unit_time
+  print *, 'CHECK that M_u',unit_mass,' equals ',unit_density*unit_length**3
   print *, 'density to numberdensity has factor   ',unit_density/unit_numberdensity
   print *, '                     compare  this to ',mp_cgs*(1.d0+4.d0*He_abundance)
   print *, 'pressure to n T has factor            ',unit_pressure/(unit_numberdensity*unit_temperature)
@@ -215,7 +275,13 @@ contains
       w(ixB^S,mom(:)) = 0.d0
       w(ixB^S,mom(1)) = rho1_norm*v1_norm
       w(ixB^S,e_) = eg1_norm
-      w(ixB^S,r_e) = Er1_norm
+      !! w(ixB^S,r_e) = Er1_norm
+    case(2)  
+      w(ixB^S,rho_) = rho2_norm
+      w(ixB^S,mom(:)) = 0.d0
+      w(ixB^S,mom(1)) = rho2_norm*v2_norm
+      w(ixB^S,e_) = eg2_norm
+      !!w(ixB^S,r_e) = Er2_norm
     case default
       call mpistop('boundary not known')
     end select
@@ -233,6 +299,9 @@ contains
     case (1)
         mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
         mg%bc(iB, mg_iphi)%bc_value = Er1_norm
+    case (2)
+        mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
+        mg%bc(iB, mg_iphi)%bc_value = Er2_norm
     case default
         call mpistop("no such boundary for MG in mod_usr")
     end select
@@ -254,9 +323,7 @@ contains
     double precision, intent(in) :: qt, w(ixG^S,1:nw), x(ixG^S,1:ndim)
     integer, intent(inout) :: refine, coarsen
 
-    if (it .gt. slowsteps) then
-      if (any(dabs(x(ixG^S,1)) < 0.1d0)) refine=1
-    endif
+    if (any(dabs(x(ixG^S,1)) < 0.1d0)) refine=1
 
   end subroutine refine_shock
 

@@ -3,7 +3,7 @@
 /
 
 &filelist
-  base_filename='rhd_shock'
+  base_filename='output/rhd_shock'
   autoconvert      = F
   typefilelog='regression_test'
 /
@@ -12,11 +12,11 @@
    itsave(1,1)=0
    itsave(1,2)=0
    dtsave_log     = 0.1d0
-   dtsave_dat     = 0.5d0
+   dtsave_dat     = 0.1d0
 /
 
  &stoplist
-   time_max = 1.d0
+   time_max = 5.d0
    dtmin = 1.0d-20
 /
 
@@ -41,8 +41,8 @@
  /
 
  &paramlist
-  courantpar= 0.6d0
-  slowsteps = 200
+  courantpar= 0.4d0
+  slowsteps = 1000
  /
 
  &hd_list
@@ -60,13 +60,12 @@
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
   fld_diff_tol = 1.d-6
+  fld_bisect_tol=1.d-6
   /
 
   &shock_list
    rho1 = 1.d-2
    rho2 = 0.0685847d0 
    v1 = 1.d9
-   v2 = 1.458051139d8
    T1 = 1.d4
-   T2 = 4.239d7
    /
