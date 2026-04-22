@@ -23,7 +23,7 @@ module mod_usr
 
   ! Get access to some CAK radiation functionality
   use mod_cak_force, only: set_cak_force_norm, cak_alpha, gayley_qbar, &
-       gayley_q0, kappae_cgs, gcak1_, alpha_, qbar_, q0_, kappae_
+       kappae_cgs, gcak1_
 
   implicit none
 
@@ -205,11 +205,6 @@ contains
     if (hd_energy) w(ixO^S,p_) = w(ixO^S,rho_)
 
     call hd_to_conserved(ixI^L,ixO^L,w,x)
-
-    w(ixO^S,alpha_)  = cak_alpha
-    w(ixO^S,qbar_)   = gayley_qbar
-    w(ixO^S,q0_)     = gayley_q0
-    w(ixO^S,kappae_) = kappae
 
   end subroutine initial_conditions
 

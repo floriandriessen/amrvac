@@ -27,7 +27,7 @@ module mod_usr
   
   ! Get access to some CAK radiation functionality
   use mod_cak_force, only: set_cak_force_norm, cak_alpha, gayley_qbar, &
-       kappa_e, gcak1_, gcak2_, gcak3_
+       kappae_cgs, gcak1_, gcak2_, gcak3_
 
   implicit none
 
@@ -35,7 +35,7 @@ module mod_usr
   real(8) :: mstar_sol, rstar_sol, twind_cgs, rhobound_cgs, beta, Wrot
 
   ! Dimensionless variables needed throughout computations
-  real(8) :: mstar, rstar, rhobound, mdot, vinf, asound, Ggrav, vrot
+  real(8) :: mstar, rstar, rhobound, mdot, vinf, asound, Ggrav, vrot, kappae
 
 contains
 
@@ -97,7 +97,7 @@ contains
 
     ! Stellar structure
     lstar_cgs  = 4.0d0*dpi * rstar_cgs**2.0d0 * sigma_SB_cgs * twind_cgs**4.0d0
-    gammae     = kappa_e * lstar_cgs / (4.0d0*dpi * const_G * mstar_cgs * const_c)
+    gammae     = kappae_cgs * lstar_cgs / (4.0d0*dpi * const_G * mstar_cgs * const_c)
     logg_cgs   = log10(const_G * mstar_cgs/rstar_cgs**2.0d0)
     logge_cgs  = logg_cgs + log10(1.0d0 - gammae)
     mumol      = (1.0d0 + 4.0d0*He_abundance)/(2.0d0 + 3.0d0*He_abundance)
@@ -161,6 +161,7 @@ contains
     mdot     = mdot_cgs * unit_time / (unit_density * unit_length**3.0d0)
     Ggrav    = const_G * unit_density * unit_time**2.0d0
     vrot     = vrot_cgs / unit_velocity
+    kappae   = kappae_cgs / unit_opacity
 
     ! Give AMRVAC correct adiabatic index
     hd_adiab = pthbound / rhobound**hd_gamma
@@ -174,6 +175,7 @@ contains
       print*, 'Twind    = ', twind
       print*, 'rhobound = ', rhobound
       print*, 'Mdot CAK = ', mdot
+      print*, 'kappae   = ', kappae
       print*, 'asound   = ', asound
       print*, 'vinf     = ', vinf
       print*, 'vrot     = ', vrot
