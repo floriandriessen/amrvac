@@ -412,13 +412,10 @@ contains
       end if
     end if
 
-    if(mhd_hyperbolic_thermal_conduction) then
+    if(mhd_thermal_conduction .and. mhd_hyperbolic_thermal_conduction) then
       mhd_thermal_conduction=.false.
-      if(mype==0) write(*,*) 'WARNING: turn off parabolic TC when using hyperbolic TC'
-    end if
-    if(mhd_thermal_conduction) then
-      mhd_hyperbolic_thermal_conduction=.false.
-      if(mype==0) write(*,*) 'WARNING: turn off hyperbolic TC when using parabolic TC'
+      if(mype==0) write(*,*) 'WARNING: set either parabolic TC or hyperbolic TC to F'
+      if(mype==0) write(*,*) 'WARNING: defaulting to only mhd_hyperbolic_thermal_conduction=T'
     end if
 
 
