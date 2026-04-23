@@ -6,14 +6,15 @@ module mod_usr
 
   implicit none
 
-  ! input variables
-  double precision :: rho0,eg0,Er0,wvlength,A_rho
+  ! input variables with units
+  double precision :: rho0,eg0
+  ! input variables that are dimensionless
+  double precision :: rho_kappa_lambda,A_rho
 
   ! derived vars
-  double precision :: p0,Trad0,wvl,omega,wavenumber,csound
-  double precision :: A_v, A_p, A_e
-
-  double precision :: rho0_norm,eg0_norm,Er0_norm,p0_norm,omega_norm
+  double precision :: omega,wavenumber,csound_norm,wvlength
+  double precision :: A_v, A_p
+  double precision :: p0,rho0_norm,eg0_norm,Er0_norm,p0_norm,T0_norm
 
   ! Storing additional var in the dat file
   integer :: Tgas_,Trad_,pres_,vel_,amr_
@@ -25,17 +26,14 @@ contains
   subroutine usr_init()
 
     ! Note how we here must set three values that in turn define M-L-T
-    unit_density       = 3.216d-9    ! g cm^-3
-    unit_length        = 1.24d11  ! cm
-    unit_velocity      = 2.32d6   ! cm/s
-
-    csound=dsqrt(26020.d0*2.0/3.0/3.216d-9)
-    wvl=1000.0/3.216d-9/0.4
-    print *,'wavelength then=',wvl
-    omega = 2.d0*dpi*csound/wvl
-    print *,'omega then=',omega
+    unit_density       = 3.216d-9     ! g cm^-3
+    unit_length        = 7.7736318d11 ! cm
+    unit_velocity      = 2.32d6       ! cm/s
 
     call usr_params_read(par_files)
+
+    ! computing parameters and setting Boundary conditions for MG solver
+    usr_set_parameters => set_params_and_mg_boundary_conds
 
     ! A routine for initial conditions is always required
     usr_init_one_grid => initial_conditions
@@ -70,7 +68,7 @@ contains
     character(len=*), intent(in) :: files(:)
     integer                      :: n
 
-    namelist /wave_list/ rho0, eg0, Er0, wvlength, A_rho
+    namelist /wave_list/ rho0, eg0, rho_kappa_lambda, A_rho
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -80,24 +78,61 @@ contains
     end do
 
     p0 = eg0*(hd_gamma - one)
-    wavenumber = 2.d0*dpi/wvlength
-  if(mype==0)then
+    if(mype==0)then
     print *,'============================================'
     write(*,*) 'INPUT GIVEN IN cgs units is'
-    write(*,*) 'input density, gas energy density, radiation energy density=',rho0,eg0,Er0
+    write(*,*) 'input density, gas energy density=',rho0,eg0
     write(*,*) 'derived gas pressure is =',p0
-    write(*,*) 'derived dimensionless rad/gas energy ratio =',Er0/eg0
-    write(*,*) 'derived ratio r=E/(4gamma e) =',Er0/(4.d0*hd_gamma*eg0)
-    csound=dsqrt(hd_gamma*p0/rho0)
-    ! note: assuming cgs in line below
-    write(*,*) 'derived Boltzmann ratio Bo=4gamma ca e/(cE) =',4.0d0*hd_gamma*csound*eg0/(const_c*Er0)
     write(*,*) 'input dimensionless amplitude for density is   =',A_rho
-    write(*,*) 'input dimensionless wavelength is              =',wvlength
-    write(*,*) 'derived dimensionless wavenumber is            =',wavenumber
+    write(*,*) 'input dimensionless parameter for wavelength   =',rho_kappa_lambda
     print *,'============================================'
-  endif
+    endif
 
   end subroutine usr_params_read
+
+  subroutine set_params_and_mg_boundary_conds()
+    use mod_global_parameters
+
+    ! here we normalize all input values and compute the equilibrium parameters
+    rho0_norm  = rho0/unit_density
+    p0_norm   = p0/unit_pressure
+    eg0_norm = eg0/unit_pressure
+    T0_norm   = p0_norm/(rho0_norm*RR)
+    Er0_norm = arad_norm*T0_norm**4.d0
+    
+    csound_norm=dsqrt(hd_gamma*p0/rho0)/unit_velocity
+
+    if(mype==0)then
+    write(*,*) 'derived dimensionless rad/gas energy ratio =',Er0_norm/eg0_norm
+    write(*,*) 'derived ratio r=E/(4gamma e) =',Er0_norm/(4.d0*hd_gamma*eg0_norm)
+    write(*,*) 'derived Boltzmann ratio Bo=4 gamma cs e/(cE) =',4.0d0*hd_gamma*csound_norm*eg0_norm/(c_norm*Er0_norm)
+    endif
+
+    ! here we compute the wave-related parameters
+    ! all computed things here are dimensionless
+    select case(trim(fld_opacity_law))
+      case('const_norm')
+         wvlength=rho_kappa_lambda/(rho0_norm*fld_kappa0)
+      case('const')
+          wvlength=rho_kappa_lambda/(rho0*fld_kappa0*unit_length)
+      case default
+         call mpistop("unknown opacity law")
+    end select
+    wavenumber=2.0d0*dpi/wvlength
+    omega=wavenumber*csound_norm
+    A_v   = A_rho*omega/wavenumber
+    A_p   = hd_gamma*p0_norm*A_rho
+
+    if(mype==0)then
+    print *,'wavelength in physical units is=',wvlength*unit_length
+    write(*,*) 'derived dimensionless wavelength for wave =',wvlength
+    write(*,*) 'derived dimensionless omega and k for wave =',omega,wavenumber
+    write(*,*) 'check on input and derivation based on ',rho_kappa_lambda,rho0,unit_density,fld_kappa0
+    write(*,*) 'dispersion relation asks for omega=',omega,' to equal k= ',wavenumber,' times cs0=',csound_norm
+    write(*,*) 'and sets amplitude perturbations A_rho-v-p=',A_rho,A_v,A_p
+    endif
+
+  end subroutine set_params_and_mg_boundary_conds
 
   !> A routine for specifying initial conditions
   subroutine initial_conditions(ixI^L, ixO^L, w, x)
@@ -108,19 +143,8 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
-    double precision :: temp(ixI^S)
     double precision :: a,b,Xfrac,Yfrac
     logical, save:: first=.true.
-
-    rho0_norm = rho0/unit_density
-    p0_norm   = p0/unit_pressure
-    eg0_norm  = eg0/unit_pressure
-    Er0_norm  = Er0/unit_pressure
-
-    omega_norm=omega*unit_time
-    A_v   = omega_norm/(wavenumber*rho0_norm)*A_rho
-    A_p   = omega_norm**2/wavenumber**2*A_rho
-    A_e   = 1.d0/(hd_gamma-one)*p0_norm/rho0_norm*A_rho
 
     ! Set initial values for
     w(ixI^S, rho_)  = rho0_norm
@@ -132,62 +156,56 @@ contains
     print *,'===IN INITIAL CONDITIONS========================================='
     write(*,*) 'converted to normalized values'
     write(*,*) 'normalized density, pressure, energy density gas-rad =',rho0_norm,p0_norm,eg0_norm,Er0_norm
-    write(*,*) 'and amplitudes become A_rho A_v A_p A_e=',A_rho,A_v,A_p,A_e
-    write(*,*) 'omega and wavenumber=',omega,wavenumber
     print *,'===========================================-====================='
-  print *,'========GLOBAL values==========='
-  print *,'rho0=',rho0
-  print *,'p0=',p0
-  print *,'eg0=',eg0
-  print *,'Er0=',Er0
-  print *,'arad_norm=',arad_norm
-  write(*,*) 'derived gas temperature is       =',unit_temperature*(p0_norm/(rho0_norm*RR)),' or dimensionless=',(p0_norm/(rho0_norm*RR))
-  Trad0=(Er0/const_rad_a)**(1.0d0/4.0d0)
-  write(*,*) 'derived radiation temperature is =',Trad0,' or dimensionless=',Trad0/unit_temperature
-  print *,'c_norm=',c_norm
-  print *,'const_kappae  =',const_kappae
-  if(trim(fld_opacity_law).eq.'const_norm')then
+    print *,'========GLOBAL values==========='
+    print *,'rho0=',rho0
+    print *,'p0=',p0
+    print *,'eg0=',eg0
+    print *,'arad_norm=',arad_norm
+    print *,'c_norm=',c_norm
+    print *,'const_kappae  =',const_kappae
+    if(trim(fld_opacity_law).eq.'const_norm')then
       print *,'normalized fld_kappa0    =',fld_kappa0
       print *,'physical value           =',fld_kappa0*unit_opacity
-  endif
-  if(trim(fld_opacity_law).eq.'const')then
+    endif
+    if(trim(fld_opacity_law).eq.'const')then
       print *,'physical fld_kappa in cgs =',fld_kappa0
       print *,'normalized value          =',fld_kappa0/unit_opacity
-  endif
-  print *,'gamma=',hd_gamma
-  print *,'========UNITS==========='
-  print *,'SI_unit       =',SI_unit
-  print *,'const_rad_a   =',const_rad_a
-  print *,'eq_state_units=',eq_state_units
-  print *,'He_abundance  =',He_abundance
-  print *,'RR            =',RR
-  print *,'unit_time          =',unit_time
-  print *,'unit_length        =',unit_length
-  print *,'unit_velocity      =',unit_velocity
-  print *,'unit_pressure      =',unit_pressure
-  print *,'unit_Erad          =',unit_Erad
-  print *,'unit_numberdensity =',unit_numberdensity
-  print *,'unit_density       =',unit_density
-  print *,'unit_mass          =',unit_mass
-  print *,'unit_temperature   =',unit_temperature
-  print *,'unit_radflux       =',unit_radflux
-  print *, 'CHECK that ',unit_pressure,' equals ',unit_density*unit_velocity**2
-  print *, 'CHECK that ',unit_length,' equals ',unit_velocity*unit_time
-  print *, 'CHECK that ',unit_mass,' equals ',unit_density*unit_length**3
-  print *, 'density to numberdensity has factor   ',unit_density/unit_numberdensity
-  print *, '                     compare  this to ',mp_cgs*(1.d0+4.d0*He_abundance)
-  print *, 'pressure to n T has factor            ',unit_pressure/(unit_numberdensity*unit_temperature)
-  print *, '                     compare  this to ',kB_cgs*(2.d0+3.d0*He_abundance)
-  a=unit_density/unit_numberdensity/mp_cgs
-  b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
-  print *, 'mean molecular weight mu adopted is =',a/b,' and this equals ', (1.d0+4.d0*He_abundance)/(2.d0+3.d0*He_abundance)
-  Xfrac=1.d0/a
-  Yfrac=4.d0*He_abundance/(1.d0+4.d0*He_abundance)
-  print *, 'mass fraction hydrogen X is =',1/a,' and this equals ', 1.d0/(1.d0+4.d0*He_abundance)
-  print *, 'mass fraction helium   Y is =',Yfrac
-  print *, ' check that 1/mu', b/a,' is equal to 2X+3Y/4=',2.d0*Xfrac+3.d0*Yfrac/4.d0
-  print *, ' ratio n_e/n_p=',1.d0+2.0d0*He_abundance
-  print *,'========UNITS==========='
+    endif
+    print *,'gamma=',hd_gamma
+    print *,'========UNITS==========='
+    print *,'SI_unit       =',SI_unit
+    print *,'const_rad_a   =',const_rad_a
+    print *,'eq_state_units=',eq_state_units
+    print *,'He_abundance  =',He_abundance
+    print *,'RR            =',RR
+    print *,'unit_time          =',unit_time
+    print *,'unit_length        =',unit_length
+    print *,'unit_velocity      =',unit_velocity
+    print *,'unit_pressure      =',unit_pressure
+    print *,'unit_Erad          =',unit_Erad
+    print *,'unit_numberdensity =',unit_numberdensity
+    print *,'unit_density       =',unit_density
+    print *,'unit_mass          =',unit_mass
+    print *,'unit_temperature   =',unit_temperature
+    print *,'unit_radflux       =',unit_radflux
+    print *, 'CHECK that ',unit_pressure,' equals ',unit_density*unit_velocity**2
+    print *, 'CHECK that ',unit_length,' equals ',unit_velocity*unit_time
+    print *, 'CHECK that ',unit_mass,' equals ',unit_density*unit_length**3
+    print *, 'density to numberdensity has factor   ',unit_density/unit_numberdensity
+    print *, '                     compare  this to ',mp_cgs*(1.d0+4.d0*He_abundance)
+    print *, 'pressure to n T has factor            ',unit_pressure/(unit_numberdensity*unit_temperature)
+    print *, '                     compare  this to ',kB_cgs*(2.d0+3.d0*He_abundance)
+    a=unit_density/unit_numberdensity/mp_cgs
+    b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
+    print *, 'mean molecular weight mu adopted is =',a/b,' and this equals ', (1.d0+4.d0*He_abundance)/(2.d0+3.d0*He_abundance)
+    Xfrac=1.d0/a
+    Yfrac=4.d0*He_abundance/(1.d0+4.d0*He_abundance)
+    print *, 'mass fraction hydrogen X is =',1/a,' and this equals ', 1.d0/(1.d0+4.d0*He_abundance)
+    print *, 'mass fraction helium   Y is =',Yfrac
+    print *, ' check that 1/mu', b/a,' is equal to 2X+3Y/4=',2.d0*Xfrac+3.d0*Yfrac/4.d0
+    print *, ' ratio n_e/n_p=',1.d0+2.0d0*He_abundance
+    print *,'========UNITS==========='
     first=.false.
   endif
 
@@ -201,14 +219,21 @@ contains
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
-    double precision :: temp(ixI^S),vel(ixI^S),pres(ixI^S)
+    double precision :: vel(ixI^S),pres(ixI^S)
 
-    where (x(ixI^S,1) .lt. one)
-      vel(ixI^S)       = A_v*dsin(wavenumber*x(ixI^S,1)-omega_norm*qt)
-      w(ixI^S, rho_)   = rho0_norm + A_rho*dsin(wavenumber*x(ixI^S,1)-omega_norm*qt)
-      w(ixI^S, mom(1)) = w(ixI^S, rho_)*vel(ixI^S)
-      w(ixI^S, e_)     = (p0_norm + A_p*dsin(wavenumber*x(ixI^S,1)-omega_norm*qt))/(hd_gamma-1.0d0)+half*w(ixI^S,rho_)*vel(ixI^S)**2
-      w(ixI^S, r_e)    = Er0_norm
+    where (x(ixI^S,1) .lt. wvlength)
+      vel(ixI^S)       = A_v*dsin(wavenumber*x(ixI^S,1)-omega*qt)
+      pres(ixI^S)      = p0_norm+A_p*dsin(wavenumber*x(ixI^S,1)-omega*qt)
+      w(ixI^S, rho_)   = rho0_norm + A_rho*dsin(wavenumber*x(ixI^S,1)-omega*qt)
+      {^IFTWOD
+      w(ixI^S, mom(2)) = 0.d0
+      }
+      {^IFTHREED
+      w(ixI^S, mom(3)) = 0.d0
+      }
+      w(ixI^S, mom(1)) = w(ixI^S,rho_)*vel(ixI^S)
+      w(ixI^S, e_)     = pres(ixI^S)/(hd_gamma-1.0d0)+half*w(ixI^S,rho_)*vel(ixI^S)**2
+      w(ixI^S, r_e)    = arad_norm*(pres(ixI^S)/(w(ixI^S,rho_)*RR))**4
     endwhere
 
   end subroutine Initialize_Wave
