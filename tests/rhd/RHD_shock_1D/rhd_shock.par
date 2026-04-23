@@ -3,7 +3,7 @@
 /
 
 &filelist
-  base_filename='output/rhd_shock'
+  base_filename='rhd_shock'
   autoconvert      = F
   typefilelog='regression_test'
 /
@@ -11,12 +11,13 @@
  &savelist
    itsave(1,1)=0
    itsave(1,2)=0
-   dtsave_log     = 0.1d0
+   dtsave_log     = 0.01d0
    dtsave_dat     = 0.1d0
 /
 
+   time_max = 1.0d0
  &stoplist
-   time_max = 5.d0
+   time_max = 0.1d0
    dtmin = 1.0d-20
 /
 

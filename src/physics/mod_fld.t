@@ -159,16 +159,12 @@ module mod_fld
           mg%bc(iB, mg_iphi)%bc_value = 0.0_dp
        case (bc_periodic)
           ! Nothing to do here, this is picked up through periodB variable
-       case (bc_noinflow)
-          if (.not. associated(usr_special_mg_bc)) then 
-             call mpistop("special BC for MG not defined")
-          else
-             call usr_special_mg_bc(iB)
-          endif
        case (bc_special)
-          if (.not. associated(usr_special_mg_bc)) then 
-             call mpistop("special BC for MG not defined")
-          else
+          if(mype==0)then
+             print *,'Special boundary for Erad needs specific user-set MG BC treatment'
+             print *,'                 and this could be through usr_special_mg_bc call'
+          endif
+          if (associated(usr_special_mg_bc)) then 
              call usr_special_mg_bc(iB)
           endif
        case default
@@ -295,11 +291,11 @@ module mod_fld
       {do ix^D = ixOmin^D,ixOmax^D\}
         select case(fld_interaction_method)
         case('Bisect')
-        call Bisection_method(e_gas(ix^D),E_rad(ix^D),c0(ix^D),c1(ix^D))
+        call Bisection_method(e_gas(ix^D),c0(ix^D),c1(ix^D))
         case('Newton')
-        call Newton_method(e_gas(ix^D),E_rad(ix^D),c0(ix^D),c1(ix^D))
+        call Newton_method(e_gas(ix^D),c0(ix^D),c1(ix^D))
         case('Halley')
-        call Halley_method(e_gas(ix^D),E_rad(ix^D),c0(ix^D),c1(ix^D))
+        call Halley_method(e_gas(ix^D),c0(ix^D),c1(ix^D))
         case default
         call mpistop('root-method not known')
         end select 
@@ -747,7 +743,7 @@ module mod_fld
     end do
     if(fld_debug.and.mype==0)print *,'MG residual obtained is =',res
     if(res .ge. max_residual) then
-      if (mg%my_rank == 0) then 
+      if (mype == 0) then 
         write(*,*) it, ' residual from MG ', res
         write(*,*) it, ' max_residual in MG ', max_residual
         write(*,*) it, ' qdt in MG ', qdt, ' versus dtmin=',dtmin
@@ -906,10 +902,9 @@ module mod_fld
 
 
   !> Find the root of the 4th degree polynomial using the bisection method
-  subroutine Bisection_method(e_gas, E_rad, c0, c1)
+  subroutine Bisection_method(e_gas, c0, c1)
     use mod_global_parameters
     double precision, intent(in)    :: c0, c1
-    double precision, intent(in)    :: E_rad
     double precision, intent(inout) :: e_gas
     double precision :: bisect_a, bisect_b, bisect_c
     integer :: n, max_its
@@ -918,7 +913,6 @@ module mod_fld
     max_its = 100
     bisect_a = zero
     bisect_b = min(dabs(c0/c1),dabs(c0)**(1.d0/4.d0))+smalldouble
-    !!do while(dabs(bisect_b-bisect_a) .ge. fld_bisect_tol*min(e_gas,E_rad))
     do while(dabs(bisect_b-bisect_a) .ge. fld_bisect_tol)
       bisect_c = (bisect_a + bisect_b)/two
       n = n +1
@@ -969,10 +963,9 @@ module mod_fld
   end subroutine Bisection_method
 
   !> Find the root of the 4th degree polynomial using the Newton method
-  subroutine Newton_method(e_gas, E_rad, c0, c1)
+  subroutine Newton_method(e_gas, c0, c1)
     use mod_global_parameters
     double precision, intent(in)    :: c0, c1
-    double precision, intent(in)    :: E_rad
     double precision, intent(inout) :: e_gas
     double precision :: xval, yval, der, deltax
     integer :: ii
@@ -991,7 +984,7 @@ module mod_fld
       ii = ii + 1
       if(ii .gt. 1d3) then
         if(fld_debug)print*, 'skip to bisection algorithm'
-        call Bisection_method(e_gas, E_rad, c0, c1)
+        call Bisection_method(e_gas, c0, c1)
         return
       endif
     enddo
@@ -999,10 +992,9 @@ module mod_fld
   end subroutine Newton_method
 
   !> Find the root of the 4th degree polynomial using the Halley method
-  subroutine Halley_method(e_gas, E_rad, c0, c1)
+  subroutine Halley_method(e_gas, c0, c1)
     use mod_global_parameters
     double precision, intent(in)    :: c0, c1
-    double precision, intent(in)    :: E_rad
     double precision, intent(inout) :: e_gas
     double precision :: xval, yval, der, dder, deltax
     integer :: ii
@@ -1023,7 +1015,7 @@ module mod_fld
       ii = ii + 1
       if(ii .gt. 1d3) then
         if(fld_debug)print*, 'skip to Newton algorithm'
-        call Newton_method(e_gas, E_rad, c0, c1)
+        call Newton_method(e_gas, c0, c1)
         return
       endif
     enddo
