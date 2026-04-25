@@ -252,6 +252,7 @@ module mod_mhd_phys
   !    as pointer phys_get_tgas
   public :: mhd_get_temperature_from_prim 
   ! End: following relevant for radiative MHD using FLD
+  public :: mhd_get_temperature_from_etot
 
 contains
 
@@ -1328,6 +1329,8 @@ contains
                 ngridvars,num_particles,physics_type_particles
     use mod_fld
 
+    double precision :: a,b,Xfrac,Yfrac
+
     ! Initialize particles module here, so all extra and user vars are sample
     if(mhd_particles) then
       call particles_init()
@@ -1371,7 +1374,7 @@ contains
            if(.not.fld_no_mg)call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
         endif
         if(mype==0)then
-           write(*,*)'========================'
+           write(*,*)'==FLD SETUP======================'
            write(*,*)'Using FLD with settings:'
            write(*,*)'Using FLD with settings: mhd_radiation_fld=',mhd_radiation_fld
            write(*,*)'Using FLD with settings: fld_fluxlimiter=',fld_fluxlimiter
@@ -1384,7 +1387,20 @@ contains
            write(*,*)'Using FLD with settings: fld_diff_tol=',fld_diff_tol
            write(*,*)'Using FLD with settings: nth_for_diff_mg=',nth_for_diff_mg
            write(*,*)'      FLD has use_imex_scheme and use_multigrid=',use_imex_scheme,use_multigrid
-           write(*,*)'========================'
+           print *,'const_rad_a   =',const_rad_a
+           print *,'NORMALIZED arad_norm=',arad_norm
+           print *,'NORMALIZED c_norm=',c_norm
+           print *,'const_kappae  =',const_kappae 
+           if(trim(fld_opacity_law).eq.'const_norm')then
+               print *,'NORMALIZED fld_kappa0          =',fld_kappa0
+               print *,'physical value (in cgs or SI)  =',fld_kappa0*unit_opacity
+           endif
+           if(trim(fld_opacity_law).eq.'const')then
+               print *,'physical fld_kappa (in cgs or SI) =',fld_kappa0
+               print *,'NORMALIZED value                  =',fld_kappa0/unit_opacity
+           endif
+           if(fld_gamma/=mhd_gamma)call mpistop("you must set fld_gamma and mhd_gamma equal!")
+           write(*,*)'===FLD SETUP====================='
         endif
     endif
 
@@ -1436,6 +1452,58 @@ contains
            write(*,*)'number of             ghostcells=',nghostcells
            write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
            write(*,*)'==========================================='
+           print *,'========EOS and UNITS==========='
+           print *,'SI_unit       =',SI_unit
+           print *,'gamma=',mhd_gamma
+           print *,'eq_state_units=',eq_state_units
+           print *,'He_abundance  =',He_abundance
+           print *,'RR            =',RR
+           print *,'========EOS and UNITS==========='
+           print *,'unit_time          =',unit_time
+           print *,'unit_length        =',unit_length
+           print *,'unit_velocity      =',unit_velocity
+           print *,'unit_pressure      =',unit_pressure
+           print *,'unit_numberdensity =',unit_numberdensity
+           print *,'unit_density       =',unit_density
+           print *,'unit_temperature   =',unit_temperature
+           print *,'unit_mass          =',unit_mass
+           print *,'unit_Erad          =',unit_Erad
+           print *,'unit_radflux       =',unit_radflux
+           print *,'unit_magneticfield =',unit_magneticfield
+           if(SI_unit)then
+              print *,'CHECK that p_u',unit_pressure,' equals ',unit_magneticfield**2/miu0_SI
+           else
+              print *,'CHECK that p_u',unit_pressure,' equals ',unit_magneticfield**2/(4.0d0*dpi)
+           endif
+           print *, 'CHECK that p_u ',unit_pressure,' equals ',unit_density*unit_velocity**2
+           print *, 'CHECK that L_u ',unit_length,' equals ',unit_velocity*unit_time
+           print *, 'CHECK that M_u',unit_mass,' equals ',unit_density*unit_length**3
+           print *, 'density to numberdensity has factor   ',unit_density/unit_numberdensity
+           if(SI_unit)then
+                print *, '                     compare  this to ',mp_SI*(1.d0+4.d0*He_abundance)
+           else
+                print *, '                     compare  this to ',mp_cgs*(1.d0+4.d0*He_abundance)
+           endif
+           print *, 'pressure to n T has factor            ',unit_pressure/(unit_numberdensity*unit_temperature)
+           if(SI_unit)then
+                print *, '                     compare  this to ',kB_SI*(2.d0+3.d0*He_abundance)
+                a=unit_density/unit_numberdensity/mp_SI
+                b=unit_pressure/(unit_numberdensity*unit_temperature*kB_SI)
+           else
+                print *, '                     compare  this to ',kB_cgs*(2.d0+3.d0*He_abundance)
+                a=unit_density/unit_numberdensity/mp_cgs
+                b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
+           endif
+           if(eq_state_units)then
+              print *, 'mean molecular weight mu is =',a/b,' = ', (1.d0+4.d0*He_abundance)/(2.d0+3.d0*He_abundance)
+              Xfrac=1.d0/a
+              Yfrac=4.d0*He_abundance/(1.d0+4.d0*He_abundance)
+              print *, 'mass fraction hydrogen X is =',1/a,' and this equals ', 1.d0/(1.d0+4.d0*He_abundance)
+              print *, 'mass fraction helium   Y is =',Yfrac
+              print *, ' check that 1/mu', b/a,' is equal to 2X+3Y/4=',2.d0*Xfrac+3.d0*Yfrac/4.d0
+              print *, ' ratio n_e/n_p=',1.d0+2.0d0*He_abundance
+           endif
+           print *,'========UNITS==========='
     endif
 
   end subroutine mhd_check_params

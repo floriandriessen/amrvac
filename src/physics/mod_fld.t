@@ -24,6 +24,7 @@ module mod_fld
     !> Tolerance for radiative Energy diffusion
     double precision, public :: fld_diff_tol = 1.d-4
     !> switches for local debug purposes
+    logical :: fld_force_MG_converged = .true.
     logical :: fld_debug,fld_no_mg
     !> switches for opacity
     character(len=40)  :: fld_opacity_law = 'const'
@@ -37,7 +38,7 @@ module mod_fld
     !> Which method to find the root for the energy interaction polynomial
     character(len=40) :: fld_interaction_method = 'Halley'
     !> A copy of (m)hd_gamma
-    double precision, private, protected :: fld_gamma
+    double precision, public :: fld_gamma
 
     !> public methods
     !> these are called in mod_hd_phys or mod_mhd_phys
@@ -62,7 +63,7 @@ module mod_fld
 
     namelist /fld_list/ fld_kappa0, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_tol, fld_opacity_law, fld_fluxlimiter, &
-    fld_interaction_method, fld_opal_table, nth_for_diff_mg, fld_debug, fld_no_mg
+    fld_interaction_method, fld_opal_table, nth_for_diff_mg, fld_debug, fld_no_mg,fld_force_MG_converged
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -681,8 +682,9 @@ module mod_fld
 
     integer, parameter           :: max_its = 100
     integer                      :: n,ixO^L,ix^D
-    double precision             :: res, max_residual, lambda, fac
+    double precision             :: res, max_residual, mg_lambda, fac
     double precision :: wmax(nw),wmin(nw)
+    double precision :: wmaxb(nw),wminb(nw)
     integer :: iigrid, igrid
 
     ! Avoid setting a very restrictive limit to residual when time step small
@@ -694,24 +696,31 @@ module mod_fld
       endif
       return
     endif
-    max_residual = fld_diff_tol
 
     ! we need first to compute the (variable) diffusion coefficient on entire grid
     !   this must be done in mesh+1 ghostcell layer
     call update_diffcoeff(psa)
 
-    lambda = 1.d0/(dtfactor *qdt)
+    mg_lambda = 1.d0/(dtfactor *qdt)
     fac = 1.d0
+    max_residual = fld_diff_tol
 
     if(fld_debug)then
-       call get_global_maxima(wmax)
-       call get_global_minima(wmin)
+       call get_global_maxima(wmax,psa)
+       call get_global_minima(wmin,psa)
+       call get_global_maxima(wmaxb,psb)
+       call get_global_minima(wminb,psb)
        if(mype==0)then
-          print *,'at start of MG solver, we have E_rad range as',wmax(iw_r_e),wmin(iw_r_e)
-          print *,'at start of MG solver, we have Diff coeff range as',wmax(i_diff_mg),wmin(i_diff_mg)
-          print *,'at start of MG solver, we have density range as',wmax(iw_rho),wmin(iw_rho)
+          ! the MG needs to be scaled such that everything is order unity
+          print *,'at start of MG solver, we have fld_diff_tol       =',fld_diff_tol
+          print *,'at start of MG solver, we have LHS E_rad range as :',wmax(iw_r_e),wmin(iw_r_e)
+          print *,'at start of MG solver, we have Diff coeff range as:',wmax(i_diff_mg),wmin(i_diff_mg)
+          print *,'at start of MG solver, we have density range as   :',wmax(iw_rho),wmin(iw_rho)
+          print *,'at start of MG solver, we have RHS E_rad range as :',wmaxb(iw_r_e),wminb(iw_r_e)
           print *,'at start of MG solver, we have qdt as',qdt,' and max_residual=',max_residual
-          print *,'at start of MG solver, we have dtfactor as',dtfactor,' or lambda=',lambda
+          print *,'at start of MG solver, we have dtfactor as',dtfactor,' or 1/dt (or mg_lambda)=',mg_lambda
+          print *,'at start of MG solver, ratio coeffs on level 1  =',wmax(i_diff_mg)/(mg_lambda*dx(1,1)**2)
+          print *,'at start of MG solver, ratio coeffs on level max=',wmax(i_diff_mg)/(mg_lambda*dx(1,refine_max_level)**2)
        endif
     endif
 
@@ -720,28 +729,30 @@ module mod_fld
 
     ! Here we handle the global helmholtz problem with variable coefficient
     ! The equation we solve is div(D nabla Erad^(n+1)) -(1/dt)Erad^(n+1)=-(1/dt)Erad^n
-    ! Helmholtz equation is div(eps nabla phi) -lambda phi = f
+    ! Helmholtz equation is div(eps nabla phi) -mg_lambda phi = f
     !    hence eps is our variable coefficient D=fld_lambda*c/(kappa*rho)
-    !    hence phi is Erad and lambda=1/dt
-    call vhelmholtz_set_lambda(lambda)
+    !    hence phi is Erad and mg_lambda=1/dt
+    call vhelmholtz_set_lambda(mg_lambda)
     ! copy in the (variable) diffusion coefficient in mg_iveps
     ! NOTE: this copies also the ghostcell values for this coefficient to mg
     call mg_copy_to_tree(i_diff_mg, mg_iveps, factor=fac, state_from=psa)
     ! copy in the Erad variable in mg_iphi (the one we solve for)
     call mg_copy_to_tree(iw_r_e, mg_iphi, factor=fac, state_from=psa)
     ! copy in RHS f factor as Erad with factor -(1/dt)
-    call mg_copy_to_tree(iw_r_e, mg_irhs, factor=-lambda, state_from=psb)
+    call mg_copy_to_tree(iw_r_e, mg_irhs, factor=-mg_lambda, state_from=psb)
     ! becuase the variable coefficient is needed on lower grid levels in mg
     ! we need to restrict and adopt BCs for this variable: Neumann is set 
     call mg_restrict(mg, mg_iveps)
     call mg_fill_ghost_cells(mg, mg_iveps)
     ! Now try solving with MG
     call mg_fas_fmg(mg, .true., max_res=res)
+    if(fld_debug.and.mype==0)print *,'MG residual obtained with FMG is =',res
     do n = 1, max_its
       if(res < max_residual) exit
       call mg_fas_vcycle(mg, max_res=res)
+      if(fld_debug.and.mype==0)print *,'MG residual obtained with Vcycle =',res,' at step =',n
     end do
-    if(fld_debug.and.mype==0)print *,'MG residual obtained is =',res
+    if(fld_debug.and.mype==0)print *,'FINAL MG residual obtained is =',res
     if(res .ge. max_residual) then
       if (mype == 0) then 
         write(*,*) it, ' residual from MG ', res
@@ -749,7 +760,11 @@ module mod_fld
         write(*,*) it, ' qdt in MG ', qdt, ' versus dtmin=',dtmin
         write(*,*) it, ' dtfactor*qdt in MG ', qdt*dtfactor
       endif
-      call mpistop("no convergence in MG")
+      if(fld_force_MG_converged) then
+          call mpistop("no convergence in MG")
+      else
+          if(mype==0) write(*,*) 'WARNING for it=',it,' NO CONVERGENCE IN MG but still carry on'
+      endif
     end if
     ! copy back the Erad variable in iw_r_e
     call mg_copy_from_tree_gc(mg_iphi, iw_r_e, state_to=psa)
@@ -831,7 +846,7 @@ module mod_fld
 
     ! Here we use diffusion coefficients in positions i-1 i i+1 and exploit harmonic means i.e. 2ab/(a+b)
     ! since this is how the multigrid library handles the div(eps nabla phi) term in Helmholtz equation
-    !   div(eps nabla phi) - lambda phi = f
+    !   div(eps nabla phi) - mg_lambda phi = f
     divF(ixO^S) = 0.d0
     do idir = 1,ndim
        hxO^L=ixO^L-kr(idir,^D);

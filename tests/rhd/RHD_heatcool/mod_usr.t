@@ -106,48 +106,12 @@ end subroutine usr_params_read
     print *,'with units e_eq=',e_eq*unit_pressure,' so log10 value is=',dlog10(e_eq*unit_pressure)
     write(*,*)'equilibrium dimensionless Tgas_eq=',Tgas_eq
     print *,'with units Tgas_eq=',Tgas_eq*unit_temperature
-  print *,'========GLOBAL values==========='
-  print *,'rho0=',rho0
-  print *,'E_r0=',E_r0
-  print *,'factor0=',factor0
-  print *,'arad_norm=',arad_norm
-  print *,'c_norm=',c_norm
-  print *,'const_kappae  =',const_kappae
-  print *,'fld_kappa0    =',fld_kappa0
-  print *,'gamma=',hd_gamma
-  print *,'========UNITS==========='
-  print *,'SI_unit       =',SI_unit
-  print *,'const_rad_a   =',const_rad_a
-  print *,'eq_state_units=',eq_state_units
-  print *,'He_abundance  =',He_abundance
-  print *,'RR            =',RR
-  print *,'unit_time          =',unit_time
-  print *,'unit_length        =',unit_length
-  print *,'unit_velocity      =',unit_velocity
-  print *,'unit_pressure      =',unit_pressure
-  print *,'unit_Erad          =',unit_Erad
-  print *,'unit_numberdensity =',unit_numberdensity
-  print *,'unit_density       =',unit_density
-  print *,'unit_mass          =',unit_mass
-  print *,'unit_temperature   =',unit_temperature
-  print *,'unit_radflux       =',unit_radflux
-  print *, 'CHECK that ',unit_pressure,' equals ',unit_density*unit_velocity**2
-  print *, 'CHECK that ',unit_length,' equals ',unit_velocity*unit_time
-  print *, 'CHECK that ',unit_mass,' equals ',unit_density*unit_length**3
-  print *, 'density to numberdensity has factor   ',unit_density/unit_numberdensity
-  print *, '                     compare  this to ',mp_cgs*(1.d0+4.d0*He_abundance)
-  print *, 'pressure to n T has factor            ',unit_pressure/(unit_numberdensity*unit_temperature)
-  print *, '                     compare  this to ',kB_cgs*(2.d0+3.d0*He_abundance)
-  a=unit_density/unit_numberdensity/mp_cgs
-  b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
-  print *, 'mean molecular weight mu adopted is =',a/b,' and this equals ', (1.d0+4.d0*He_abundance)/(2.d0+3.d0*He_abundance)
-  Xfrac=1.d0/a
-  Yfrac=4.d0*He_abundance/(1.d0+4.d0*He_abundance)
-  print *, 'mass fraction hydrogen X is =',1/a,' and this equals ', 1.d0/(1.d0+4.d0*He_abundance)
-  print *, 'mass fraction helium   Y is =',Yfrac
-  print *, ' check that 1/mu', b/a,' is equal to 2X+3Y/4=',2.d0*Xfrac+3.d0*Yfrac/4.d0
-  print *, ' ratio n_e/n_p=',1.d0+2.0d0*He_abundance
-  print *,'========UNITS==========='
+    print *,'========GLOBAL values==========='
+    print *,'rho0=',rho0
+    print *,'E_r0=',E_r0
+    print *,'factor0=',factor0
+    print *,'fld_kappa0    =',fld_kappa0
+    print *,'========GLOBAL values==========='
     first=.false.
   endif
 

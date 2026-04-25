@@ -2803,10 +2803,11 @@ contains
   end subroutine get_volume_average_func
 
   !> Compute global maxima of iw variables over the leaves of the grid.
-  subroutine get_global_maxima(wmax)
+  subroutine get_global_maxima(wmax,psa)
     use mod_global_parameters
 
     double precision, intent(out) :: wmax(nw)  !< The global maxima
+    type(state), target :: psa(max_blocks)
 
     double precision              :: wmax_mype(nw),wmax_recv(nw)
     integer                       :: iigrid, igrid, iw
@@ -2817,7 +2818,7 @@ contains
     do iigrid = 1, igridstail
        igrid = igrids(iigrid)
        do iw = 1, nw
-          wmax_mype(iw)=max(wmax_mype(iw),maxval(ps(igrid)%w(ixM^T,iw)))
+          wmax_mype(iw)=max(wmax_mype(iw),maxval(psa(igrid)%w(ixM^T,iw)))
        end do
     end do
 
@@ -2830,10 +2831,11 @@ contains
   end subroutine get_global_maxima
 
   !> Compute global minima of iw variables over the leaves of the grid.
-  subroutine get_global_minima(wmin)
+  subroutine get_global_minima(wmin,psa)
     use mod_global_parameters
 
     double precision, intent(out) :: wmin(nw)  !< The global maxima
+    type(state), target :: psa(max_blocks)
 
     double precision              :: wmin_mype(nw),wmin_recv(nw)
     integer                       :: iigrid, igrid, iw
@@ -2844,7 +2846,7 @@ contains
     do iigrid = 1, igridstail
        igrid = igrids(iigrid)
        do iw = 1, nw
-          wmin_mype(iw)=min(wmin_mype(iw),minval(ps(igrid)%w(ixM^T,iw)))
+          wmin_mype(iw)=min(wmin_mype(iw),minval(psa(igrid)%w(ixM^T,iw)))
        end do
     end do
 

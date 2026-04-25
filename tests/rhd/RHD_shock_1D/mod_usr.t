@@ -102,7 +102,7 @@ contains
        -half*momc_n**2/rho2_norm)
     T2B_norm=T1_norm ! this is a bad guess
     call Halley_method(T2B_norm,c0B_norm,c1B_norm)
-    if(mype==0)print *,'Eenergy balance needs T2 (normalized)=',T2B_norm
+    if(mype==0)print *,'Energy balance needs T2 (normalized)=',T2B_norm
 
     if(mype==0)then
        print *,'difference in T2 is',T2A_norm-T2B_norm
@@ -205,51 +205,6 @@ contains
     print*, 'with radiation and gas temperatures equal on each side: LEFT  is', T1_norm,(Er1_norm/arad_norm)**0.25d0
     print*, 'with radiation and gas temperatures equal on each side: RIGHT is', T2_norm,(Er2_norm/arad_norm)**0.25d0
     print *,'================================================================='
-    print *,'arad_norm=',arad_norm
-    print *,'c_norm=',c_norm
-    print *,'const_kappae  =',const_kappae
-    if(trim(fld_opacity_law).eq.'const_norm')then
-      print *,'normalized fld_kappa0    =',fld_kappa0
-      print *,'physical value           =',fld_kappa0*unit_opacity
-    endif
-    if(trim(fld_opacity_law).eq.'const')then
-      print *,'physical fld_kappa in cgs =',fld_kappa0
-      print *,'normalized value          =',fld_kappa0/unit_opacity
-    endif
-    print *,'gamma=',hd_gamma
-    print *,'========UNITS==========='
-    print *,'SI_unit       =',SI_unit
-    print *,'const_rad_a   =',const_rad_a
-    print *,'eq_state_units=',eq_state_units
-    print *,'He_abundance  =',He_abundance
-    print *,'RR            =',RR
-    print *,'unit_time          =',unit_time
-    print *,'unit_length        =',unit_length
-    print *,'unit_velocity      =',unit_velocity
-    print *,'unit_pressure      =',unit_pressure
-    print *,'unit_Erad          =',unit_Erad
-    print *,'unit_numberdensity =',unit_numberdensity
-    print *,'unit_density       =',unit_density
-    print *,'unit_mass          =',unit_mass
-    print *,'unit_temperature   =',unit_temperature
-    print *,'unit_radflux       =',unit_radflux
-    print *, 'CHECK that p_u ',unit_pressure,' equals ',unit_density*unit_velocity**2
-    print *, 'CHECK that L_u ',unit_length,' equals ',unit_velocity*unit_time
-    print *, 'CHECK that M_u',unit_mass,' equals ',unit_density*unit_length**3
-    print *, 'density to numberdensity has factor   ',unit_density/unit_numberdensity
-    print *, '                     compare  this to ',mp_cgs*(1.d0+4.d0*He_abundance)
-    print *, 'pressure to n T has factor            ',unit_pressure/(unit_numberdensity*unit_temperature)
-    print *, '                     compare  this to ',kB_cgs*(2.d0+3.d0*He_abundance)
-    a=unit_density/unit_numberdensity/mp_cgs
-    b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
-    print *, 'mean molecular weight mu adopted is =',a/b,' and this equals ', (1.d0+4.d0*He_abundance)/(2.d0+3.d0*He_abundance)
-    Xfrac=1.d0/a
-    Yfrac=4.d0*He_abundance/(1.d0+4.d0*He_abundance)
-    print *, 'mass fraction hydrogen X is =',1/a,' and this equals ', 1.d0/(1.d0+4.d0*He_abundance)
-    print *, 'mass fraction helium   Y is =',Yfrac
-    print *, ' check that 1/mu', b/a,' is equal to 2X+3Y/4=',2.d0*Xfrac+3.d0*Yfrac/4.d0
-    print *, ' ratio n_e/n_p=',1.d0+2.0d0*He_abundance
-    print *,'========UNITS==========='
     first=.false.
   endif
 
