@@ -353,29 +353,41 @@ contains
 
       fac(ixC^S) = -0.5d0*tvdlfeps*cmaxC(ixC^S,ii)
       do iw=iws,iwe
-         fC(ixC^S,iw,idims)=0.5d0*(fLC(ixC^S, iw)+fRC(ixC^S, iw))
-         ! Add TVDLF dissipation to the flux
-         if(flux_type(idims, iw) /= flux_no_dissipation) then
-           if(flux_adaptive_diffusion) then
-            {do ix^DB=ixCmin^DB,ixCmax^DB\}
-               jx^D=ix^D+kr(idims,^D)\
-               !> adaptive diffusion from Rempel et al. 2009, see also Rempel et al. 2014
-               !> the previous version is adopt
-               if(((wRC(ix^D,iw)-wLC(ix^D,iw))*(sCT%w(jx^D,iw)-sCT%w(ix^D,iw))) .gt. 1.e-18) then
-                 phi=min((wRC(ix^D,iw)-wLC(ix^D,iw))**2/((sCT%w(jx^D,iw)-sCT%w(ix^D,iw))**2+1.e-18),one)
-               else
-                 phi=1.d0
-               end if
-               fC(ix^D,iw,idims)=fC(ix^D,iw,idims)+fac(ix^D)*(wRC(ix^D,iw)-wLC(ix^D,iw))*phi
-            {end do\}
-           else
-            {do ix^DB=ixCmin^DB,ixCmax^DB\}
-               fC(ix^D,iw,idims)=fC(ix^D,iw,idims)+fac(ix^D)*(wRC(ix^D,iw)-wLC(ix^D,iw))
-            {end do\}
+         if(flux_energy_only .and. iw /= iw_e) then
+           fC(ixC^S,iw,idims)=zero
+         else
+           fC(ixC^S,iw,idims)=0.5d0*(fLC(ixC^S, iw)+fRC(ixC^S, iw))
+           ! Add TVDLF dissipation to the flux
+           if(flux_type(idims, iw) /= flux_no_dissipation) then
+             if(flux_adaptive_diffusion) then
+              {do ix^DB=ixCmin^DB,ixCmax^DB\}
+                 jx^D=ix^D+kr(idims,^D)\
+                 !> adaptive diffusion from Rempel et al. 2009, see also Rempel et al. 2014
+                 !> the previous version is adopt
+                 !if(((wRC(ix^D,iw)-wLC(ix^D,iw))*(sCT%w(jx^D,iw)-sCT%w(ix^D,iw))) .gt. 1.e-18) then
+                 !  phi=min((wRC(ix^D,iw)-wLC(ix^D,iw))**2/((sCT%w(jx^D,iw)-sCT%w(ix^D,iw))**2+1.e-18),one)
+                 !else
+                 !  phi=1.d0
+                 !end if
+                 phi = flux_adaptive_diffusion_min
+                 if(((wRC(ix^D,iw)-wLC(ix^D,iw))*(sCT%w(jx^D,iw)-sCT%w(ix^D,iw))) .gt. 1.d-18) then
+                   phi = max(flux_adaptive_diffusion_min, &
+                        min(flux_adaptive_diffusion_scale * &
+                            (wRC(ix^D,iw)-wLC(ix^D,iw))**2 / &
+                            ((sCT%w(jx^D,iw)-sCT%w(ix^D,iw))**2 + 1.d-18), one))
+                 else
+                   phi = one
+                 end if
+                 fC(ix^D,iw,idims)=fC(ix^D,iw,idims)+fac(ix^D)*(wRC(ix^D,iw)-wLC(ix^D,iw))*phi
+              {end do\}
+             else
+              {do ix^DB=ixCmin^DB,ixCmax^DB\}
+                 fC(ix^D,iw,idims)=fC(ix^D,iw,idims)+fac(ix^D)*(wRC(ix^D,iw)-wLC(ix^D,iw))
+              {end do\}
+             end if
            end if
          end if
       end do
-
     end subroutine get_Riemann_flux_tvdlf
 
     subroutine get_Riemann_flux_hll(iws,iwe)

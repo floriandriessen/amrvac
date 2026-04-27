@@ -251,17 +251,18 @@ contains
     namelist /stoplist/ it_init,time_init,it_max,time_max,dtmin,reset_it,reset_time,&
          wall_time_max,final_dt_reduction
 
-    namelist /methodlist/ time_stepper,time_integrator, &
-         source_split_usr,typesourcesplit,local_timestep,&
-         dimsplit,typedimsplit,flux_scheme,&
-         limiter,gradient_limiter,cada3_radius,&
-         loglimit,typeboundspeed, H_correction,&
-         typetvd,typeentropy,entropycoef,typeaverage, &
-         typegrad,typediv,typecurl,&
+    namelist /methodlist/ time_stepper, time_integrator, &
+         source_split_usr, typesourcesplit, local_timestep, &
+         dimsplit, typedimsplit, flux_scheme, &
+         limiter, gradient_limiter, cada3_radius, &
+         loglimit, typeboundspeed, H_correction, &
+         typetvd, typeentropy, entropycoef, typeaverage, &
+         typegrad, typediv, typecurl, &
          nxdiffusehllc, flathllc, tvdlfeps, flux_adaptive_diffusion, &
-         flatcd,flatsh,&
-         rk2_alfa,imex222_lambda,ssprk_order,rk3_switch,imex_switch,&
-         small_temperature,small_pressure,small_density, &
+         flux_adaptive_diffusion_min, flux_adaptive_diffusion_scale, &
+         flux_energy_only, flatcd, flatsh, &
+         rk2_alfa, imex222_lambda, ssprk_order, rk3_switch, imex_switch, &
+         small_temperature, small_pressure, small_density, &
          small_values_method, small_values_daverage, fix_small_values, check_small_values, &
          trace_small_values, small_values_fix_iw
 
@@ -460,6 +461,9 @@ contains
     typeaverage     = 'default'
     tvdlfeps        = one
     flux_adaptive_diffusion = .false.
+    flux_adaptive_diffusion_min = 0.d0
+    flux_adaptive_diffusion_scale = 1.d0
+    flux_energy_only = .false.
     nxdiffusehllc   = 0
     flathllc        = .false.
     slowsteps       = -1

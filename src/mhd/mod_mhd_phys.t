@@ -34,7 +34,8 @@ module mod_mhd_phys
   !> Reduced speed of light for semirelativistic MHD: 2% of light speed
   double precision, public, protected     :: mhd_reduced_c = 0.02d0*const_c
   !> The thermal conductivity kappa in hyperbolic thermal conduction
-  double precision, public                :: hypertc_kappa
+  double precision, public                :: mhd_hyperbolic_tc_kappa = 0.d0
+  logical, public                         :: mhd_hyperbolic_tc_constant = .false.
   !> Coefficient of diffusive divB cleaning
   double precision, public                :: divbdiff     = 0.8d0
   !> Helium abundance over Hydrogen
@@ -73,8 +74,10 @@ module mod_mhd_phys
   integer, public, protected              :: ^C&b^C_
   !> Index of the gas pressure (-1 if not present) should equal e_
   integer, public, protected              :: p_
-  !> Index of the heat flux q
-  integer, public, protected :: q_
+  !> Index of the field-aligned heat flux q_parallel
+  integer, public, protected :: qpar_
+  !> Index of the perpendicular heat flux q_perp
+  integer, public, protected :: qperp_
   !> Indices of the GLM psi
   integer, public, protected :: psi_
   !> Index of the radiation energy
@@ -110,9 +113,20 @@ module mod_mhd_phys
   !> Whether radiative cooling is added
   logical, public, protected              :: mhd_radiative_cooling = .false.
   !> Whether thermal conduction is used
-  logical, public, protected              :: mhd_hyperbolic_thermal_conduction = .false.
+  logical, public, protected              :: mhd_hyperbolic_tc = .false.
   !> Whether saturation is considered for hyperbolic TC
-  logical, public, protected              :: mhd_htc_sat = .false.
+  logical, public, protected              :: mhd_hyperbolic_tc_sat = .false.
+  !> Whether the perpendicular hyperbolic-TC channel is enabled
+  logical, public, protected              :: mhd_hyperbolic_tc_use_perp = .false.
+  !> Perpendicular hyperbolic-TC closure mode:
+  !> 0 = off, 1 = fixed anisotropy, 2 = field-strength-dependent isotropization
+  !> 3 = magnetization-based closure kappa_perp = kappa_parallel/(1+chi^2)
+  integer, public, protected              :: mhd_hyperbolic_tc_perp_mode = 0
+  !> Relative perpendicular hyperbolic-TC coefficient in fixed/strong-field limit:
+  !> kappa_perp0 = mhd_hyperbolic_tc_kappa_perp_factor * kappa_parallel
+  double precision, public, protected     :: mhd_hyperbolic_tc_kappa_perp_factor = 0.d0
+  !> Field-strength transition scale for perpendicular closure
+  double precision, public, protected     :: mhd_hyperbolic_tc_Bmin = 0.d0
   !> Whether viscosity is added
   logical, public, protected              :: mhd_viscosity = .false.
   !> Whether gravity is added
@@ -274,7 +288,9 @@ contains
       boundary_divbfix, boundary_divbfix_skip, mhd_divb_nth, mhd_semirelativistic,&
       mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
       mhd_hydrodynamic_e, mhd_trac, mhd_trac_type, mhd_trac_mask, mhd_trac_finegrid, mhd_cak_force, &
-      mhd_hyperbolic_thermal_conduction, mhd_htc_sat,&
+      mhd_hyperbolic_tc, mhd_hyperbolic_tc_sat, mhd_hyperbolic_tc_kappa, &
+      mhd_hyperbolic_tc_use_perp, mhd_hyperbolic_tc_perp_mode, &
+      mhd_hyperbolic_tc_kappa_perp_factor, mhd_hyperbolic_tc_Bmin, &
       mhd_radiation_fld
 
     do n = 1, size(files)
@@ -381,9 +397,9 @@ contains
         mhd_thermal_conduction=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_thermal_conduction=F when mhd_energy=F'
       end if
-      if(mhd_hyperbolic_thermal_conduction) then
-        mhd_hyperbolic_thermal_conduction=.false.
-        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_thermal_conduction=F when mhd_energy=F'
+      if(mhd_hyperbolic_tc) then
+        mhd_hyperbolic_tc=.false.
+        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_tc=F when mhd_energy=F'
       end if
       if(mhd_radiative_cooling) then
         mhd_radiative_cooling=.false.
@@ -413,12 +429,16 @@ contains
       end if
     end if
 
-    if(mhd_thermal_conduction .and. mhd_hyperbolic_thermal_conduction) then
+    if(mhd_thermal_conduction .and. mhd_hyperbolic_tc) then
       mhd_thermal_conduction=.false.
       if(mype==0) write(*,*) 'WARNING: set either parabolic TC or hyperbolic TC to F'
-      if(mype==0) write(*,*) 'WARNING: defaulting to only mhd_hyperbolic_thermal_conduction=T'
+      if(mype==0) write(*,*) 'WARNING: defaulting to only mhd_hyperbolic_tc=T'
     end if
-
+    {^IFONED
+    if (mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp) then
+      call mpistop("mhd_hyperbolic_tc_use_perp is not supported in 1D")
+    end if
+    }
 
     physics_type = "mhd"
     phys_energy=mhd_energy
@@ -534,12 +554,17 @@ contains
       psi_ = -1
     end if
 
-    if(mhd_hyperbolic_thermal_conduction) then
-      ! hyperbolic thermal conduction flux q
-      q_ = var_set_q()
+    if(mhd_hyperbolic_tc) then
+      qpar_ = var_set_fluxvar('q', 'q', need_bc=.false.)
+      if(mhd_hyperbolic_tc_use_perp) then
+        qperp_ = var_set_fluxvar('qperp', 'qperp', need_bc=.false.)
+      else
+        qperp_ = -1
+      end if
       need_global_cmax=.true.
     else
-      q_=-1
+      qpar_ = -1
+      qperp_ = -1
     end if
 
     allocate(tracer(mhd_n_tracer))
@@ -856,14 +881,44 @@ contains
     ! derive units from basic units
     call mhd_physical_units()
 
-    if(mhd_hyperbolic_thermal_conduction) then
-      if(SI_unit)then
-        ! parallel conduction Spitzer
-        hypertc_kappa=8.d-12*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+    if(mhd_hyperbolic_tc) then
+      if(mhd_hyperbolic_tc_kappa==0.d0) then
+        if(SI_unit) then
+          mhd_hyperbolic_tc_kappa=8.d-12*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+        else
+          mhd_hyperbolic_tc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+        end if
       else
-        ! in cgs
-        hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
-      endif
+        mhd_hyperbolic_tc_constant=.true.
+      end if
+    
+      if(mhd_hyperbolic_tc_use_perp) then
+        select case(mhd_hyperbolic_tc_perp_mode)
+        case(1)
+          if(mhd_hyperbolic_tc_kappa_perp_factor==0.d0) then
+            if(SI_unit) then
+              mhd_hyperbolic_tc_kappa_perp_factor = 4.d-30 * &
+                unit_numberdensity**2 / unit_magneticfield**2 / unit_temperature**3
+            else
+              mhd_hyperbolic_tc_kappa_perp_factor = 4.d-10 * &
+                unit_numberdensity**2 / unit_magneticfield**2 / unit_temperature**3
+            end if
+          end if
+        case(2)
+          if(mhd_hyperbolic_tc_Bmin==0.d0) then
+            mhd_hyperbolic_tc_Bmin=0.1d0/unit_magneticfield
+          end if
+        end select
+      end if
+    end if
+    if(.not. mhd_energy .and. mhd_thermal_conduction) then
+      call mpistop("thermal conduction needs mhd_energy=T")
+    end if
+    if(.not. mhd_energy .and. mhd_hyperbolic_tc) then
+      call mpistop("hyperbolic thermal conduction needs mhd_energy=T")
+    end if
+    if(.not. mhd_energy .and. mhd_radiative_cooling) then
+      call mpistop("radiative cooling needs mhd_energy=T")
     end if
 
     if(mhd_equi_thermal)then
@@ -1223,7 +1278,6 @@ contains
     fl%rad_cut_hgt=rad_cut_hgt
     fl%rad_cut_dey=rad_cut_dey
   end subroutine rc_params_read
-!! end rad cool
 
   !> sets the equilibrium variables
   subroutine set_equi_vars_grid_faces(igrid,x,ixI^L,ixO^L)
@@ -1266,7 +1320,6 @@ contains
       end do
       call usr_set_equi_vars(ixI^L,ixC^L,xC,ps(igrid)%equi_vars(ixI^S,1:number_equi_vars,idims))
     end do
-
   end subroutine set_equi_vars_grid_faces
 
   !> sets the equilibrium variables
@@ -1434,7 +1487,7 @@ contains
            write(*,*)'    mhd_cak_force=',mhd_cak_force
            write(*,*)'    mhd_radiation_fld=',mhd_radiation_fld
            write(*,*)'    mhd_thermal_conduction=',mhd_thermal_conduction
-           write(*,*)'    mhd_hyperbolic_thermal_conduction=',mhd_hyperbolic_thermal_conduction
+           write(*,*)'    mhd_hyperbolic_tc=',mhd_hyperbolic_tc
            write(*,*)'    mhd_trac=',mhd_trac
            write(*,*)'    mhd_hall=',mhd_hall
            write(*,*)'    mhd_ambipolar=',mhd_ambipolar
@@ -4216,7 +4269,12 @@ contains
 
     double precision             :: vHall(ixI^S,1:ndir)
     double precision             :: ptotal
-    integer                      :: iw, ix^D
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: Bvec(ixI^S,1:ndir)
+    double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision             :: nperp(ixI^S,1:ndir)
+    logical                      :: use_perp_flux
+    integer                      :: iw, ix^D, idir
 
     if(mhd_internal_e) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -4282,13 +4340,29 @@ contains
      {end do\}
     end do
 
-    if(mhd_hyperbolic_thermal_conduction) then
-     {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
-        f(ix^D,q_)=zero
-     {end do\}
+    use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(use_perp_flux) then
+      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
+      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=w(ix^D,mag(idir))
+        end do
+      {end do\}
+      call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
     end if
 
+    if(mhd_hyperbolic_tc) then
+     {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qpar_)*w(ix^D,mag(idim))/(dsqrt(^C&w(ix^D,b^C_)**2+)+smalldouble)
+        f(ix^D,qpar_)=zero
+        if(use_perp_flux) then
+          f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qperp_)*nperp(ix^D,idim)
+          f(ix^D,qperp_)=zero
+        end if
+     {end do\}
+    end if
   end subroutine mhd_get_flux
 
   !> Calculate fluxes within ixO^L for case without energy equation, hence without splitting
@@ -4367,7 +4441,12 @@ contains
     double precision,intent(out) :: f(ixI^S,nwflux)
 
     double precision             :: vHall(ixI^S,1:ndir)
-    integer                      :: iw, ix^D
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: Bvec(ixI^S,1:ndir)
+    double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision             :: nperp(ixI^S,1:ndir)
+    logical                      :: use_perp_flux
+    integer                      :: iw, ix^D, idir
 
     {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
@@ -4401,14 +4480,28 @@ contains
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-
-    if(mhd_hyperbolic_thermal_conduction) then
+    use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(use_perp_flux) then
+      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
+      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=w(ix^D,mag(idir))
+        end do
+      {end do\}
+      call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
+    end if
+    if(mhd_hyperbolic_tc) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
-        f(ix^D,q_)=zero
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qpar_)*w(ix^D,mag(idim))/(dsqrt(^C&w(ix^D,b^C_)**2+)+smalldouble)
+        f(ix^D,qpar_)=zero
+        if(use_perp_flux) then
+          f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qperp_)*nperp(ix^D,idim)
+          f(ix^D,qperp_)=zero
+        end if
      {end do\}
     end if
-
   end subroutine mhd_get_flux_hde
 
   !> Calculate fluxes within ixO^L with possible splitting
@@ -4429,8 +4522,13 @@ contains
     double precision,intent(out) :: f(ixI^S,nwflux)
 
     double precision             :: vHall(ixI^S,1:ndir)
-    double precision             :: ptotal, btotal(ixO^S,1:ndir)
-    integer                      :: iw, ix^D
+    double precision             :: ptotal, Btotal(ixO^S,1:ndir)
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: Bvec(ixI^S,1:ndir)
+    double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision             :: nperp(ixI^S,1:ndir)
+    logical                      :: use_perp_flux
+    integer                      :: iw, ix^D, idir
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
@@ -4502,13 +4600,28 @@ contains
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-    if(mhd_hyperbolic_thermal_conduction) then
+    use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(use_perp_flux) then
+      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
+      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=Btotal(ix^D,idir)
+        end do
+      {end do\}
+      call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
+    end if
+    if(mhd_hyperbolic_tc) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*btotal(ix^D,idim)/(dsqrt(^C&btotal({ix^D},^C)**2+)+smalldouble)
-        f(ix^D,q_)=zero
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qpar_)*Btotal(ix^D,idim)/(dsqrt(^C&btotal(ix^D,^C)**2+)+smalldouble)
+        f(ix^D,qpar_)=zero
+        if(use_perp_flux) then
+          f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qperp_)*nperp(ix^D,idim)
+          f(ix^D,qperp_)=zero
+        end if
      {end do\}
     end if
-
   end subroutine mhd_get_flux_split
 
   !> Calculate semirelativistic fluxes within ixO^L without any splitting
@@ -4523,9 +4636,13 @@ contains
     double precision, intent(in) :: w(ixI^S,nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision,intent(out) :: f(ixI^S,nwflux)
-
     double precision             :: SA(ixO^S,1:ndir),E(ixO^S,1:ndir),e2
-    integer                      :: iw, ix^D
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: Bvec(ixI^S,1:ndir)
+    double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision             :: nperp(ixI^S,1:ndir)
+    logical                      :: use_perp_flux
+    integer                      :: iw, ix^D, idir
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
@@ -4591,10 +4708,26 @@ contains
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-    if(mhd_hyperbolic_thermal_conduction) then
+    use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(use_perp_flux) then
+      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
+      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=w(ix^D,mag(idir))
+        end do
+      {end do\}
+      call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
+    end if
+    if(mhd_hyperbolic_tc) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
-        f(ix^D,q_)=zero
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qpar_)*w(ix^D,mag(idim))/(dsqrt(^C&w(ix^D,b^C_)**2+)+smalldouble)
+        f(ix^D,qpar_)=zero
+        if(use_perp_flux) then
+          f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qperp_)*nperp(ix^D,idim)
+          f(ix^D,qperp_)=zero
+        end if
      {end do\}
     end if
 
@@ -5086,9 +5219,9 @@ contains
         end if
       end if
 
-      if(mhd_hyperbolic_thermal_conduction) then
+      if(mhd_hyperbolic_tc) then
         active = .true.
-        call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+        call add_hyperbolic_tc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
 
       ! Source for B0 splitting
@@ -5292,19 +5425,158 @@ contains
     endif
   end subroutine add_equi_terms
 
-  subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+  subroutine mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
     use mod_global_parameters
+    use mod_geometry, only: gradient
+    integer, intent(in) :: ixI^L,ixO^L
+    double precision, intent(in) :: Te(ixI^S)
+    double precision, intent(in) :: Bvec(ixI^S,1:ndir)
+    double precision, intent(out) :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision, intent(out) :: nperp(ixI^S,1:ndir)
+
+    double precision :: Bmag, bunitvec(ndir), gradT(ndir), gradT_perp(ndir)
+    double precision :: gradT_cell(ixI^S,1:ndir)
+    integer :: ix^D, idir
+
+    gradT_cell=zero
+    if(.not. slab_uniform) then
+      do idir=1,ndim
+        call gradient(Te,ixI^L,ixO^L,idir,gradT_cell(ixI^S,idir))
+      end do
+    end if
+
+   {^IFTWOD
+    do ix2=ixOmin2,ixOmax2
+      do ix1=ixOmin1,ixOmax1
+        Bmag=zero
+        do idir=1,ndir
+          Bmag=Bmag+Bvec(ix^D,idir)**2
+        end do
+        Bmag=dsqrt(Bmag)
+
+        if(Bmag>smalldouble) then
+          do idir=1,ndir
+            bunitvec(idir)=Bvec(ix^D,idir)/Bmag
+          end do
+        else
+          do idir=1,ndir
+            bunitvec(idir)=zero
+          end do
+        end if
+        if(slab_uniform) then
+          gradT(1)=((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)
+          gradT(2)=((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2)
+          if(ndir>2) gradT(3)=zero
+        else
+          do idir=1,ndir
+            gradT(idir)=gradT_cell(ix^D,idir)
+          end do
+        end if
+
+        bgradT(ix^D)=zero
+        do idir=1,ndir
+          bgradT(ix^D)=bgradT(ix^D)+bunitvec(idir)*gradT(idir)
+        end do
+
+        do idir=1,ndir
+          gradT_perp(idir)=gradT(idir)-bgradT(ix^D)*bunitvec(idir)
+        end do
+
+        gradTperp_mag(ix^D)=zero
+        do idir=1,ndir
+          gradTperp_mag(ix^D)=gradTperp_mag(ix^D)+gradT_perp(idir)**2
+        end do
+        gradTperp_mag(ix^D)=dsqrt(gradTperp_mag(ix^D))
+
+        if(gradTperp_mag(ix^D)>smalldouble) then
+          do idir=1,ndir
+            nperp(ix^D,idir)=gradT_perp(idir)/gradTperp_mag(ix^D)
+          end do
+        else
+          gradTperp_mag(ix^D)=zero
+          do idir=1,ndir
+            nperp(ix^D,idir)=zero
+          end do
+        end if
+      end do
+    end do
+   }
+   {^IFTHREED
+    do ix3=ixOmin3,ixOmax3
+      do ix2=ixOmin2,ixOmax2
+        do ix1=ixOmin1,ixOmax1
+          Bmag=dsqrt(Bvec(ix^D,1)**2+Bvec(ix^D,2)**2+Bvec(ix^D,3)**2)
+          if(Bmag>smalldouble) then
+            bunitvec(1)=Bvec(ix^D,1)/Bmag
+            bunitvec(2)=Bvec(ix^D,2)/Bmag
+            bunitvec(3)=Bvec(ix^D,3)/Bmag
+          else
+            bunitvec(1)=zero
+            bunitvec(2)=zero
+            bunitvec(3)=zero
+          end if
+
+          if(slab_uniform) then
+            gradT(1)=((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)
+            gradT(2)=((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)
+            gradT(3)=((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3)
+          else
+            do idir=1,ndir
+              gradT(idir)=gradT_cell(ix^D,idir)
+            end do
+          end if
+
+          bgradT(ix^D)=zero
+          do idir=1,ndir
+            bgradT(ix^D)=bgradT(ix^D)+bunitvec(idir)*gradT(idir)
+          end do
+
+          do idir=1,ndir
+            gradT_perp(idir)=gradT(idir)-bgradT(ix^D)*bunitvec(idir)
+          end do
+
+          gradTperp_mag(ix^D)=dsqrt(gradT_perp(1)**2+gradT_perp(2)**2+gradT_perp(3)**2)
+          if(gradTperp_mag(ix^D)>smalldouble) then
+            do idir=1,ndir
+              nperp(ix^D,idir)=gradT_perp(idir)/gradTperp_mag(ix^D)
+            end do
+          else
+            gradTperp_mag(ix^D)=zero
+            do idir=1,ndir
+              nperp(ix^D,idir)=zero
+            end do
+          end if
+        end do
+      end do
+    end do
+    }
+  end subroutine mhd_get_hyperbolic_tc_geometry
+
+  subroutine add_hyperbolic_tc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+    use mod_global_parameters
+    use mod_geometry, only: gradient
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: qdt
     double precision, dimension(ixI^S,1:ndim), intent(in) :: x
     double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
-    double precision :: R(ixI^S),Te(ixI^S),rho_loc(ixI^S),pth_loc(ixI^S)
-    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,Bdir(ndir),bunitvec(ndim)
-    double precision :: cmax(ndim),c2,cfast2,AvMinCs2(ndim),inv_rho
-    integer :: ix^D
+    double precision, dimension(ixI^S) :: R,Te,rho_loc,pth_loc
+    double precision, dimension(ixI^S,1:ndir) :: Bvec
+    double precision, dimension(ixI^S) :: bgradT, gradTperp_mag
+    double precision, dimension(ixI^S,1:ndir) :: nperp
+    double precision, dimension(ixI^S) :: gradT_geom
+    double precision, parameter :: lnLambda_perp = 20.d0
+    double precision, parameter :: xe_prefac_cgs = 4.753567596681522d6
+    double precision :: kappa_T5,kappa_T5_perp,kappa_T5_perp_eff
+    double precision :: kappa_T7,f_sat,kappaT5_bgradT,kappaT5_gradTperp,tau,B2,fB,gradT1
+    double precision :: Bmag_loc,Tloc,Tcond,nloc_code,Cchi,chi
+    double precision :: cmax(ndim),c2,cfast2,avMinCs2(ndim),inv_rho
+    logical :: use_perp_source
+    integer :: ix^D,idir
 
+    Cchi = 0.823d0*(xe_prefac_cgs/lnLambda_perp) * &
+           unit_magneticfield*unit_temperature**1.5d0/unit_numberdensity
     call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
     {do ix^DB=ixImin^DB,ixImax^DB\}
       if(has_equi_rho_and_p) then
@@ -5316,152 +5588,207 @@ contains
       end if
       Te(ix^D)=pth_loc(ix^D)/(R(ix^D)*rho_loc(ix^D))
     {end do\}
-    ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
-    ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
-    {^IFONED
-    ! assume magnetic field line is along the one dimension
+    use_perp_source = mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(B0field) then
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=wCT(ix^D,mag(idir))+block%B0(ix^D,idir,0)
+        end do
+      {end do\}
+    else
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=wCT(ix^D,mag(idir))
+        end do
+      {end do\}
+    end if
+   {^NOONED
+    call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
+   }
+   {^IFONED
+    gradT_geom=zero
+    if(.not.slab_uniform) then
+      call gradient(Te,ixI^L,ixO^L,1,gradT_geom)
+    end if
     do ix1=ixOmin1,ixOmax1
-      if(mhd_trac) then
-        if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-          sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
-          sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
-        else
-          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-          sigma_T7=sigma_T5*Te(ix^D)
-        end if
+      if(mhd_hyperbolic_tc_constant) then
+        kappa_T5=mhd_hyperbolic_tc_kappa
+        kappa_T7=kappa_T5*Te(ix1)
       else
-        sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-        sigma_T7=sigma_T5*Te(ix^D)
+        Tcond = Te(ix1)
+        if(mhd_trac) then
+          Tcond = max(Tcond, block%wextra(ix1,Tcoff_))
+        end if
+        kappa_T5=mhd_hyperbolic_tc_kappa*sqrt(Tcond**5)
+        kappa_T7=kappa_T5*Tcond
       end if
-      sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
+      if(slab_uniform) then
+        gradT1=((8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0)/block%ds(ix1,1)
+      else
+        gradT1=gradT_geom(ix1)
+      end if
+      B2=zero
+      do idir=1,ndir
+        B2=B2+Bvec(ix1,idir)**2
+      end do
+      if(B2>smalldouble**2) then
+        bgradT(ix1)=Bvec(ix1,1)*gradT1/dsqrt(B2)
+      else
+        bgradT(ix1)=zero
+      end if
+      kappaT5_bgradT=kappa_T5*bgradT(ix1)
       inv_rho=1.d0/rho_loc(ix1)
       c2=mhd_gamma*pth_loc(ix1)*inv_rho
-      cfast2=(^C&bdir(^C)**2+)*inv_rho+c2
-      avMinCs2(1)=cfast2**2-4.0d0*c2*bdir(1)**2*inv_rho
-      ! local fast wave speed in each dimension
-      cmax(1)=sqrt(half*(cfast2+sqrt(dabs(AvMinCs2(1)))))\
-      if(mhd_htc_sat) then
-        ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
-        f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax(1)**2))
-        w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+      cfast2 = B2*inv_rho + c2
+      avMinCs2(1) = cfast2**2 - 4.0d0*c2*Bvec(ix1,1)**2*inv_rho
+      cmax(1) = sqrt(half*(cfast2 + sqrt(dabs(avMinCs2(1)))))
+      if(mhd_hyperbolic_tc_sat) then
+        f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
+        tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax(1)**2))
+        w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
       else
-        w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-         max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax(1)**2))
+        w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/&
+         max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax(1)**2))
       end if
     end do
-    }
-    {^IFTWOD
+   }
+   {^IFTWOD
     do ix2=ixOmin2,ixOmax2
       do ix1=ixOmin1,ixOmax1
-        if(mhd_trac) then
-          if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-            sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
-            sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
-          else
-            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-            sigma_T7=sigma_T5*Te(ix^D)
+        if(mhd_hyperbolic_tc_constant) then
+          kappa_T5=mhd_hyperbolic_tc_kappa
+          kappa_T7=kappa_T5*Te(ix^D)
+        else
+          Tcond=Te(ix^D)
+          if(mhd_trac) then
+            Tcond=max(Tcond, block%wextra(ix^D,Tcoff_))
           end if
-        else
-          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-          sigma_T7=sigma_T5*Te(ix^D)
+          kappa_T5=mhd_hyperbolic_tc_kappa*sqrt(Tcond**5)
+          kappa_T7 = kappa_T5*Tcond
         end if
-        if(B0field) then
-          ^C&bdir(^C)=wCT({ix^D},mag(^C))+block%B0({ix^D},^C,0)\
-        else
-          ^C&bdir(^C)=wCT({ix^D},mag(^C))\
+        kappaT5_bgradT=kappa_T5*bgradT(ix^D)
+        B2 = zero
+        do idir = 1, ndir
+          B2 = B2 + Bvec(ix^D,idir)**2
+        end do
+        if(use_perp_source) then
+          select case(mhd_hyperbolic_tc_perp_mode)
+          case(1)
+            kappa_T5_perp=mhd_hyperbolic_tc_kappa_perp_factor*kappa_T5
+          case(2)
+            if(mhd_hyperbolic_tc_Bmin>zero) then
+              fB=B2/(B2+mhd_hyperbolic_tc_Bmin**2)
+            else
+              fB=one
+            end if
+            kappa_T5_perp_eff=(one-fB)*kappa_T5
+            kappa_T5_perp=kappa_T5_perp_eff
+          case(3)
+            Bmag_loc = dsqrt(B2)
+            Tloc = max(Te(ix^D), smalldouble)
+            nloc_code = max(rho_loc(ix^D), smalldouble)
+            chi = Cchi*Bmag_loc*Tloc**1.5d0/nloc_code
+            kappa_T5_perp_eff = kappa_T5/(one+chi**2)
+            kappa_T5_perp = kappa_T5_perp_eff
+          case default
+            kappa_T5_perp=zero
+          end select
+          kappaT5_gradTperp=kappa_T5_perp*gradTperp_mag(ix^D)
         end if
-        if(Bdir(1)/=0.d0) then
-          bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(^CE&(Bdir(^CE)/Bdir(1))**2+))
-        else
-          bunitvec(1)=0.d0
-        end if
-        if(Bdir(2)/=0.d0) then
-          bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(^CF&(Bdir(^CF)/Bdir(2))**2+))
-        else
-          bunitvec(2)=0.d0
-        end if
-        sigmaT5_bgradT=sigma_T5*(&
-           bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
-          +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
         inv_rho=1.d0/rho_loc(ix^D)
         c2=mhd_gamma*pth_loc(ix^D)*inv_rho
-        cfast2=(^C&bdir(^C)**2+)*inv_rho+c2
-        ^D&avMinCs2(^D)=cfast2**2-4.0d0*c2*bdir(^D)**2*inv_rho\
-        ! local fast wave speed in each dimension
-        ^D&cmax(^D)=sqrt(half*(cfast2+sqrt(dabs(AvMinCs2(^D)))))\
-        if(mhd_htc_sat) then
-          ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
-          f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
-          w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+        cfast2 = B2*inv_rho + c2
+        do idir=1,ndim
+          avMinCs2(idir)=cfast2**2-4.0d0*c2*Bvec(ix^D,idir)**2*inv_rho
+          cmax(idir)=sqrt(half*(cfast2+sqrt(dabs(avMinCs2(idir)))))\
+        end do
+        if(mhd_hyperbolic_tc_sat) then
+          f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
+          tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+          w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+          if(use_perp_source) then
+            w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(f_sat*kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
+          end if
         else
-          w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-           max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+          tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+          w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+          if(use_perp_source) then
+            w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
+          end if
         end if
       end do
     end do
-    }
-    {^IFTHREED
+   }
+   {^IFTHREED
     do ix3=ixOmin3,ixOmax3
       do ix2=ixOmin2,ixOmax2
         do ix1=ixOmin1,ixOmax1
-          if(mhd_trac) then
-            if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-              sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
-              sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
-            else
-              sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-              sigma_T7=sigma_T5*Te(ix^D)
+          if(mhd_hyperbolic_tc_constant) then
+            kappa_T5=mhd_hyperbolic_tc_kappa
+            kappa_T7=kappa_T5*Te(ix^D)
+          else
+            Tcond=Te(ix^D)
+            if(mhd_trac) then
+              Tcond=max(Tcond, block%wextra(ix^D,Tcoff_))
             end if
-          else
-            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-            sigma_T7=sigma_T5*Te(ix^D)
+            kappa_T5=mhd_hyperbolic_tc_kappa*sqrt(Tcond**5)
+            kappa_T7 = kappa_T5*Tcond
           end if
-          if(B0field) then
-            ^D&bdir(^D)=wCT({ix^D},mag(^D))+block%B0({ix^D},^D,0)\
-          else
-            ^D&bdir(^D)=wCT({ix^D},mag(^D))\
+          kappaT5_bgradT=kappa_T5*bgradT(ix^D)
+          B2 = zero
+          do idir = 1, ndir
+            B2 = B2 + Bvec(ix^D,idir)**2
+          end do
+          if(use_perp_source) then
+            select case(mhd_hyperbolic_tc_perp_mode)
+            case(1)
+              kappa_T5_perp=mhd_hyperbolic_tc_kappa_perp_factor*kappa_T5
+            case(2)
+              if(mhd_hyperbolic_tc_Bmin>zero) then
+                fB=B2/(B2+mhd_hyperbolic_tc_Bmin**2)
+              else
+                fB=one
+              end if
+              kappa_T5_perp_eff=(one-fB)*kappa_T5
+              kappa_T5_perp=kappa_T5_perp_eff
+            case(3)
+              Bmag_loc = dsqrt(B2)
+              Tloc = max(Te(ix^D), smalldouble)
+              nloc_code = max(rho_loc(ix^D), smalldouble)
+              chi = Cchi*Bmag_loc*Tloc**1.5d0/nloc_code
+              kappa_T5_perp_eff = kappa_T5/(one+chi**2)
+              kappa_T5_perp = kappa_T5_perp_eff
+            case default
+              kappa_T5_perp=zero
+            end select
+            kappaT5_gradTperp=kappa_T5_perp*gradTperp_mag(ix^D)
           end if
-          if(Bdir(1)/=0.d0) then
-            bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(Bdir(2)/Bdir(1))**2+(Bdir(3)/Bdir(1))**2)
-          else
-            bunitvec(1)=0.d0
-          end if
-          if(Bdir(2)/=0.d0) then
-            bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(Bdir(1)/Bdir(2))**2+(Bdir(3)/Bdir(2))**2)
-          else
-            bunitvec(2)=0.d0
-          end if
-          if(Bdir(3)/=0.d0) then
-            bunitvec(3)=sign(1.d0,Bdir(3))/dsqrt(1.d0+(Bdir(1)/Bdir(3))**2+(Bdir(2)/Bdir(3))**2)
-          else
-            bunitvec(3)=0.d0
-          end if
-          sigmaT5_bgradT=sigma_T5*(&
-             bunitvec(1)*((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)&
-            +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
-            +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
           inv_rho=1.d0/rho_loc(ix^D)
           c2=mhd_gamma*pth_loc(ix^D)*inv_rho
-          cfast2=(^C&bdir(^C)**2+)*inv_rho+c2
-          ^D&avMinCs2(^D)=cfast2**2-4.0d0*c2*bdir(^D)**2*inv_rho\
-          ! local fast wave speed in each dimension
-          ^D&cmax(^D)=sqrt(half*(cfast2+sqrt(dabs(AvMinCs2(^D)))))\
-          if(mhd_htc_sat) then
-            ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
-            f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
-            w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+          cfast2 = B2*inv_rho + c2
+          do idir = 1, ndim
+            avMinCs2(idir)=cfast2**2-4.0d0*c2*Bvec(ix^D,idir)**2*inv_rho
+            cmax(idir)=sqrt(half*(cfast2+sqrt(dabs(avMinCs2(idir)))))\
+          end do
+          if(mhd_hyperbolic_tc_sat) then
+            f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
+            tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+            w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+            if(use_perp_source) then
+              w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(f_sat*kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
+            end if
           else
-            w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-             max(4.d0*dt, sigma_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+            tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+            w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+            if(use_perp_source) then
+              w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
+            end if
           end if
         end do
       end do
     end do
-    }
-  end subroutine add_hypertc_source
+   }
+  end subroutine add_hyperbolic_tc_source
 
   !> Compute the Lorentz force (JxB) Note: Unused subroutine
   !> perhaps useful for post-processing when made public

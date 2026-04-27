@@ -19,9 +19,11 @@ module mod_ffhd_phys
   !> Whether thermal conduction is used
   logical, public, protected              :: ffhd_thermal_conduction = .false.
   !> Whether hyperbolic type thermal conduction is used
-  logical, public, protected              :: ffhd_hyperbolic_thermal_conduction = .false.
-  !> Wheterh saturation is considered for hyperbolic TC
-  logical, public, protected              :: ffhd_htc_sat = .false.
+  logical, public, protected              :: ffhd_hyperbolic_tc = .false.
+  !> Whether saturation is considered for hyperbolic TC
+  logical, public, protected              :: ffhd_hyperbolic_tc_sat = .false.
+  !> Whether the perpendicular hyperbolic-TC channel is enabled
+  logical, public, protected              :: ffhd_hyperbolic_tc_use_perp = .false.
   !> type of fluid for thermal conduction
   type(tc_fluid), public, allocatable     :: tc_fl
   !> type of fluid for thermal emission synthesis
@@ -77,7 +79,7 @@ module mod_ffhd_phys
   double precision, public                :: ffhd_adiab = 1.0d0
 
   !> The thermal conductivity kappa in hyperbolic thermal conduction
-  double precision, public                :: hypertc_kappa
+  double precision, public                :: hyperbolic_tc_kappa
 
   !> Helium abundance over Hydrogen
   double precision, public, protected  :: He_abundance=0.1d0
@@ -145,7 +147,7 @@ contains
     integer                      :: n
 
     namelist /ffhd_list/ ffhd_energy, ffhd_gamma, ffhd_adiab, &
-      ffhd_thermal_conduction, ffhd_hyperbolic_thermal_conduction, ffhd_htc_sat, ffhd_radiative_cooling, ffhd_gravity,&
+      ffhd_thermal_conduction, ffhd_hyperbolic_tc, ffhd_hyperbolic_tc_sat, ffhd_radiative_cooling, ffhd_gravity,&
       He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit,&
       B0field, Busr, ffhd_partial_ionization, ffhd_trac, ffhd_trac_type, ffhd_trac_mask, ffhd_trac_finegrid
 
@@ -192,9 +194,9 @@ contains
         ffhd_thermal_conduction=.false.
         if(mype==0) write(*,*) 'WARNING: set ffhd_thermal_conduction=F when ffhd_energy=F'
       end if
-      if(ffhd_thermal_conduction) then
-        ffhd_hyperbolic_thermal_conduction=.false.
-        if(mype==0) write(*,*) 'WARNING: set ffhd_hyperbolic_thermal_conduction=F when ffhd_energy=F'
+      if(ffhd_hyperbolic_tc) then
+        ffhd_hyperbolic_tc=.false.
+        if(mype==0) write(*,*) 'WARNING: set ffhd_hyperbolic_tc=F when ffhd_energy=F'
       end if
       if(ffhd_radiative_cooling) then
         ffhd_radiative_cooling=.false.
@@ -216,7 +218,7 @@ contains
       end if
     end if
 
-    if(ffhd_hyperbolic_thermal_conduction) then
+    if(ffhd_hyperbolic_tc) then
       ffhd_thermal_conduction=.false.
       if(mype==0) write(*,*) 'WARNING: turn off parabolic TC when using hyperbolic TC'
     end if
@@ -261,8 +263,8 @@ contains
       p_     = -1
     end if
 
-    if(ffhd_hyperbolic_thermal_conduction) then
-      q_ = var_set_q()
+    if(ffhd_hyperbolic_tc) then
+      q_ = var_set_fluxvar('q', 'q', need_bc=.false.)
       need_global_cmax=.true.
     else
       q_=-1
@@ -352,19 +354,19 @@ contains
     ! derive units from basic units
     call ffhd_physical_units()
 
-    if(ffhd_hyperbolic_thermal_conduction) then
+    if(ffhd_hyperbolic_tc) then
       if(SI_unit)then
         ! parallel conduction Spitzer
-        hypertc_kappa=8.d-12*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+        hyperbolic_tc_kappa=8.d-12*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
       else
         ! in cgs
-        hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+        hyperbolic_tc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
       endif
     end if
     if(.not. ffhd_energy .and. ffhd_thermal_conduction) then
       call mpistop("thermal conduction needs ffhd_energy=T")
     end if
-    if(.not. ffhd_energy .and. ffhd_hyperbolic_thermal_conduction) then
+    if(.not. ffhd_energy .and. ffhd_hyperbolic_tc) then
       call mpistop("hyperbolic thermal conduction needs ffhd_energy=T")
     end if
     if(.not. ffhd_energy .and. ffhd_radiative_cooling) then
@@ -603,7 +605,7 @@ contains
            write(*,*)'    ffhd_energy=',ffhd_energy
            write(*,*)'    ffhd_gravity=',ffhd_gravity
            write(*,*)'    ffhd_radiative_cooling=',ffhd_radiative_cooling
-           write(*,*)'    ffhd_hyperbolic_thermal_conduction=',ffhd_hyperbolic_thermal_conduction
+           write(*,*)'    ffhd_hyperbolic_tc=',ffhd_hyperbolic_tc
            write(*,*)'    ffhd_trac=',ffhd_trac
            write(*,*)'number of             ghostcells=',nghostcells
            write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
@@ -1204,7 +1206,7 @@ contains
     ! Get flux of energy
     if(ffhd_energy) then
       f(ixO^S,e_)=w(ixO^S,mom(1))*(wC(ixO^S,e_)+ptotal(ixO^S))*block%B0(ixO^S,idim,idim)
-      if(ffhd_hyperbolic_thermal_conduction) then
+      if(ffhd_hyperbolic_tc) then
         f(ixO^S,e_)=f(ixO^S,e_)+w(ixO^S,q_)*block%B0(ixO^S,idim,idim)
         f(ixO^S,q_)=zero
       end if
@@ -1225,8 +1227,8 @@ contains
     if (.not. qsourcesplit) then
       active = .true.
       call add_punitb(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
-      if(ffhd_hyperbolic_thermal_conduction) then
-        call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+      if(ffhd_hyperbolic_tc) then
+        call add_hyperbolic_tc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
     end if
 
@@ -1388,7 +1390,7 @@ contains
     Rfactor(ixO^S)=RR
   end subroutine Rfactor_from_constant_ionization
 
-  subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+  subroutine add_hyperbolic_tc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
 
     integer, intent(in) :: ixI^L,ixO^L
@@ -1409,20 +1411,20 @@ contains
       do ix1=ixOmin1,ixOmax1
         if(ffhd_trac) then
           if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-            sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+            sigma_T5=hyperbolic_tc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
             sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
           else
-            sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+            sigma_T5=hyperbolic_tc_kappa*sqrt(Te(ix^D)**5)
             sigma_T7=sigma_T5*Te(ix^D)
           end if
         else
-          sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+          sigma_T5=hyperbolic_tc_kappa*sqrt(Te(ix^D)**5)
           sigma_T7=sigma_T5*Te(ix^D)
         end if
         sigmaT5_bgradT=sigma_T5*(&
            block%B0(ix^D,1,0)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +block%B0(ix^D,2,0)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
-        if(ffhd_htc_sat) then
+        if(ffhd_hyperbolic_tc_sat) then
           ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
           f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*wCT(ix^D,rho_)*(wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0))
           tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
@@ -1440,21 +1442,21 @@ contains
         do ix1=ixOmin1,ixOmax1
           if(ffhd_trac) then
             if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-              sigma_T5=hypertc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
+              sigma_T5=hyperbolic_tc_kappa*sqrt(block%wextra(ix^D,Tcoff_)**5)
               sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
             else
-              sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+              sigma_T5=hyperbolic_tc_kappa*sqrt(Te(ix^D)**5)
               sigma_T7=sigma_T5*Te(ix^D)
             end if
           else
-            sigma_T5=hypertc_kappa*sqrt(Te(ix^D)**5)
+            sigma_T5=hyperbolic_tc_kappa*sqrt(Te(ix^D)**5)
             sigma_T7=sigma_T5*Te(ix^D)
           end if
           sigmaT5_bgradT=sigma_T5*(&
              block%B0(ix^D,1,0)*((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)&
             +block%B0(ix^D,2,0)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +block%B0(ix^D,3,0)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
-          if(ffhd_htc_sat) then
+          if(ffhd_hyperbolic_tc_sat) then
             ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
             f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*wCT(ix^D,rho_)*(wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0))
             tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*inv_gamma_1*cmax_global**2))
@@ -1466,7 +1468,7 @@ contains
         end do
       end do
     end do
-   }
- end subroutine add_hypertc_source
+    }
+  end subroutine add_hyperbolic_tc_source
 
 end module mod_ffhd_phys

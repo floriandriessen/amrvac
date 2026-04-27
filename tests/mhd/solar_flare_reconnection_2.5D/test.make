@@ -1,7 +1,7 @@
 SETUP_FLAGS := -d=2 -v=3
 SCHEME_DIR := ../../schemes
 SCHEMES := 2step_tvdlf_mm 2step_tvdmu_al 4step_hll_mc \
-4step_hllc_ko rk4_tvdlf_cada 3step_hlld_cada 2step_hll_vl mhd_hyperbolic_thermal_conduction
+4step_hllc_ko rk4_tvdlf_cada 3step_hlld_cada 2step_hll_vl mhd_hyperbolic_tc
 
 TESTS := $(SCHEMES:%=sfr_2.5d_%.log)
 

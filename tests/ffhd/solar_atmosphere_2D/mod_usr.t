@@ -126,7 +126,7 @@ contains
       w(ix^D,p_)  =pa(na)+(one-cos(dpi*res/dya))/two*(pa(na+1)-pa(na))
     {end do\}
     w(ixO^S,mom(:))=zero
-    if(ffhd_hyperbolic_thermal_conduction) w(ixO^S,q_)=zero
+    if(ffhd_hyperbolic_tc) w(ixO^S,q_)=zero
     call ffhd_to_conserved(ixI^L,ixO^L,w,x)
   end subroutine initonegrid_usr
 
@@ -147,7 +147,7 @@ contains
       do ix2=ixOmin2,ixOmax2
         w(ixOmin1:ixOmax1,ix2,rho_)=rbc(ix2)
         w(ixOmin1:ixOmax1,ix2,p_)=pbc(ix2)
-        if(ffhd_hyperbolic_thermal_conduction) w(ix2^%2ixO^S,q_)=zero
+        if(ffhd_hyperbolic_tc) w(ix2^%2ixO^S,q_)=zero
       enddo
       call ffhd_to_conserved(ixI^L,ixO^L,w,x)
     case(4)
@@ -163,7 +163,7 @@ contains
             (ggrid(ix2^%2ixO^S)+ggrid(ix2-1^%2ixO^S))*invT(ixOmin2-1^%2ixO^S)
         w(ix2^%2ixO^S,p_)=pth(ixOmin2-1^%2ixO^S)*dexp(tmp(ixOmin2-1^%2ixO^S)*dxlevel(2))
         w(ix2^%2ixO^S,rho_)=w(ix2^%2ixO^S,p_)*invT(ixOmin2-1^%2ixO^S)
-        if(ffhd_hyperbolic_thermal_conduction) w(ix2^%2ixO^S,q_)=zero
+        if(ffhd_hyperbolic_tc) w(ix2^%2ixO^S,q_)=zero
       enddo
       w(ixO^S,mom(1))=-w(ixOmin1:ixOmax1,ixOmin2-1:ixOmin2-nghostcells:-1,mom(1))&
                       /w(ixOmin1:ixOmax1,ixOmin2-1:ixOmin2-nghostcells:-1,rho_)

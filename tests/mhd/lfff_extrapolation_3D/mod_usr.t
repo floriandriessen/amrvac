@@ -181,7 +181,8 @@ contains
       endif
       call calc_lin_fff(1,1,1,nxbc1,nxbc2,nxbc3,ixpemin1,ixpemin2,1,ixpemax1,ixpemax2,&
                         nxbc3,Bbc,xbc,lalpha,llift)
-      call MPI_ALLREDUCE(MPI_IN_PLACE,Bbc,nxbc1*nxbc2*nxbc3*3,MPI_DOUBLE_PRECISION,&
+      Bbt=Bbc
+      call MPI_ALLREDUCE(Bbt,Bbc,nxbc1*nxbc2*nxbc3*3,MPI_DOUBLE_PRECISION,&
                          MPI_SUM,icomm,ierrmpi)
       if(mype==0) then
         print*,'bottom boundaries created!'
@@ -194,7 +195,6 @@ contains
       endif
     endif
 
-    Bbt=Bbc
     ! calculate velocity field of driving motions
     allocate(tmp(nxbc1,nxbc2,nxbc3))
     allocate(tmp2(nxbc1,nxbc2,2))

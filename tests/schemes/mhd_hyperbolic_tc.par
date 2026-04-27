@@ -1,5 +1,5 @@
  &filelist
-        base_filename  = '_mhd_hyperbolic_thermal_conduction'
+        base_filename  = '_mhd_hyperbolic_tc'
  /
 
  &methodlist
@@ -14,5 +14,5 @@
  /
 
  &mhd_list
-        mhd_hyperbolic_thermal_conduction=.true.
+        mhd_hyperbolic_tc=.true.
  /

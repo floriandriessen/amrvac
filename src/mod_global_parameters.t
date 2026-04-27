@@ -669,6 +669,9 @@ module mod_global_parameters
   !> Whether to apply flux conservation at refinement boundaries
   logical :: fix_conserve_global = .true.
   logical :: flux_adaptive_diffusion
+  double precision :: flux_adaptive_diffusion_min
+  double precision :: flux_adaptive_diffusion_scale
+  logical :: flux_energy_only
   logical :: flathllc,flatcd,flatsh
   !> Use split or unsplit way to add user's source terms, default: unsplit
   logical :: source_split_usr

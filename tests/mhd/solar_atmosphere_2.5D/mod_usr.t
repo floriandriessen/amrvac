@@ -360,10 +360,10 @@ contains
         w(ixOmin1:ixOmax1,ix2,rho_)=rbc(ix2)
         w(ixOmin1:ixOmax1,ix2,p_)=pbc(ix2)
       enddo
-      if(mhd_hyperbolic_thermal_conduction) then
+      if(mhd_hyperbolic_tc) then
         do ix2=ixOmin2,ixOmax2
           do ix1=ixOmin1,ixOmax1
-            w(ix1,ix2,q_)=w(ix1,ixOmax2+1,q_)
+            w(ix1,ix2,qpar_)=w(ix1,ixOmax2+1,qpar_)
           end do
         end do
       end if
@@ -424,10 +424,10 @@ contains
                  +4.0d0*w(ixOmin1:ixOmax1,ix2-1,mag(:)))
         enddo
       end if
-      if(mhd_hyperbolic_thermal_conduction) then
+      if(mhd_hyperbolic_tc) then
         do ix2=ixOmin2,ixOmax2
           do ix1=ixOmin1,ixOmax1
-            w(ix1,ix2,q_)=w(ix1,ixOmin2-1,q_)
+            w(ix1,ix2,qpar_)=w(ix1,ixOmin2-1,qpar_)
           end do
         end do
       end if
