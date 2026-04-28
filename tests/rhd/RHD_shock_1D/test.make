@@ -1,9 +1,10 @@
 SETUP_FLAGS := -d=1 -v=1
 SCHEME_DIR := ../../schemes
 
-SCHEMES := IMEX_232_hll_cada3 IMEX_SP_hll_mm IMEX_SP_tvdlf_ko IMEX_Trap_hll_w5 amr_3level
+SCHEMES := IMEX_232_hll_cada3 
 
-SCHEMES_FIXED := IMEX_222_hll_w5 IMEX_Midp_hll_w5 IMEX_CB3a_hll_ko IMEX_ARS3_hll_cada3
+SCHEMES_FIXED := IMEX_222_hll_w5 IMEX_Midp_hll_w5 IMEX_CB3a_hll_ko IMEX_ARS3_hll_cada3 \
+         IMEX_SP_hll_mm IMEX_SP_tvdlf_ko IMEX_Trap_hll_w5 amr_3level
 
 SCHEMES_WITH_NOISE := IMEX_Euler_hll_w5 IMEX_SP_hll_w5
 

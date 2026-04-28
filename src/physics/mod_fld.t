@@ -24,6 +24,7 @@ module mod_fld
     !> Tolerance for radiative Energy diffusion
     double precision, public :: fld_diff_tol = 1.d-4
     !> switches for local debug purposes
+    logical :: fld_slowsteps = .false.
     logical :: fld_force_MG_converged = .true.
     logical :: fld_debug,fld_no_mg
     !> switches for opacity
@@ -63,7 +64,8 @@ module mod_fld
 
     namelist /fld_list/ fld_kappa0, fld_Radforce_split, &
     fld_bisect_tol, fld_diff_tol, fld_opacity_law, fld_fluxlimiter, &
-    fld_interaction_method, fld_opal_table, nth_for_diff_mg, fld_debug, fld_no_mg,fld_force_MG_converged
+    fld_interaction_method, fld_opal_table, nth_for_diff_mg, &
+    fld_debug, fld_no_mg,fld_force_MG_converged, fld_slowsteps
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -353,6 +355,7 @@ module mod_fld
     double precision :: dxinv(1:ndim), max_grav
     double precision :: lambda(ixI^S),fld_R(ixI^S)
     double precision :: tmp(ixI^S)
+    double precision :: max_diff,max_diff_coef,max_diff_dim,dtdifflimit
     double precision :: cmax(ixI^S),cmaxtot(ixI^S),courantmaxtots
 
     if(fld_debug)print *,'DT limit on entry to radforce_get_dt=',dtnew
@@ -374,8 +377,29 @@ module mod_fld
         dtnew = min(dtnew, 1.0d0 / dsqrt(max_grav))
       end do
     endif
-
     if(fld_debug)print *,'DT limit after RADFORCE eff grav=',dtnew
+
+    if(fld_slowsteps)then
+      call fld_get_opacity_prim(w, x, ixI^L, ixO^L, tmp)
+      max_diff=0.0d0
+      if(slab_uniform) then
+         max_diff_coef = maxval(c_norm*lambda(ixO^S)/(w(ixO^S,iw_rho)*tmp(ixO^S)))
+         ^D&dxinv(^D)=one/dx^D;
+         do idim = 1, ndim
+            max_diff_dim = max(2.0d0*ndim*max_diff_coef*dxinv(idim)**2, epsilon(1.0d0))
+            max_diff = max(max_diff,max_diff_dim)
+         end do
+      else
+         do idim = 1, ndim
+            max_diff_coef = maxval(c_norm*lambda(ixO^S)/(w(ixO^S,iw_rho)*tmp(ixO^S))/block%ds(ixO^S,idim)**2)
+            max_diff_dim = max(2.0d0*ndim*max_diff_coef, epsilon(1.0d0))
+            max_diff = max(max_diff,max_diff_dim)
+         end do
+      endif
+      dtdifflimit=1.0d0/max_diff
+      dtnew=min(dtnew,dtdifflimit)
+      if(fld_debug)print *,'DT limit from diffusion is actually=',dtdifflimit,' hence dtnew=',dtnew
+    endif
 
     ! here we interface back to fld_get_radpress
     call phys_get_csrad2(w,x,ixI^L,ixO^L,tmp)
@@ -687,22 +711,19 @@ module mod_fld
     double precision :: wmaxb(nw),wminb(nw)
     integer :: iigrid, igrid
 
-    ! Avoid setting a very restrictive limit to residual when time step small
-    if(qdt < dtmin) then
-      if(mype==0)then
-          ! this is because the factor 1/qdt enters as coefficient
-          print *,'skipping implicit solve: dt too small!'
-          print *,'Currently at time=',global_time,' time step=',qdt,' dtmin=',dtmin
-      endif
-      return
-    endif
-
     ! we need first to compute the (variable) diffusion coefficient on entire grid
     !   this must be done in mesh+1 ghostcell layer
     call update_diffcoeff(psa)
 
-    mg_lambda = 1.d0/(dtfactor *qdt)
-    fac = 1.d0
+    ! now we multiply the diffusion coefficient with dtfactor*dt on entire mesh+1 domain
+    ixO^L=ixM^LL^LADD1;
+    do iigrid=1,igridstail; igrid=igrids(iigrid);
+       {do ix^D = ixOmin^D,ixOmax^D\ }
+          psa(igrid)%w(ix^D,i_diff_mg)= psa(igrid)%w(ix^D,i_diff_mg)*dtfactor*qdt
+       {enddo\}
+    end do
+
+    fac = 1.0d0
     max_residual = fld_diff_tol
 
     if(fld_debug)then
@@ -712,15 +733,15 @@ module mod_fld
        call get_global_minima(wminb,psb)
        if(mype==0)then
           ! the MG needs to be scaled such that everything is order unity
+          print *,'Currently at time=',global_time,' time step=',qdt,' dtfactor=',dtfactor
           print *,'at start of MG solver, we have fld_diff_tol       =',fld_diff_tol
           print *,'at start of MG solver, we have LHS E_rad range as :',wmax(iw_r_e),wmin(iw_r_e)
           print *,'at start of MG solver, we have Diff coeff range as:',wmax(i_diff_mg),wmin(i_diff_mg)
           print *,'at start of MG solver, we have density range as   :',wmax(iw_rho),wmin(iw_rho)
           print *,'at start of MG solver, we have RHS E_rad range as :',wmaxb(iw_r_e),wminb(iw_r_e)
           print *,'at start of MG solver, we have qdt as',qdt,' and max_residual=',max_residual
-          print *,'at start of MG solver, we have dtfactor as',dtfactor,' or 1/dt (or mg_lambda)=',mg_lambda
-          print *,'at start of MG solver, ratio coeffs on level 1  =',wmax(i_diff_mg)/(mg_lambda*dx(1,1)**2)
-          print *,'at start of MG solver, ratio coeffs on level max=',wmax(i_diff_mg)/(mg_lambda*dx(1,refine_max_level)**2)
+          print *,'at start of MG solver, ratio coeffs on level 1  =',wmax(i_diff_mg)/(dx(1,1)**2)
+          print *,'at start of MG solver, ratio coeffs on level max=',wmax(i_diff_mg)/(dx(1,refine_max_level)**2)
        endif
     endif
 
@@ -728,18 +749,19 @@ module mod_fld
     if(.not. mg%is_allocated) call mpistop("multigrid tree not allocated yet")
 
     ! Here we handle the global helmholtz problem with variable coefficient
-    ! The equation we solve is div(D nabla Erad^(n+1)) -(1/dt)Erad^(n+1)=-(1/dt)Erad^n
+    ! The equation we solve is div([D]^n nabla Erad^(n+1)) -(1/dt)Erad^(n+1)=-(1/dt)Erad^n
+    ! we reformulate to div([D x dt]^n nabla Erad^(n+1)) -Erad^(n+1)=-Erad^n
     ! Helmholtz equation is div(eps nabla phi) -mg_lambda phi = f
-    !    hence eps is our variable coefficient D=fld_lambda*c/(kappa*rho)
-    !    hence phi is Erad and mg_lambda=1/dt
-    call vhelmholtz_set_lambda(mg_lambda)
+    !    hence eps is our variable coefficient dt x D=fld_lambda*c/(kappa*rho)
+    !    hence phi is Erad and mg_lambda is unity
+    call vhelmholtz_set_lambda(fac)
     ! copy in the (variable) diffusion coefficient in mg_iveps
     ! NOTE: this copies also the ghostcell values for this coefficient to mg
     call mg_copy_to_tree(i_diff_mg, mg_iveps, factor=fac, state_from=psa)
     ! copy in the Erad variable in mg_iphi (the one we solve for)
     call mg_copy_to_tree(iw_r_e, mg_iphi, factor=fac, state_from=psa)
-    ! copy in RHS f factor as Erad with factor -(1/dt)
-    call mg_copy_to_tree(iw_r_e, mg_irhs, factor=-mg_lambda, state_from=psb)
+    ! copy in RHS f factor as Erad with factor -1
+    call mg_copy_to_tree(iw_r_e, mg_irhs, factor=-fac, state_from=psb)
     ! becuase the variable coefficient is needed on lower grid levels in mg
     ! we need to restrict and adopt BCs for this variable: Neumann is set 
     call mg_restrict(mg, mg_iveps)
@@ -757,8 +779,8 @@ module mod_fld
       if (mype == 0) then 
         write(*,*) it, ' residual from MG ', res
         write(*,*) it, ' max_residual in MG ', max_residual
-        write(*,*) it, ' qdt in MG ', qdt, ' versus dtmin=',dtmin
         write(*,*) it, ' dtfactor*qdt in MG ', qdt*dtfactor
+        print *,'Currently at time=',global_time,' time step=',qdt,' dtfactor=',dtfactor
       endif
       if(fld_force_MG_converged) then
           call mpistop("no convergence in MG")
