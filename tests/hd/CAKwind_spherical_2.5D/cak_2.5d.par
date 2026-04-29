@@ -59,7 +59,7 @@
   cak_alpha   = 0.65d0
   gayley_qbar = 2000.0d0
   kappae_cgs  = 0.34d0
-  cak_vector_force = .true.
+  cak_force_method = 'vector'
   nthetaray = 6
   nphiray   = 6
 /

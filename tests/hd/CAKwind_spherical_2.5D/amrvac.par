@@ -68,9 +68,9 @@
   gayley_qbar  = 2000.0d0
   gayley_q0    = 2000.0d0
   kappae_cgs   = 0.34d0
-  cak_vector_force = .true.
-  nthetaray  = 6
-  nphiray    = 6
+  cak_force_method = 'vector'
+  nthetaray = 6
+  nphiray   = 6
   use_cak_table  = .false.
   name_cak_table = 'Y02400'
 /

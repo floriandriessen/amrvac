@@ -52,14 +52,17 @@ module mod_cak_force
   ! Telectron/Teff = 0.8 from Puls+ (2000), A&AS 141; assume Twind = Telectron
   real(8), parameter :: ratio_twind_teff = 0.8d0
 
-  !> Switch to choose between the 1-D CAK line force options
-  character(len=256) :: cak_1d_type
-  integer :: type_cak_1d
+  !> Method and option for CAK force
+  integer :: method_cakforce, type_cak_1d
 
-  ! Avoid magic numbers in code for 1-D CAK line force option
-  integer, parameter :: type_pointstar=0
-  integer, parameter :: type_fdisc=1
-  integer, parameter :: type_fdisc_cutoff=2
+  !> Type CAK line force method
+  integer, parameter :: radialforce=0
+  integer, parameter :: vectorforce=1
+
+  !> Type 1-D CAK line force options
+  integer, parameter :: pointstar=0
+  integer, parameter :: fdisc=1
+  integer, parameter :: fdisc_cutoff=2
 
   !> Amount of rays in radiation polar and radiation azimuthal direction
   integer :: nthetaray, nphiray
@@ -71,24 +74,25 @@ module mod_cak_force
   !> To treat source term in split or unsplit (default) fashion
   logical :: cak_split=.false.
 
-  !> To activate the original CAK 1-D line force computation
-  logical :: cak_1d_force=.false.
-
-  !> To activate the vector CAK line force computation
-  logical :: cak_vector_force=.false.
-
   !> To activate the pure radial vector CAK line force computation
   logical :: fix_vector_force_1d=.false.
 
   !> To compute CAK line-force parameters from opacity tables
   logical :: use_cak_table=.false.
 
-  !> String of the opacity table to use from src/tables/CAK_tables
-  character(len=256) :: name_cak_table=''
-
   !> Allow reading different opacity table than default src/tables/CAK_tables
   !> If true, name_cak_table requires absolute/relative path to file location
   logical :: use_custom_cak_table=.false.
+
+  !> String to specify the CAK force method: 'radial' or 'vector'
+  character(len=6) :: cak_force_method
+
+  !> String to choose between the 1-D CAK line force options
+  !> Can be 'pointstar', 'finitedisc', or 'finitedisc_cutoff'
+  character(len=256) :: cak_1d_type
+
+  !> String of the opacity table to use from src/tables/CAK_tables
+  character(len=256) :: name_cak_table=''
 
   !> Public methods for mod_hd_phys or mod_mhd_phys
   public :: cak_init
@@ -111,7 +115,7 @@ contains
     integer :: n
 
     namelist /cak_list/ cak_alpha, gayley_qbar, gayley_q0, kappae_cgs, &
-         cak_1d_type, cak_split, cak_1d_force, cak_vector_force, &
+         cak_force_method, cak_1d_type, cak_split, &
          nphiray, nthetaray, fix_vector_force_1d, &
          use_cak_table, name_cak_table, use_custom_cak_table
 
@@ -121,14 +125,24 @@ contains
        111 close(unitpar)
     enddo
 
+    select case(trim(cak_force_method))
+    case('radial')
+      method_cakforce = radialforce
+    case('vector')
+      method_cakforce = vectorforce
+    case default
+      write(unitterm,*) 'cak_force_method = ', trim(cak_force_method)
+      call mpistop('cak_params_read: unknown CAK force in cak_list')
+    end select
+
     ! Set CAK method for pure radial force
     select case(trim(cak_1d_type))
     case('pointstar')
-      type_cak_1d = type_pointstar
+      type_cak_1d = pointstar
     case('finitedisc')
-      type_cak_1d = type_fdisc
+      type_cak_1d = fdisc
     case('finitedisc_cutoff')
-      type_cak_1d = type_fdisc_cutoff
+      type_cak_1d = fdisc_cutoff
     case default
       write(unitterm,*) 'cak_1d_type = ', trim(cak_1d_type)
       call mpistop('cak_params_read: unknown CAK wind method in cak_list')
@@ -149,18 +163,21 @@ contains
     cak_alpha   = 0.65d0
     gayley_qbar = 2000.0d0
     gayley_q0   = 2000.0d0
-    cak_1d_type  = 'finitedisc'
-    nthetaray   = 6
-    nphiray     = 6
+
+    cak_force_method = 'radial'
+    cak_1d_type = 'finitedisc'
+
+    nthetaray = 6
+    nphiray   = 6
 
     call cak_params_read(par_files)
 
-    if (cak_1d_force) then
+    if (method_cakforce == radialforce) then
       gcak1_ = var_set_extravar("gcak1", "gcak1")
       fdf_   = var_set_extravar("fdfac", "fdfac")
     endif
 
-    if (cak_vector_force) then
+    if (method_cakforce == vectorforce) then
       gcak1_ = var_set_extravar("gcak1", "gcak1")
       gcak2_ = var_set_extravar("gcak2", "gcak2")
       gcak3_ = var_set_extravar("gcak3", "gcak3")
@@ -209,11 +226,7 @@ contains
       call mpistop('cak_init: input Qbar or Q0 is < 0')
     endif
 
-    if (cak_1d_force .and. cak_vector_force) then
-      call mpistop('cak_init: choose either 1D radial or vector force')
-    endif
-
-    if (cak_vector_force .and. ndir < 3) then
+    if (method_cakforce == vectorforce .and. ndir < 3) then
       call mpistop('cak_init: vector CAK force only for 2.5D and 3D')
     endif
 
@@ -293,13 +306,12 @@ contains
       call get_gelectron(ixI^L,ixO^L,w,x,ge)
 
       ! CAK line force
-      if (cak_1d_force) then
+      select case(method_cakforce)
+      case(radialforce)
         call get_cak_force_radial(ixI^L,ixO^L,wCT,w,x,gcak)
-      elseif (cak_vector_force) then
+      case(vectorforce)
         call get_cak_force_vector(ixI^L,ixO^L,wCT,w,x,gcak)
-      else
-        call mpistop("cak_add_source: no valid force option")
-      endif
+      end select
 
       ! Update conservative vars: w = w + qdt*gsource
       do idir = 1,ndir
@@ -369,13 +381,13 @@ contains
 
     ! Sobolev optical depth for line ensemble (tau = Qbar * t_r) and the force
     select case (type_cak_1d)
-    case(type_pointstar, type_fdisc)
+    case(pointstar, fdisc)
       taus(ixO^S) = qbar(ixO^S) * kappae(ixO^S) * clight &
            * wCT(ixO^S,iw_rho) / dvrdr(ixO^S)
       gcak(ixO^S,1) = qbar(ixO^S) / (1.0d0 - alpha(ixO^S)) * ge(ixO^S) &
            / taus(ixO^S)**alpha(ixO^S)
 
-    case(type_fdisc_cutoff)
+    case(fdisc_cutoff)
       taus(ixO^S) = q0(ixO^S) * kappae(ixO^S) * clight &
            * wCT(ixO^S,iw_rho) / dvrdr(ixO^S)
       gcak(ixO^S,1) = qbar(ixO^S) * ge(ixO^S) / (1.0d0 - alpha(ixO^S)) &
@@ -388,9 +400,9 @@ contains
          * (rstar/x(ixO^S,1))**2.0d0
 
     select case (type_cak_1d)
-    case(type_pointstar)
+    case(pointstar)
       fdfac(ixO^S) = 1.0d0
-    case(type_fdisc, type_fdisc_cutoff)
+    case(fdisc, fdisc_cutoff)
       where (beta_fd(ixO^S) >= 1.0d0)
         fdfac(ixO^S) = 1.0d0/(1.0d0 + alpha(ixO^S))
       elsewhere (beta_fd(ixO^S) < -1.0d10)
@@ -620,7 +632,7 @@ contains
     dtnew  = min(dtnew, courantpar*dt_cak)
 
     {^NOONED
-    if (cak_vector_force) then
+    if (method_cakforce == vectorforce) then
       max_gr = max( maxval(abs(wprim(ixO^S,gcak2_))), epsilon(1.0d0) )
       dt_cak = minval( sqrt(block%dx(ixO^S,1) * block%dx(ixO^S,2)/max_gr) )
       dtnew  = min(dtnew, courantpar*dt_cak)

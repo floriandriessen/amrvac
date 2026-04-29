@@ -47,7 +47,7 @@
   gayley_qbar  = 2000.0d0
   gayley_q0    = 2000.0d0
   kappae_cgs   = 0.34d0
-  cak_1d_force = .true.
+  cak_force_method = 'radial'
 /
 
 &star_list
