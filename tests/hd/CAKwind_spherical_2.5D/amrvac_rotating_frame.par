@@ -73,8 +73,8 @@
   cak_vector_force = .true.
   nthetaray  = 6
   nphiray    = 6
-  use_lte_table  = .true.
-  name_lte_table = 'Y02400'
+  use_cak_table  = .false.
+  name_cak_table = 'Y02400'
 /
 
 &star_list
