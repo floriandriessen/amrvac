@@ -1,8 +1,9 @@
+
 &filelist
-  base_filename='output/rmhd_shock'
+  base_filename='output/rmhd_switchoff'
   autoconvert      = F
-  typefilelog='regression_test'
-  nwauxio=2
+  typefilelog = 'regression_test'
+  nwauxio=2 
 /
 
 &savelist
@@ -13,20 +14,20 @@
 /
 
 &stoplist
-   time_max = 20.d0
+   time_max = 2.d1
    dtmin = 1.0d-20
 /
 
  &methodlist
-   time_stepper = 'threestep'
+   time_stepper    = 'threestep'
    time_integrator = 'IMEX_ARS3'
    flux_scheme     = 20*'hll'
-   limiter         = 20*'koren'
+   limiter         = 20*'weno3'
 /
 
 &boundlist
-  typeboundary_min1 = 9*'cont'
-  typeboundary_max1 = 9*'cont'
+  typeboundary_min1 = 9*'special' 
+  typeboundary_max1 = 9*'special' 
 /
 
  &meshlist
@@ -34,22 +35,21 @@
    refine_criterion   = 3
    domain_nx1         = 256
    block_nx1          = 16
-   xprobmin1       = -1.0d0
-   xprobmax1       = 1.0d0
+   xprobmin1       = -5.d0
+   xprobmax1       = 5.d0
    refine_threshold   = 20*0.5d0
    derefine_ratio     = 20*1.d0/2.d0
  /
 
  &paramlist
   courantpar       = 0.6d0
-  slowsteps = 200
+  slowsteps = 2000
  /
 
  &mhd_list
   He_abundance = 0.d0 
-  mhd_gravity = .false.
   mhd_energy = .true.
-  mhd_gamma = 1.6666666666667d0
+  mhd_gamma = 1.4d0
   mhd_radiation_fld = .true.
  /
 
@@ -60,23 +60,17 @@
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
   fld_diff_tol = 1.d-7
+  fld_tiring_explicit=.true.
   /
 
   &shock_list
-   rho1 = 1.0d-4
-   rho2 = 5.0d-5
-   vx1 = 0.0d0
-   vx2 = 0.0d0
-   T1 = 1.0889904411594d6
-   T2 = 1.407734300031d6
-   Bx1 = 0.0d0  
-   Bx2 = 0.0d0  
-   vy1 = 0.0d0 
-   vz1 = 0.0d0 
-   By1 = 0.0d0 
-   Bz1 = 0.0d0 
-   vy2 = 0.0d0 
-   vz2 = 0.0d0 
-   By2 = 0.0d0 
-   Bz2 = 0.0d0 
+   rho1 = 0.00796933
+   rho2 = 0.03038109342
+   T1 = 6141.3520579266
+   vx1 = 3.9868219867588d7
+   vy1 = 3.22643d6 
+   vz1 = 4.95596d6 
+   Bx1 = 12616610.096153 
+   By1 = 46424572.074395
+   Bz1 = -7737434.5872453 
    /
