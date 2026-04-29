@@ -408,7 +408,7 @@ contains
     real(8) :: dvrdt(ixO^S), dvtdt(ixO^S), dvpdt(ixO^S)
     real(8) :: dvrdp(ixO^S), dvtdp(ixO^S), dvpdp(ixO^S)
     integer :: ix^D, itray, ipray
-    real(8) :: gcaktmp1, gcaktmp2, gcaktmp3
+    real(8) :: gcaktmp1, gcaktmp2, gcaktmp3, tausob, integrand
 
     inv_rho(ixI^S) = 1.0d0/wCT(ixI^S,iw_rho)
     inv_r(ixI^S)   = 1.0d0/x(ixI^S,1)
@@ -506,11 +506,14 @@ contains
           ! No multiple resonances in CAK
           dvndn = abs(dvndn)
 
+          tausob = gayley_q0 * kappae * clight * wCT(ix^D,iw_rho) / dvndn
+          integrand = ((1.0d0 + tausob)**(1.0d0 - cak_alpha) - 1.0d0) / tausob
+
           ! Convert gradient back from wind coordinates (r',theta',phi') to
           ! stellar coordinates (r,theta,phi)
-          gcaktmp1 = gcaktmp1 + (dvndn*inv_rho(ix^D))**cak_alpha * a1 * wtot
-          gcaktmp2 = gcaktmp2 + (dvndn*inv_rho(ix^D))**cak_alpha * a2 * wtot
-          gcaktmp3 = gcaktmp3 + (dvndn*inv_rho(ix^D))**cak_alpha * a3 * wtot
+          gcaktmp1 = gcaktmp1 + integrand * a1 * wtot
+          gcaktmp2 = gcaktmp2 + integrand * a2 * wtot
+          gcaktmp3 = gcaktmp3 + integrand * a3 * wtot
         enddo
       enddo
 
@@ -519,9 +522,8 @@ contains
 
     ! Normalisation for line force array
     ! NOTE: extra 1/pi factor comes from integration in radiation Phi angle
-    gcak = (kappae*gayley_qbar)**(1.0d0 - cak_alpha)/(1.0d0 - cak_alpha) &
-         * lstar/(4.0d0*dpi*rstar**2.0d0 * clight**(1.0d0+cak_alpha))    &
-         * gcak/dpi
+    gcak = kappae/clight * gayley_qbar/(1.0d0 - cak_alpha) &
+         * lstar/(4.0d0*dpi*rstar**2.0d0) * gcak/dpi
 
     if (fix_vector_force_1d) then
       gcak(ixO^S,2) = 0.0d0
