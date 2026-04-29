@@ -506,8 +506,8 @@ contains
           ! No multiple resonances in CAK
           dvndn = abs(dvndn)
 
-          tausob = gayley_q0 * kappae * clight * wCT(ix^D,iw_rho) / dvndn
-          integrand = ((1.0d0 + tausob)**(1.0d0 - cak_alpha) - 1.0d0) / tausob
+          tausob = w(ix^D,q0_)*w(ix^D,kappae_) * clight * wCT(ix^D,iw_rho) / dvndn
+          integrand = ((1.0d0 + tausob)**(1.0d0 - w(ix^D,alpha_)) - 1.0d0) / tausob
 
           ! Convert gradient back from wind coordinates (r',theta',phi') to
           ! stellar coordinates (r,theta,phi)
@@ -517,13 +517,13 @@ contains
         enddo
       enddo
 
-      gcak(ix^D,1:3) = [gcaktmp1, gcaktmp2, gcaktmp3]
+      gcak(ix^D,1:3) = [gcaktmp1, gcaktmp2, gcaktmp3] &
+           * w(ix^D,kappae_) * w(ix^D,qbar_)/(1.0d0 - w(ix^D,alpha_))
     {enddo\}
 
     ! Normalisation for line force array
     ! NOTE: extra 1/pi factor comes from integration in radiation Phi angle
-    gcak = kappae/clight * gayley_qbar/(1.0d0 - cak_alpha) &
-         * lstar/(4.0d0*dpi*rstar**2.0d0) * gcak/dpi
+    gcak = gcak/dpi * lstar/(4.0d0*dpi*rstar**2.0d0 * clight)
 
     if (fix_vector_force_1d) then
       gcak(ixO^S,2) = 0.0d0
