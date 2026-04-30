@@ -1,18 +1,18 @@
 &filelist
-  base_filename='output/rmhd_fast'
+  base_filename='wave_fast'
   autoconvert      = F
   typefilelog='regression_test'
 /
 
  &savelist
    itsave(1,2)     = 0
-   dtsave_dat     = 1.d0
-   dtsave_log     = 1.d0
+   dtsave_dat     = 0.5d0
+   dtsave_log     = 0.1d0
 /
 
+   time_max =30.d0 
  &stoplist
-   time_max = 1.d2
-   dtmin = 2.0d-20
+   time_max =1.d0 
 /
 
  &methodlist
@@ -37,7 +37,7 @@
  /
 
  &paramlist
-  courantpar       = 0.1d0
+  courantpar       = 0.4d0
   slowsteps=200
  /
 
@@ -55,6 +55,8 @@
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
   fld_diff_tol = 1.d-7
+  fld_bisect_tol = 1.d-7
+  fld_tiring_explicit=.true.
   /
 
  &wave_list

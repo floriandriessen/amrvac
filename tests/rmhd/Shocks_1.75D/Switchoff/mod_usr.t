@@ -134,7 +134,6 @@ contains
     vdotB1=vx1_norm*Bx1_norm+vy1_norm*By1_norm+vz1_norm*Bz1_norm
     vdotB2=vx2_norm*Bx2_norm+vy2_norm*By2_norm+vz2_norm*Bz2_norm
 
-    if(momc_n.eq.zero)then
     ! this computes T2 ensuring that the momentum flux is exactly equal
     ! use the Halley root finder for the 4th order polynomial in T2 (normalized)
     c1A_norm=3.0d0*RR*rho2_norm/arad_norm
@@ -144,9 +143,10 @@ contains
     call Halley_method(T2A_norm,c0A_norm,c1A_norm)
     if(mype==0)print *,'Momentum balance needs T2 (normalized)=',T2A_norm
     T2_norm=T2A_norm
-    else
+
     ! this computes T2 ensuring that the energy flux is exactly equal
     ! use the Halley root finder for the 4th order polynomial in T2 (normalized)
+    if(momc_n.eq.zero)call mpistop('avoid division zero here')
     c1B_norm=3.0d0*RR*rho2_norm*mhd_gamma/(arad_norm*4.0d0*(mhd_gamma-1.d0))
     c0B_norm=(3.0d0/(4.0d0*arad_norm))* &
        ((mhd_gamma*RR*rho1_norm*T1_norm/(mhd_gamma-1.d0) &
@@ -156,8 +156,9 @@ contains
     call Halley_method(T2B_norm,c0B_norm,c1B_norm)
     if(mype==0)print *,'Energy balance needs T2 (normalized)=',T2B_norm
     T2_norm=T2B_norm
-    endif
 
+    T2_norm=T2A_norm
+    if(mype==0)print *,'We USE T2 (normalized)=',T2_norm
     T2=T2_norm*unit_temperature
     p2_norm=T2_norm*rho2_norm*RR
     Er2_norm = arad_norm*T2_norm**4.d0
@@ -290,8 +291,8 @@ contains
     print *,'================================================================='
     print*, 'RMHD-fluxes for stationary shock: ', 'Left', ' | ', 'Right'
     print*, 'density flux must be exactly equal  :', rho1_norm*vx1_norm, ' | ', rho2_norm*vx2_norm
-    print*, 'momentum flux must be exact   equal :',rho1_norm*vx1_norm**2+p1_norm+Er1_norm/3+Btotsq1, &
-                                              ' | ',rho2_norm*vx2_norm**2+p2_norm+Er2_norm/3+Btotsq2
+    print*, 'momentum flux must be exact   equal :',rho1_norm*vx1_norm**2+p1_norm+Er1_norm/3+half*Btotsq1, &
+                                              ' | ',rho2_norm*vx2_norm**2+p2_norm+Er2_norm/3+half*Btotsq2
     print*, 'energy flux must be equal           :', (p1_norm+eg1_norm+4.0d0*Er1_norm/3.0d0+half*Btotsq1)*vx1_norm-Bx1_norm*vdotB1, &
                                               ' | ', (p2_norm+eg2_norm+4.0d0*Er2_norm/3.0d0+half*Btotsq2)*vx2_norm-Bx2_norm*vdotB2
     print*, 'with radiation and gas T equal on each side: LEFT  is', T1_norm,(Er1_norm/arad_norm)**0.25d0

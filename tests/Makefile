@@ -37,7 +37,7 @@ RHD_DIRS := rhd/RHD_heatcool rhd/RHD_pulse_1D rhd/RHD_shock_1D rhd/RHD_wave_1D
 
 SRHD_DIRS := srhd/Jet_cylindrical_2D
 
-RMHD_DIRS := 
+RMHD_DIRS := rmhd/Shocks_1.75D/Jiang rmhd/Shocks_1.75D/Fast rmhd/Shocks_1.75D/Slow rmhd/Shocks_1.75D/Intermediate rmhd/Waves_fine_1.75D/Alfven rmhd/Waves_fine_1.75D/Fast
 # rmhd/Brio_Wu_1.75D rmhd/Torrilhon_1.75D rmhd/Convection_2D
 
 MG_DIRS := multigrid/convergence_2d multigrid/convergence_3d	\

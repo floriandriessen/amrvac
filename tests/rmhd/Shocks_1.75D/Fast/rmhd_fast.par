@@ -1,5 +1,5 @@
 &filelist
-  base_filename='output/rmhd_fast'
+  base_filename='rmhd_fast'
   autoconvert      = F
   typefilelog='regression_test'
   nwauxio=2 
@@ -11,11 +11,12 @@
    !ditsave_dat     = 1
    !ditsave_log     = 1
    dtsave_dat     = 1.d0
-   dtsave_log     = 1.d0
+   dtsave_log     = 0.2d0
 /
 
-&stoplist
    time_max = 20.d0
+&stoplist
+   time_max = 2.d0
    dtmin = 1.0d-20
 /
 

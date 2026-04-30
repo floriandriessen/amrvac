@@ -1,16 +1,14 @@
 !=====================================================
 ! Project : 2D Radiative MHD convection, with AMR
 ! Aim     : Hurlburt-Toomre setup with FLD
-! Results :
-! Update  : 04/08/2025
 ! configuration :
 ! $AMRVAC_DIR/setup.pl -d=2 -v=2
 !=====================================================
 
  &filelist
-        base_filename='Convection2d'
+        base_filename='output/Convection2d'
         saveprim=T
-        autoconvert=T
+        autoconvert=F
         typefilelog='regression_test'
         convert_type='vtuBCCmpi'
         nwauxio=9
@@ -33,12 +31,12 @@
         time_integrator = 'IMEX_ARS3'
         flux_scheme=    20*'hll'
         limiter= 20*'cada3'
+ /
         typesourcesplit = 'sfs'
         check_small_values=.true.
         small_values_method = 'replace'
         small_pressure = 1.d-12
         small_density = 1.d-12
- /
 
  &boundlist
         typeboundary_min1=7*'periodic'
@@ -69,13 +67,14 @@
  /
 
  &paramlist
-        slowsteps=10  
+        slowsteps=1000
         typecourant='maxsum'
         courantpar=0.9d0
         dtdiffpar=0.4d0
  /
 
  &mhd_list
+        mhd_gamma=1.66666667d0
         mhd_thermal_conduction=.true.
         mhd_viscosity=.true.
         mhd_gravity=.true.
@@ -90,5 +89,8 @@
         fld_kappa0 = 0.4d0
         fld_interaction_method = 'Halley'
         fld_fluxlimiter = 'Diffusion'
-        fld_diff_tol = 1.d-7
+        fld_diff_tol = 1.d-6
+        fld_bisect_tol = 1.d-6
+        fld_tiring_explicit=.true.
+        fld_debug=T
  /

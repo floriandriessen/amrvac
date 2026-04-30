@@ -112,9 +112,9 @@ contains
     A_rho = 0.d0
     A_p = 0.d0
     A_vx = 0.d0
-    A_vy = -(Bx0_n*wavenumber/(omega*rho0_norm))*ampl
+    A_vy = ampl
+    A_By = -(Bx0_n*wavenumber/omega)*ampl
     A_vz = 0.d0
-    A_By = ampl
     A_Bz = 0.d0
 
     if(mype==0)then

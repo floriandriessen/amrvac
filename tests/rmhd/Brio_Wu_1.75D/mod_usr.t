@@ -50,6 +50,7 @@ contains
   end subroutine usr_init
 
   subroutine initglobaldata_usr
+   use mod_global_parameters
 
     bx=0.75d0 
     rholeft=1.0d0
@@ -85,12 +86,12 @@ contains
     if(first.and.mype==0) then
       print *,'BrioWu test'
       print *,'bx=',bx,' gamma=',mhd_gamma
-      print *,'LEFT:  by=',byleft,' bz=',bzleft
+      print *,'LEFT:  by =',byleft,' bz=',bzleft
       print *,'LEFT:  rho=',rholeft,' p=',pleft
-      print *,'LEFT:  T=',Tleft,' Erad=',arad_norm*(Tleft)**4
-      print *,'RIGHT: by=',byright,' bz=',bzright
+      print *,'LEFT:  T  =',Tleft,' Erad=',arad_norm*(Tleft)**4
+      print *,'RIGHT: by =',byright,' bz=',bzright
       print *,'RIGHT: rho=',rhoright,' p=',pright
-      print *,'RIGHT:  T=',Tright,' Erad=',arad_norm*(Tright)**4
+      print *,'RIGHT:  T =',Tright,' Erad=',arad_norm*(Tright)**4
       first=.false.
     endif
 

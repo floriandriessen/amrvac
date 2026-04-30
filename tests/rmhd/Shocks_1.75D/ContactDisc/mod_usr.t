@@ -35,7 +35,7 @@ contains
   subroutine usr_init()
 
     ! Note how we here must set three values that in turn define M-L-T
-    unit_density      =0.01d0       ! 0.01 g cm^-3
+    unit_density      =0.0001d0       ! 0.01 g cm^-3
     unit_velocity     =1.d8         ! 10^8 cm s^-1
     unit_length       =1.d5         ! 10^5 cm
 
@@ -127,7 +127,6 @@ contains
     vdotB1=vx1_norm*Bx1_norm+vy1_norm*By1_norm+vz1_norm*Bz1_norm
     vdotB2=vx2_norm*Bx2_norm+vy2_norm*By2_norm+vz2_norm*Bz2_norm
 
-    if(momc_n.eq.zero)then
     ! this computes T2 ensuring that the momentum flux is exactly equal
     ! use the Halley root finder for the 4th order polynomial in T2 (normalized)
     c1A_norm=3.0d0*RR*rho2_norm/arad_norm
@@ -137,9 +136,12 @@ contains
     call Halley_method(T2A_norm,c0A_norm,c1A_norm)
     if(mype==0)print *,'Momentum balance needs T2 (normalized)=',T2A_norm
     T2_norm=T2A_norm
-    else
+
     ! this computes T2 ensuring that the energy flux is exactly equal
     ! use the Halley root finder for the 4th order polynomial in T2 (normalized)
+    if(momc_n.eq.zero)then
+      if(mype==0)print *,'skip energy balance due to division momc_n'
+    else
     c1B_norm=3.0d0*RR*rho2_norm*mhd_gamma/(arad_norm*4.0d0*(mhd_gamma-1.d0))
     c0B_norm=(3.0d0/(4.0d0*arad_norm))* &
        ((mhd_gamma*RR*rho1_norm*T1_norm/(mhd_gamma-1.d0) &
@@ -150,6 +152,7 @@ contains
     if(mype==0)print *,'Energy balance needs T2 (normalized)=',T2B_norm
     T2_norm=T2B_norm
     endif
+
 
     T2=T2_norm*unit_temperature
     p2_norm=T2_norm*rho2_norm*RR
@@ -272,6 +275,7 @@ contains
     write(*,*) 'normalized B x                =',Bx1_norm,Bx2_norm
     write(*,*) 'normalized B y                =',By1_norm,By2_norm
     write(*,*) 'normalized B z                =',Bz1_norm,Bz2_norm
+    write(*,*) 'normalized p+E/3              =',p1_norm+Er1_norm/3.0d0,p2_norm+Er2_norm/3.0d0
     print *,'================================================================='
     print *,'========GLOBAL values==========='
     print *,'rho 1-2=',rho1,rho2
@@ -281,8 +285,8 @@ contains
     print *,'================================================================='
     print*, 'RMHD-fluxes for stationary shock: ', 'Left', ' | ', 'Right'
     print*, 'density flux must be exactly equal  :', rho1_norm*vx1_norm, ' | ', rho2_norm*vx2_norm
-    print*, 'momentum flux must be exact   equal :',rho1_norm*vx1_norm**2+p1_norm+Er1_norm/3+Btotsq1, &
-                                              ' | ',rho2_norm*vx2_norm**2+p2_norm+Er2_norm/3+Btotsq2
+    print*, 'momentum flux must be exact   equal :',rho1_norm*vx1_norm**2+p1_norm+Er1_norm/3+half*Btotsq1, &
+                                              ' | ',rho2_norm*vx2_norm**2+p2_norm+Er2_norm/3+half*Btotsq2
     print*, 'energy flux must be equal           :', (p1_norm+eg1_norm+4.0d0*Er1_norm/3.0d0+half*Btotsq1)*vx1_norm-Bx1_norm*vdotB1, &
                                               ' | ', (p2_norm+eg2_norm+4.0d0*Er2_norm/3.0d0+half*Btotsq2)*vx2_norm-Bx2_norm*vdotB2
     print*, 'with radiation and gas T equal on each side: LEFT  is', T1_norm,(Er1_norm/arad_norm)**0.25d0

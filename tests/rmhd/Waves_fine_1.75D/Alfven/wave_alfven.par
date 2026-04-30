@@ -1,19 +1,19 @@
 
 &filelist
-  base_filename='output/rmhd_alfven'
+  base_filename='wave_alfven'
   autoconvert      = F
   typefilelog='regression_test'
 /
 
  &savelist
    itsave(1,2)     = 0
-   dtsave_dat     = 1.d0
-   dtsave_log     = 1.d0
+   dtsave_dat     = 0.5d0
+   dtsave_log     = 0.1d0
 /
 
+   time_max = 30.0d0
  &stoplist
-   time_max = 3.d2
-   dtmin = 2.0d-20
+   time_max = 1.0d0
 /
 
  &methodlist
@@ -22,11 +22,6 @@
    flux_scheme     = 20*'hll' 
    limiter         = 20*'weno5'
 /
-   typesourcesplit = 'sfs'
-   check_small_values = .true.
-   small_values_method = 'replace'
-   small_pressure = 1.d-8
-   small_density = 1.d-8
 
 &boundlist
   typeboundary_min1 = 9*'cont' 
@@ -37,13 +32,13 @@
  &meshlist
    refine_max_level   = 1
    domain_nx1         = 3200
-   block_nx1          = 200 
+   block_nx1          = 50 
    xprobmin1       = 0.d0
    xprobmax1       = 40.d0
  /
 
  &paramlist
-  courantpar       = 0.1d0
+  courantpar       = 0.4d0
  /
 
  &mhd_list
@@ -60,6 +55,8 @@
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
   fld_diff_tol = 1.d-7
+  fld_bisect_tol = 1.d-7
+  fld_tiring_explicit=.true.
   /
 
  &wave_list

@@ -224,20 +224,20 @@ contains
       velx(ixI^S)       = A_vx*dsin(wavenumber*x(ixI^S,1)-omega*qt)
       vely(ixI^S)       = A_vy*dsin(wavenumber*x(ixI^S,1)-omega*qt)
       velz(ixI^S)       = A_vz*dsin(wavenumber*x(ixI^S,1)-omega*qt)
-      !pres(ixI^S)      = p0_norm+A_p*dsin(wavenumber*x(ixI^S,1)-omega*qt)
+      pres(ixI^S)      = p0_norm+A_p*dsin(wavenumber*x(ixI^S,1)-omega*qt)
       w(ixI^S, rho_)   = rho0_norm + A_rho*dsin(wavenumber*x(ixI^S,1)-omega*qt)
       w(ixI^S, mom(1)) = w(ixI^S,rho_)*velx(ixI^S)
       w(ixI^S, mom(2)) = w(ixI^S,rho_)*vely(ixI^S)
       w(ixI^S, mom(3)) = w(ixI^S,rho_)*velz(ixI^S)
-      !!!w(ixI^S, r_e)    = arad_norm*(pres(ixI^S)/(w(ixI^S,rho_)*RR))**4
-      w(ixI^S, r_e)    = Er0_norm+A_Er*dsin(wavenumber*x(ixI^S,1)-omega*qt)
+      w(ixI^S, r_e)    = arad_norm*(pres(ixI^S)/(w(ixI^S,rho_)*RR))**4
+      !!!w(ixI^S, r_e)    = Er0_norm+A_Er*dsin(wavenumber*x(ixI^S,1)-omega*qt)
       w(ixI^S, mag(1)) = Bx0_n
       w(ixI^S, mag(2)) = By0_n + A_By*dsin(wavenumber*x(ixI^S,1)-omega*qt)
       w(ixI^S, mag(3)) = Bz0_n + A_Bz*dsin(wavenumber*x(ixI^S,1)-omega*qt)
-      !w(ixI^S, e_)     = pres(ixI^S)/(mhd_gamma-1.0d0)+half*w(ixI^S,rho_)* &
-      !                         (velx(ixI^S)**2+vely(ixI^S)**2+velz(ixI^S)**2) &
-      !   +half*(Bx0_n*Bx0_n+w(ixI^S, mag(2))*w(ixI^S, mag(2)) + w(ixI^S, mag(3))*w(ixI^S, mag(3)))
-      w(ixI^S, e_)    = eg0_norm+A_e*dsin(wavenumber*x(ixI^S,1)-omega*qt)
+      w(ixI^S, e_)     = pres(ixI^S)/(mhd_gamma-1.0d0)+half*w(ixI^S,rho_)* &
+                               (velx(ixI^S)**2+vely(ixI^S)**2+velz(ixI^S)**2) &
+         +half*(Bx0_n*Bx0_n+w(ixI^S, mag(2))*w(ixI^S, mag(2)) + w(ixI^S, mag(3))*w(ixI^S, mag(3)))
+      !!w(ixI^S, e_)    = eg0_norm+A_e*dsin(wavenumber*x(ixI^S,1)-omega*qt)
     endwhere
 
   end subroutine Initialize_Wave
