@@ -23,7 +23,7 @@ module mod_usr
   double precision :: momc_n, T2A_norm, T2B_norm
 
   ! for computing the balanced temperature
-  double precision :: c1A_norm,c0A_norm
+  double precision :: c1A_norm,c0A_norm,val1,val2
   double precision :: c1B_norm,c0B_norm
 
   ! Storing additional var in the dat file
@@ -283,8 +283,9 @@ contains
     print*, 'density flux must be exactly equal  :', rho1_norm*vx1_norm, ' | ', rho2_norm*vx2_norm
     print*, 'momentum flux must be exact   equal :',rho1_norm*vx1_norm**2+p1_norm+Er1_norm/3+half*Btotsq1, &
                                               ' | ',rho2_norm*vx2_norm**2+p2_norm+Er2_norm/3+half*Btotsq2
-    print*, 'energy flux must be equal           :', (p1_norm+eg1_norm+4.0d0*Er1_norm/3.0d0+half*Btotsq1)*vx1_norm-Bx1_norm*vdotB1, &
-                                              ' | ', (p2_norm+eg2_norm+4.0d0*Er2_norm/3.0d0+half*Btotsq2)*vx2_norm-Bx2_norm*vdotB2
+   val1= (p1_norm+eg1_norm+4.0d0*Er1_norm/3.0d0+half*Btotsq1)*vx1_norm-Bx1_norm*vdotB1
+    val2= (p2_norm+eg2_norm+4.0d0*Er2_norm/3.0d0+half*Btotsq2)*vx2_norm-Bx2_norm*vdotB2
+    print*, 'energy flux must be equal           :', val1, ' | ', val2 
     print*, 'with radiation and gas T equal on each side: LEFT  is', T1_norm,(Er1_norm/arad_norm)**0.25d0
     print*, 'with radiation and gas T equal on each side: RIGHT is', T2_norm,(Er2_norm/arad_norm)**0.25d0
     print *,'================================================================='
