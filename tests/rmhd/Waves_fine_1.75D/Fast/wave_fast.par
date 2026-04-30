@@ -1,13 +1,7 @@
-&testlist
-        teststr=''
-/
-
 &filelist
-  base_filename='./rhd_wave'
-  autoconvert      = T
-  saveprim         = T
-  nwauxio = 0
-  convert_type = 'vtuBCCmpi'
+  base_filename='output/rmhd_fast'
+  autoconvert      = F
+  typefilelog='regression_test'
 /
 
  &savelist
@@ -22,20 +16,15 @@
 /
 
  &methodlist
-   time_stepper = 'threestep'
+   time_stepper     = 'threestep'
    time_integrator = 'IMEX_ARS3'
    flux_scheme     = 20*'hll' 
    limiter         = 20*'weno5'
-   typesourcesplit = 'sfs'
-   check_small_values = .true.
-   small_values_method = 'replace'
-   small_pressure = 1.d-8
-   small_density = 1.d-8
 /
 
 &boundlist
   typeboundary_min1 = 9*'cont' 
-  typeboundary_max1 = 8*'cont','special' 
+  typeboundary_max1 = 9*'cont' 
   internalboundary = T
 /
 
@@ -48,27 +37,21 @@
  /
 
  &paramlist
-  courantpar       = 1.d-2
+  courantpar       = 0.1d0
   slowsteps=200
  /
 
- &rmhd_list
+ &mhd_list
   He_abundance = 0.0d0
-  rmhd_energy = .true.
-  rmhd_gamma = 1.6666667d0
-  rmhd_radiation_formalism = 'fld'
-  rmhd_radiation_force = .true.
-  rmhd_energy_interact = .true.
-  rmhd_radiation_diffusion = .true.
-  rmhd_radiation_advection = .true.
+  mhd_energy = .true.
+  mhd_gamma = 1.6666667d0
+  mhd_radiation_fld = .true.
  /
 
  &fld_list
-  fld_Eint_split = .false.
   fld_Radforce_split = .false.
   fld_opacity_law = 'const'
   fld_kappa0 = 0.4d0
-  fld_diff_scheme = 'mg'
   fld_interaction_method = 'Halley'
   fld_fluxlimiter = 'Diffusion'
   fld_diff_tol = 1.d-7
@@ -77,10 +60,9 @@
  &wave_list
   rho0 = 3.216d-9
   p0 = 17.340d3
-  Er0 = 17.340d3
-  tau_wave = 1.d3
+  rho_kappa_lambda = 1.d3
   ampl = 1.d-2
-  B0x = 330.14d0
-  B0y = 0.0d0
-  B0z = 330.14d0
+  Bx0 = 330.14d0
+  By0 = 0.0d0
+  Bz0 = 330.14d0
   /
