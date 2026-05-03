@@ -166,7 +166,6 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
-    double precision :: a,b,Xfrac,Yfrac
     logical, save:: first=.true.
 
     w(ixI^S,rho_)   = rho1_norm

@@ -19,9 +19,9 @@ contains
     usr_add_aux_names   => specialvarnames_output
     usr_print_log       => energies_log
 
-    unit_length        = 1.001d8 ! cm
-    unit_temperature   = 1.001d3 ! K
-    unit_numberdensity = 1.001d9 ! cm^-3
+    unit_length        = 1.0d8 ! cm
+    unit_temperature   = 6.0d5 ! K
+    unit_density       = 3.61286d-10 ! 
 
     call mhd_activate()
   end subroutine usr_init
@@ -88,7 +88,7 @@ contains
     !
     
     ! equilibrium parameters
-    gamma=1.66666667d0
+    gamma=mhd_gamma
     mpoly=1
     qchi=11.0d0
     qchand=72.0d0
@@ -103,7 +103,6 @@ contains
     endif
     
     temptop=zz0
-    mhd_gamma=gamma
     usr_grav=-(qmpoly+one)
     
     ! dissipative parameters
@@ -181,7 +180,7 @@ contains
     w(ix^S,mom(1))=dvx*dsin(x(ix^S,1)*nkx)*dsin(x(ix^S,2)*nky){^IFTHREED *dsin(x(ix^S,3)*nkz)}
     w(ix^S,mom(2))=dvy*dsin(x(ix^S,1)*nkx)*dsin(x(ix^S,2)*nky){^IFTHREED *dsin(x(ix^S,3)*nkz)}
     {^IFTHREED w(ix^S,mom(3))=zero }
-    w(ix^S,r_e) = const_rad_a*((zz0+one-x(ix^S,2))*unit_temperature)**4.d0/unit_pressure 
+    w(ix^S,r_e) = arad_norm*(zz0+one-x(ix^S,2))**4.d0 
     call mhd_to_conserved(ixG^L,ix^L,w,x)
 
     if(mype == 0.and.first)then
@@ -312,7 +311,7 @@ contains
       enddo
       }
       w(ixO^S,p_)=w(ixO^S,rho_)*temptop
-      w(ixO^S,r_e)= const_rad_a*(temptop*unit_temperature)**4.d0/unit_pressure 
+      w(ixO^S,r_e)= arad_norm*(temptop)**4.d0 
     
       ! now reset the inner mesh values to conservative
       call mhd_to_conserved(ixG^L,ixIM^L,w,x)
@@ -334,11 +333,11 @@ contains
     select case (iB)
     case (3)
       mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
-      mg%bc(iB, mg_iphi)%bc_value = 0.0 !gradE
+      mg%bc(iB, mg_iphi)%bc_value = 0.0d0 
       
     case (4)
       mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
-      mg%bc(iB, mg_iphi)%bc_value = (const_rad_a*(temptop*unit_temperature)**4)/unit_pressure
+      mg%bc(iB, mg_iphi)%bc_value = arad_norm*(temptop)**4
 
     case default
       print *, "Not a standard: ", typeboundary(r_e, iB)

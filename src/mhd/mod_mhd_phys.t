@@ -4148,12 +4148,12 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S),rho(ixI^S)
+    double precision :: R(ixI^S),rho(ixI^S),pth(ixI^S)
 
     call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,res)
+    call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
     call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    res(ixO^S)=res(ixO^S)/(R(ixO^S)*rho(ixO^S))
+    res(ixO^S)=pth(ixO^S)/(R(ixO^S)*rho(ixO^S))
 
   end subroutine mhd_get_temperature_from_etot
 

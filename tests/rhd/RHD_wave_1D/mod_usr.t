@@ -92,6 +92,7 @@ contains
 
   subroutine set_params_and_mg_boundary_conds()
     use mod_global_parameters
+    use mod_fld
 
     ! here we normalize all input values and compute the equilibrium parameters
     rho0_norm  = rho0/unit_density
@@ -137,16 +138,14 @@ contains
   !> A routine for specifying initial conditions
   subroutine initial_conditions(ixI^L, ixO^L, w, x)
     use mod_global_parameters
-    use mod_fld
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
-    double precision :: a,b,Xfrac,Yfrac
     logical, save:: first=.true.
 
-    ! Set initial values for
+    ! Set initial uniform values 
     w(ixI^S, rho_)  = rho0_norm
     w(ixI^S, mom(:))= 0.d0
     w(ixI^S, e_)    = eg0_norm
@@ -169,7 +168,6 @@ contains
 
   subroutine Initialize_Wave(level,qt,ixI^L,ixO^L,w,x)
     use mod_global_parameters
-    use mod_fld
     integer, intent(in)             :: ixI^L,ixO^L,level
     double precision, intent(in)    :: qt
     double precision, intent(inout) :: w(ixI^S,1:nw)

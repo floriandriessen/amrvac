@@ -22,10 +22,10 @@
 /
 
  &methodlist
-   time_stepper    = 'twostep'
-   time_integrator = 'IMEX_Trapezoidal'
+   time_stepper    = 'threestep'
+   time_integrator = 'IMEX_232'
    flux_scheme     = 20*'hll'
-   limiter         = 20*'weno5'
+   limiter         = 20*'cada3'
 /
 
 &boundlist
