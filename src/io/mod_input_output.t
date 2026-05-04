@@ -251,8 +251,7 @@ contains
          write_timing_log, timing_log_interval
 
     namelist /stoplist/ it_init,time_init,it_max,time_max,dtmin,reset_it,reset_time,&
-         wall_time_max,final_dt_reduction,lb_diagnose,&
-         lb_automatic,lb_interval,lb_alpha
+         wall_time_max,final_dt_reduction
 
     namelist /methodlist/ time_stepper,time_integrator, &
          source_split_usr,typesourcesplit,local_timestep,&
@@ -279,7 +278,8 @@ contains
          amr_wavefilter,max_blocks,block_nx^D,domain_nx^D,iprob,xprob^L, &
          w_refine_weight, prolongprimitive,coarsenprimitive, &
          typeprolonglimit, &
-         logflag,tfixgrid,itfixgrid,ditregrid
+         logflag,tfixgrid,itfixgrid,ditregrid, &
+         lb_diagnose,lb_automatic,lb_interval,lb_alpha
     namelist /paramlist/  courantpar, dtpar, dtdiffpar, &
          typecourant, slowsteps
 
