@@ -159,6 +159,15 @@ contains
     allocate(igrid_to_sfc(max_blocks))
 
     sfc=0
+    ! Cost-weighted load balancer arrays. costlist is global Morton-indexed
+    ! (sized to max_blocks*npe, the upper bound on nleafs); cold-start to 1.0
+    ! so the first partition equals the equal-block-count cut. block_cost is
+    ! the per-step scratch accumulator (per-rank, per-igrid), reset every
+    ! advance.
+    allocate(costlist(max_blocks*npe))
+    allocate(block_cost(max_blocks))
+    costlist   = 1.0d0
+    block_cost = 0.0d0
     allocate(Morton_start(0:npe-1),Morton_stop(0:npe-1))
     allocate(Morton_sub_start(0:npe-1),Morton_sub_stop(0:npe-1))
 

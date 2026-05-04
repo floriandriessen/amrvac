@@ -24,6 +24,15 @@ module mod_radiative_cooling
   use mod_comm_lib, only: mpistop
   implicit none
 
+  !> Per-rank cooling-only compute accumulator for lb_diagnose. Sums the
+  !> wall time spent inside radiative_cooling_add_source across all blocks
+  !> and substages within one full advance() call. Reset by
+  !> mod_advance::advance at the start of each step. Note: this is a subset
+  !> of lb_compute_accum (which already encloses the whole advect1 block
+  !> loop); it isolates the cooling Newton/exact-solver kernel cost from
+  !> the surrounding finite-volume work.
+  double precision, public :: lb_cool_accum = 0.0d0
+
   !> Helium abundance over Hydrogen
   double precision, private    :: He_abundance
 
@@ -1889,7 +1898,9 @@ module mod_radiative_cooling
       logical, intent(inout) :: active
       type(rc_fluid), intent(in) :: fl
       double precision, allocatable, dimension(:^D&) :: Lequi
+      double precision :: lb_t0_cool
 
+      if (lb_diagnose) lb_t0_cool = MPI_WTIME()
       if(qsourcesplit .eqv.fl%rc_split) then
         active = .true.
         select case(fl%coolmethod)
@@ -1921,6 +1932,7 @@ module mod_radiative_cooling
         endif
         if( fl%Tfix ) call floortemperature(qdt,ixI^L,ixO^L,wCT,w,x,fl)
       end if
+      if (lb_diagnose) lb_cool_accum = lb_cool_accum + (MPI_WTIME() - lb_t0_cool)
     end subroutine radiative_cooling_add_source
 
     subroutine floortemperature(qdt,ixI^L,ixO^L,wCT,w,x,fl) !> This will need revisiting in LTE

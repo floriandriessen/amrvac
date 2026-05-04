@@ -54,7 +54,9 @@ mod_advance.o: mod_ghostcells_update.mod
 mod_advance.o: mod_global_parameters.mod
 mod_advance.o: mod_particles.mod
 mod_advance.o: mod_physics.mod
+mod_advance.o: mod_radiative_cooling.mod
 mod_advance.o: mod_source.mod
+mod_advance.o: mod_supertimestepping.mod
 mod_advance.o: mod_tvd.mod
 mod_advance.o: mod_usr_methods.mod
 mod_amr_fct.o: mod_forest.mod
