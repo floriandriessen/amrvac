@@ -261,14 +261,14 @@ contains
 
       call hd_to_primitive(ixI^L,ixE^L,w,x)
 
-      ! Radial velocity field (constant slope extrapolation: d^2(vr)/dr^2 = 0)
       do ir = ixBmax1,ixBmin1,-1
+        ! Radial velocity (constant slope extrapolation: d^2(vr)/dr^2 = 0)
         w(ir^%1ixB^S,mom(1)) = 2.0d0*w(ir+1^%1ixB^S,mom(1)) &
              - w(ir+2^%1ixB^S,mom(1))
-      enddo
 
-      ! Polar velocity (no-slip condition to avoid equator-ward flow)
-      w(ixB^S,mom(2)) = 0.0d0
+        ! Polar velocity (no-slip condition to avoid strong equatorward flow)
+        w(ir^%1ixB^S,mom(2)) = -w(ixBmax1+1^%1ixB^S,mom(2))
+      enddo
 
       if (hd_rotating_frame) then
         w(ixB^S,mom(3)) = 0.0d0
