@@ -2555,7 +2555,7 @@ contains
         if(.not.primitive) then
           ! change to primitive variables
           w(ixO^S,mom(1:ndir))=v(ixO^S,1:ndir)
-          w(ixO^S,e_)=pressure(ixO^S)
+          if(mhd_energy) w(ixO^S,e_)=pressure(ixO^S)
         end if
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
