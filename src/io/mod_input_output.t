@@ -264,7 +264,7 @@ contains
          rk2_alfa, imex222_lambda, ssprk_order, rk3_switch, imex_switch, &
          small_temperature, small_pressure, small_density, &
          small_values_method, small_values_daverage, fix_small_values, check_small_values, &
-         trace_small_values, small_values_fix_iw
+         trace_small_values, small_values_fix_iw, minfip, maxfip
 
     namelist /boundlist/ nghostcells,ghost_copy,&
          internalboundary, typeboundary_^L, save_physical_boundary

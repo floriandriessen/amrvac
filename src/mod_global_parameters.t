@@ -120,6 +120,8 @@ module mod_global_parameters
   double precision :: small_temperature,small_pressure,small_density,small_e,small_r_e
   double precision :: phys_trac_mask
 
+  double precision :: minfip=1.d0, maxfip=4.d0
+
   !> amplitude of background dipolar, quadrupolar, octupolar, user's field
   double precision :: Bdip=0.d0
   double precision :: Bquad=0.d0

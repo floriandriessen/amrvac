@@ -81,9 +81,13 @@ module mod_mhd_phys
   !> Indices of the GLM psi
   integer, public, protected :: psi_
   !> Index of the radiation energy
-  integer, public, protected              :: r_e
+  integer, public, protected :: r_e
   !> Indices of temperature
   integer, public, protected :: Te_
+  !> Index of the FIP passive scalar rho*fip in conserved form, fip in primitive form
+  integer, public, protected :: fip_ = -1
+  !> Whether FIP passive scalar is enabled
+  logical, public, protected :: mhd_fip = .false.
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
   integer, public, protected              :: Tweight_
@@ -291,7 +295,7 @@ contains
       mhd_hyperbolic_tc, mhd_hyperbolic_tc_sat, mhd_hyperbolic_tc_kappa, &
       mhd_hyperbolic_tc_use_perp, mhd_hyperbolic_tc_perp_mode, &
       mhd_hyperbolic_tc_kappa_perp_factor, mhd_hyperbolic_tc_Bmin, &
-      mhd_radiation_fld
+      mhd_radiation_fld, mhd_fip
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -565,6 +569,12 @@ contains
     else
       qpar_ = -1
       qperp_ = -1
+    end if
+
+    if (mhd_fip) then
+      fip_ = var_set_fluxvar('rho_fip', 'fip', need_bc=.false.)
+    else
+      fip_ = -1
     end if
 
     allocate(tracer(mhd_n_tracer))
@@ -987,6 +997,7 @@ contains
     if (mhd_radiative_cooling) then
       call radiative_cooling_init_params(mhd_gamma,He_abundance)
       allocate(rc_fl)
+      rc_fl%fip_ = fip_
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%get_rho => mhd_get_rho
       rc_fl%get_pthermal => mhd_get_pthermal
@@ -1247,21 +1258,27 @@ contains
     type(rc_fluid), intent(inout) :: fl
 
     !> Lower limit of temperature
-    double precision   :: tlow=bigdouble
-    double precision :: rad_cut_hgt=0.5d0
-    double precision :: rad_cut_dey=0.15d0
-    integer                      :: n
+    double precision :: tlow=bigdouble
+    double precision :: rad_damp_height=0.5d0
+    double precision :: rad_damp_scale=0.15d0
+    integer :: n
     ! list parameters
     integer :: ncool = 4000
     !> Fixed temperature not lower than tlow
-    logical    :: Tfix=.false.
+    logical :: Tfix=.false.
     !> Add cooling source in a split way (.true.) or un-split way (.false.)
-    logical    :: rc_split=.false.
-    logical    :: rad_cut=.false.
+    logical :: rc_split=.false.
+    logical :: rad_damp=.false.
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
+    logical :: rad_newton = .false.
+    double precision :: rad_newton_trad = 0.006d0
+    double precision :: rad_newton_rhosurf = 1.d4
+    double precision :: rad_newton_pthick = 25.d0
 
-    namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split,rad_cut,rad_cut_hgt,rad_cut_dey
+    namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split, &
+                       rad_newton, rad_newton_trad, rad_newton_rhosurf, &
+                       rad_newton_pthick, rad_damp, rad_damp_height, rad_damp_scale
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -1274,9 +1291,13 @@ contains
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
-    fl%rad_cut=rad_cut
-    fl%rad_cut_hgt=rad_cut_hgt
-    fl%rad_cut_dey=rad_cut_dey
+    fl%rad_damp=rad_damp
+    fl%rad_damp_height=rad_damp_height
+    fl%rad_damp_scale=rad_damp_scale
+    fl%rad_newton=rad_newton
+    fl%rad_newton_trad=rad_newton_trad
+    fl%rad_newton_rhosurf=rad_newton_rhosurf
+    fl%rad_newton_pthick=rad_newton_pthick
   end subroutine rc_params_read
 
   !> sets the equilibrium variables
@@ -1905,6 +1926,30 @@ contains
 
   end subroutine mhd_check_w_hde
 
+  subroutine mhd_bound_fip(primitive, ixI^L, ixO^L, w)
+    use mod_global_parameters
+    logical, intent(in)             :: primitive
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+
+    double precision :: rho_safe(ixI^S), fip_prim(ixI^S)
+
+    if (.not. mhd_fip) return
+
+    if (primitive) then
+      w(ixO^S,fip_) = min(maxfip, max(minfip, w(ixO^S,fip_)))
+    else
+      if (has_equi_rho_and_p) then
+        rho_safe(ixO^S) = max(w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i), small_density)
+      else
+        rho_safe(ixO^S) = max(w(ixO^S,rho_), small_density)
+      end if
+      fip_prim(ixO^S) = w(ixO^S,fip_) / rho_safe(ixO^S)
+      fip_prim(ixO^S) = min(maxfip, max(minfip, fip_prim(ixO^S)))
+      w(ixO^S,fip_) = rho_safe(ixO^S) * fip_prim(ixO^S)
+    end if
+  end subroutine mhd_bound_fip
+
   !> Transform primitive variables into conservative ones
   subroutine mhd_to_conserved_origin(ixI^L,ixO^L,w,x)
     use mod_global_parameters
@@ -1914,6 +1959,7 @@ contains
 
     integer :: ix^D
 
+    if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate total energy from pressure, kinetic and magnetic energy
       w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
@@ -1921,6 +1967,7 @@ contains
                  +(^C&w(ix^D,b^C_)**2+))
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
    {end do\}
 
   end subroutine mhd_to_conserved_origin
@@ -1934,9 +1981,11 @@ contains
 
     integer :: ix^D
 
+    if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
    {end do\}
 
   end subroutine mhd_to_conserved_origin_noe
@@ -1950,12 +1999,14 @@ contains
 
     integer :: ix^D
 
+    if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate total energy from pressure, kinetic and magnetic energy
       w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
                  +half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
    {end do\}
 
   end subroutine mhd_to_conserved_hde
@@ -1969,11 +2020,13 @@ contains
 
     integer :: ix^D
 
+    if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate total energy from pressure, kinetic and magnetic energy
       w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
    {end do\}
 
   end subroutine mhd_to_conserved_inte
@@ -1988,6 +2041,7 @@ contains
     double precision :: rho
     integer :: ix^D
 
+    if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       rho=w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i)
       ! Calculate total energy from pressure, kinetic and magnetic energy
@@ -1996,6 +2050,7 @@ contains
                        +(^C&w(ix^D,b^C_)**2+))
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=rho*w(ix^D,m^C_)\
+      if (mhd_fip) w(ix^D,fip_) = rho * w(ix^D,fip_)
    {end do\}
 
   end subroutine mhd_to_conserved_split_rho
@@ -2011,6 +2066,7 @@ contains
     double precision :: ef(ixO^S,1:ndir), S(ixO^S,1:ndir)
     integer :: ix^D
 
+    if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       {^IFTHREEC
       ef(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
@@ -2045,6 +2101,7 @@ contains
 
       ! Convert velocity to momentum, equation (9)
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)+S(ix^D,^C)*inv_squared_c\
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
 
    {end do\}
 
@@ -2059,6 +2116,7 @@ contains
     double precision :: E(ixO^S,1:ndir), S(ixO^S,1:ndir)
     integer :: ix^D
 
+    if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       {^IFTHREEC
       E(ix^D,1)=w(ix^D,b2_)*w(ix^D,m3_)-w(ix^D,b3_)*w(ix^D,m2_)
@@ -2080,9 +2138,8 @@ contains
       }
       ! Convert velocity to momentum, equation (9)
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)+S(ix^D,^C)*inv_squared_c\
-
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
    {end do\}
-
   end subroutine mhd_to_conserved_semirelati_noe
 
   !> Transform conservative variables into primitive ones
@@ -2102,6 +2159,7 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho = 1.d0/w(ix^D,rho_)
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,fip_) * inv_rho
       ! Convert momentum to velocity
       ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
       ! Calculate pressure = (gamma-1) * (e-ek-eb)
@@ -2109,7 +2167,7 @@ contains
                 -half*(w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)&
                   +(^C&w(ix^D,b^C_)**2+)))
    {end do\}
-
+   if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
   end subroutine mhd_to_primitive_origin
 
   !> Transform conservative variables into primitive ones
@@ -2129,10 +2187,11 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho = 1.d0/w(ix^D,rho_)
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,fip_) * inv_rho
       ! Convert momentum to velocity
       ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
    {end do\}
-
+   if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
   end subroutine mhd_to_primitive_origin_noe
 
   !> Transform conservative variables into primitive ones
@@ -2152,12 +2211,13 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho = 1d0/w(ix^D,rho_)
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,fip_) * inv_rho
       ! Convert momentum to velocity
       ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
       ! Calculate pressure = (gamma-1) * (e-ek)
       w(ix^D,p_)=gamma_1*(w(ix^D,e_)-half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
    {end do\}
-
+   if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
   end subroutine mhd_to_primitive_hde
 
   !> Transform conservative variables into primitive ones
@@ -2180,9 +2240,10 @@ contains
       w(ix^D,p_)=w(ix^D,e_)*gamma_1
       ! Convert momentum to velocity
       inv_rho = 1.d0/w(ix^D,rho_)
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,fip_) * inv_rho
       ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
    {end do\}
-
+   if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
   end subroutine mhd_to_primitive_inte
 
   !> Transform conservative variables into primitive ones
@@ -2202,6 +2263,7 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho=1.d0/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,fip_) * inv_rho
       ! Convert momentum to velocity
       ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
       ! Calculate pressure = (gamma-1) * (e-ek-eb)
@@ -2209,7 +2271,7 @@ contains
                   -half*((w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))*&
                   (^C&w(ix^D,m^C_)**2+)+(^C&w(ix^D,b^C_)**2+)))
    {end do\}
-
+   if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
   end subroutine mhd_to_primitive_split_rho
 
   !> Transform conservative variables into primitive ones
@@ -2232,6 +2294,7 @@ contains
       tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
       factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
       ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,fip_) / w(ix^D,rho_)
 
       if(mhd_internal_e) then
         ! internal energy to pressure
@@ -2257,7 +2320,7 @@ contains
                    +(^C&e(^C)**2+)*inv_squared_c))
       end if
    {end do\}
-
+   if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
   end subroutine mhd_to_primitive_semirelati
 
   !> Transform conservative variables into primitive ones
@@ -2277,11 +2340,12 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Convert momentum to velocity
+      if (mhd_fip) w(ix^D,fip_) = w(ix^D,fip_) / w(ix^D,rho_)
       tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
       factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
       ^C&w(ix^D,m^C_)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
    {end do\}
-
+   if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
   end subroutine mhd_to_primitive_semirelati_noe
 
   !> Transform internal energy to total energy
@@ -2309,7 +2373,6 @@ contains
                         +(^C&w(ix^D,b^C_)**2+))
      {end do\}
     end if
-
   end subroutine mhd_ei_to_e
 
   !> Transform internal energy to hydrodynamic energy
@@ -2497,7 +2560,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_semirelati
 
   subroutine mhd_handle_small_values_origin(primitive, w, x, ixI^L, ixO^L, subname)
@@ -2569,7 +2632,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_origin
 
   subroutine mhd_handle_small_values_split(primitive, w, x, ixI^L, ixO^L, subname)
@@ -2639,7 +2702,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_split
 
   subroutine mhd_handle_small_values_inte(primitive, w, x, ixI^L, ixO^L, subname)
@@ -2686,7 +2749,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_inte
 
   subroutine mhd_handle_small_values_noe(primitive, w, x, ixI^L, ixO^L, subname)
@@ -2727,7 +2790,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_noe
 
   subroutine mhd_handle_small_values_hde(primitive, w, x, ixI^L, ixO^L, subname)
@@ -2774,7 +2837,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_hde
 
   !> Calculate v vector
@@ -4333,6 +4396,9 @@ contains
       {end do\}
     endif
 
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -4418,13 +4484,15 @@ contains
         f(ix^D,psi_) = cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-
   end subroutine mhd_get_flux_noe
 
   !> Calculate fluxes with hydrodynamic energy equation
@@ -4473,6 +4541,9 @@ contains
         !f_i[psi]=Ch^2*b_{i} Eq. 24e and Eq. 38c Dedner et al 2002 JCP, 175, 645
         f(ix^D,psi_) = cmax_global**2*w(ix^D,mag(idim))
      {end do\}
+    end if
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
     end if
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
@@ -4594,6 +4665,9 @@ contains
         end if
      {end do\}
     end if
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -4702,7 +4776,10 @@ contains
         f(ix^D,psi_)=cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
-      ! Get flux of tracer
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
+    ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
@@ -4730,7 +4807,6 @@ contains
         end if
      {end do\}
     end if
-
   end subroutine mhd_get_flux_semirelati
 
   subroutine mhd_get_flux_semirelati_noe(wC,w,x,ixI^L,ixO^L,idim,f)
@@ -4798,13 +4874,15 @@ contains
         f(ix^D,psi_)=cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
-      ! Get flux of tracer
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
+    ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-
   end subroutine mhd_get_flux_semirelati_noe
 
   !> Source term J.E_ambi in internal energy

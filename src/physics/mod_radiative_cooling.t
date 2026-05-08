@@ -38,8 +38,8 @@ module mod_radiative_cooling
 
   type rc_fluid
 
-    double precision :: rad_cut_hgt
-    double precision :: rad_cut_dey
+    double precision :: rad_damp_height
+    double precision :: rad_damp_scale
 
     ! these are set in init method
     double precision, allocatable :: tcool(:), Lcool(:), dLdtcool(:)
@@ -73,12 +73,21 @@ module mod_radiative_cooling
 
     logical :: isPPL = .false.
 
-    !> cutoff radiative cooling below rad_cut_hgt
-    logical :: rad_cut
+    !> cutoff radiative cooling below rad_damp_height
+    logical :: rad_damp
     !> whether background equilibrium contribution is split off
     logical :: has_equi = .false.
     !> whether background equilibrium is compensated in thermal balance
     logical :: subtract_equi = .false.
+
+    double precision, allocatable :: frac_lowFIP(:)
+    !> Index of primitive FIP abundance variable, -1 if disabled
+    integer :: fip_ = -1
+    !> Enable local Newton cooling/heating approximation for optically thick losses
+    logical :: rad_newton = .false.
+    double precision :: rad_newton_pthick = 25.d0
+    double precision :: rad_newton_trad = 0.006d0
+    double precision :: rad_newton_rhosurf = 1.d4
 
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve
@@ -118,6 +127,7 @@ module mod_radiative_cooling
   
       double precision, dimension(:), allocatable :: t_table
       double precision, dimension(:), allocatable :: L_table
+      double precision, dimension(:), allocatable :: f_table
       double precision :: ratt, fact1, fact2, fact3, dL1, dL2
       double precision :: tstep, Lstep
       integer :: ntable, i, j
@@ -129,10 +139,18 @@ module mod_radiative_cooling
       fl%tlow=bigdouble
       fl%Tfix=.false.
       fl%rc_split=.false.
-      fl%rad_cut=.false.
-      fl%rad_cut_hgt=0.5d0
-      fl%rad_cut_dey=0.15d0
+      fl%rad_damp=.false.
+      fl%rad_damp_height=0.5d0
+      fl%rad_damp_scale=0.15d0
       call read_params(fl)
+
+      if (fl%fip_ > 0) then
+        select case (trim(fl%coolcurve))
+        case ('Dere_photo', 'Dere_photo_DM')
+        case default
+          call mpistop("FIP cooling requires coolcurve='Dere_photo' or 'Dere_photo_DM'")
+        end select
+      end if
 
       if(fl%rc_split) any_source_split=.true.
 
@@ -242,6 +260,7 @@ module mod_radiative_cooling
          ! Init for interpolatable tables
          allocate(fl%tcool(1:fl%ncool), fl%Lcool(1:fl%ncool), fl%dLdtcool(1:fl%ncool))
          allocate(fl%Yc(1:fl%ncool))
+         if(fl%fip_ > 0) allocate(fl%frac_lowFIP(1:fl%ncool))
 
          fl%tcool(1:fl%ncool)    = zero
          fl%Lcool(1:fl%ncool)    = zero
@@ -386,8 +405,10 @@ module mod_radiative_cooling
             ntable = n_Dere
             allocate(t_table(1:ntable))
             allocate(L_table(1:ntable))
+            if (fl%fip_ > 0) allocate(f_table(1:ntable))
             t_table(1:ntable) = t_Dere(1:n_Dere)
             L_table(1:ntable) = l_Dere_photo(1:n_Dere)
+            if (fl%fip_ > 0) f_table(1:ntable) = lowFIP_frac(1:n_Dere)
 
          case('Dere_photo_DM')
             if(mype==0)&
@@ -397,10 +418,15 @@ module mod_radiative_cooling
             ntable = n_Dere + n_DM_2 - 1 
             allocate(t_table(1:ntable))
             allocate(L_table(1:ntable))
+            if (fl%fip_ > 0) allocate(f_table(1:ntable))
             t_table(1:n_DM_2-1) = t_DM_2(1:n_DM_2-1)
             L_table(1:n_DM_2-1) = L_DM_2(1:n_DM_2-1)
             t_table(n_DM_2:ntable) = t_Dere(1:n_Dere)
             L_table(n_DM_2:ntable) = l_Dere_photo(1:n_Dere)
+            if (fl%fip_ > 0) then
+              f_table(1:n_DM_2-1) = zero
+              f_table(n_DM_2:ntable) = lowFIP_frac(1:n_Dere)
+            end if
 
          case('Colgan')
             if(mype==0) &
@@ -439,6 +465,11 @@ module mod_radiative_cooling
          fl%tcool(fl%ncool) = fl%tcoolmax
          fl%Lcool(fl%ncool) = L_table(ntable)
 
+         if (fl%fip_ > 0) then
+           fl%frac_lowFIP(1) = f_table(1)
+           fl%frac_lowFIP(fl%ncool) = f_table(ntable)
+         end if
+
          do i=2,fl%ncool        ! loop to create one table
            fl%tcool(i) = fl%tcool(i-1)+ratt
            do j=1,ntable-1   ! loop to create one spot on a table
@@ -451,6 +482,9 @@ module mod_radiative_cooling
                   fact2 = (fl%tcool(i)-t_table(j))       &
                         /(t_table(j+1)-t_table(j)) 
                   fl%Lcool(i) = L_table(j)*fact1 + L_table(j+1)*fact2 
+                  if (fl%fip_ > 0) then
+                    fl%frac_lowFIP(i) = f_table(j)*fact1 + f_table(j+1)*fact2
+                  end if
                   exit
                 else 
                   dL1 = L_table(j+1)-L_table(j)
@@ -463,6 +497,9 @@ module mod_radiative_cooling
                   fact2 = (fl%tcool(i)-t_table(j))       &
                         /(t_table(j+1)-t_table(j)) 
                   fl%Lcool(i) = L_table(j)*fact1 + L_table(j+1)*fact2
+                  if (fl%fip_ > 0) then
+                    fl%frac_lowFIP(i) = f_table(j)*fact1 + f_table(j+1)*fact2
+                  end if
                   exit          
                 else
                   fact1 = ((fl%tcool(i)-t_table(j+1))     &
@@ -479,6 +516,10 @@ module mod_radiative_cooling
                         * (t_table(j+2)-t_table(j+1)))
                   fl%Lcool(i) = L_table(j)*fact1 + L_table(j+1)*fact2 &
                            + L_table(j+2)*fact3
+                  if (fl%fip_ > 0) then
+                    fl%frac_lowFIP(i) = f_table(j)*fact1 + f_table(j+1)*fact2 &
+                                      + f_table(j+2)*fact3
+                  end if
                   exit
                 end if
              end if
@@ -512,6 +553,7 @@ module mod_radiative_cooling
 
          deallocate(t_table)
          deallocate(L_table)
+         if (allocated(f_table)) deallocate(f_table)
 
          fl%tref = fl%tcoolmax
          fl%lref = fl%Lcool(fl%ncool)
@@ -588,8 +630,8 @@ module mod_radiative_cooling
            call findL(Te(ix^D),L1,fl)
            L1 = L1*rho(ix^D)**2
          end if
-         if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-           L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
+         if(slab_uniform .and. fl%rad_damp .and. x(ix^D,ndim) .le. fl%rad_damp_height) then
+           L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_damp_height)**2/fl%rad_damp_scale**2)
          end if
          coolrate(ix^D) = L1
       {end do\}
@@ -642,8 +684,8 @@ module mod_radiative_cooling
            end if
            l1 = min(l1, lmax)
          end if
-         if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-           l1 = l1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
+         if(slab_uniform .and. fl%rad_damp .and. x(ix^D,ndim) .le. fl%rad_damp_height) then
+           l1 = l1*exp(-(x(ix^D,ndim)-fl%rad_damp_height)**2/fl%rad_damp_scale**2)
          end if
         coolrate(ix^D) = l1
       {end do\}
@@ -767,7 +809,10 @@ module mod_radiative_cooling
       double precision :: L1, pth(ixI^S), Tlocal2, pnew(ixI^S)
       double precision :: rho(ixI^S), Te(ixI^S), rhonew(ixI^S), Rfactor(ixI^S)
       double precision :: emin, Lmax, fact
-      double precision :: de, emax
+      double precision :: de_thin, de_thick, emax, emax_rem
+      double precision :: T1, T2, p1(ixI^S), tau, xi
+      double precision :: xi_arr(ixI^S), emax_rem_arr(ixI^S)
+      double precision :: cool_fac, fip_prim, frac_lowFIP, fip_factor
       integer :: ix^D
 
       call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
@@ -784,46 +829,95 @@ module mod_radiative_cooling
 
       fact = fl%lref*qdt/fl%tref
 
+      xi_arr = one
+      emax_rem_arr = zero
       {do ix^DB = ixO^LIM^DB\}
-         emin = rhonew(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
-         Lmax = max(zero,pnew(ix^D)*invgam-emin)/qdt
-         emax = max(zero,pnew(ix^D)*invgam-emin)
-         if( Te(ix^D)<=fl%tcoolmin ) then
-           L1 = zero
-         else if( Te(ix^D)>=fl%tcoolmax )then
-           call calc_l_extended(Te(ix^D), L1,fl)
-           L1 = L1*rho(ix^D)**2
-           if(phys_trac) then
-             if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
-               L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
-             end if
-           end if
-           L1 = min(L1,Lmax)
-           if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-             L1 = L1*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-           end if
-           w(ix^D,fl%e_) = w(ix^D,fl%e_)-L1*qdt
-         else
-           call findY(Te(ix^D),Y1,fl)
-           Y2 = Y1 + fact*rho(ix^D)*rc_gamma_1
-           call findT(Tlocal2,Y2,fl)
-           if(Tlocal2<=fl%tcoolmin) then
-             de = emax
-           else
-             de = (Te(ix^D)-Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
-           end if
-           if(phys_trac) then
-             if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
-               de=de*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
-             end if
-           end if
-           de = min(de,emax)
-           if(slab_uniform .and. fl%rad_cut .and. x(ix^D,ndim) .le. fl%rad_cut_hgt) then
-             de = de*exp(-(x(ix^D,ndim)-fl%rad_cut_hgt)**2/fl%rad_cut_dey**2)
-           end if
-           w(ix^D,fl%e_) = w(ix^D,fl%e_)-de
-         end if
+        emin = rhonew(ix^D)*fl%tlow*Rfactor(ix^D)*invgam
+        Lmax = max(zero,pnew(ix^D)*invgam-emin)/qdt
+        emax = max(zero,pnew(ix^D)*invgam-emin)
+        if (Te(ix^D)<=fl%tcoolmin) cycle
+        if (fl%rad_newton) then
+          xi = exp(-pnew(ix^D) / fl%rad_newton_pthick)
+          xi = min(max(xi, zero), one)
+        else
+          xi = one
+        end if
+        cool_fac = xi
+
+        ! ------- (A) OPTICALLY-THIN PART --------
+        ! --- FIP factor with T-dependent r(T) ---
+        if (fl%fip_ > 0) then
+          fip_prim = min(maxfip, max(minfip, wCTprim(ix^D,fl%fip_)))
+          ! frac_lowFIP(T) in [0,1]: low-FIP contribution to total Lambda at T
+          frac_lowFIP = lowFIP_fraction(Te(ix^D), fl)
+          ! Effective multiplicative factor on Lambda(T) for this time step:
+          !   Lambda_eff(T) = g_fip * Lambda(T), with g_fip frozen at T^n
+          fip_factor = one - frac_lowFIP + fip_prim * frac_lowFIP
+          cool_fac = cool_fac * fip_factor
+        end if
+        ! --- geometric damping of optically thin radiative losses ---
+        ! Suppress optically thin cooling near the lower boundary (chromosphere/photosphere)
+        ! using a phenomenological Gaussian height-dependent damping.
+        if (slab_uniform .and. fl%rad_damp .and. x(ix^D,ndim) <= xprobmin1 + fl%rad_damp_height) then
+          cool_fac = cool_fac * exp(-(x(ix^D,ndim)-xprobmin1-fl%rad_damp_height)**2/fl%rad_damp_scale**2)
+        end if
+        {^IFONED
+        if (slab_uniform .and. fl%rad_damp .and. x(ix^D,ndim) >= xprobmax1 - fl%rad_damp_height) then
+          cool_fac = cool_fac * exp(-(x(ix^D,ndim)-xprobmax1+fl%rad_damp_height)**2/fl%rad_damp_scale**2)
+        end if
+        }
+
+        !  If the temperature is higher than the maximum table value,
+        !  assume Bremsstrahlung and cool explicitly.
+        if (Te(ix^D) >= fl%tcoolmax) then
+          call calc_l_extended(Te(ix^D), L1, fl)
+          L1 = L1 * rho(ix^D)**2
+          L1 = min(cool_fac * L1, Lmax)
+          de_thin = L1*qdt
+          w(ix^D,fl%e_) = w(ix^D,fl%e_) - de_thin
+        else
+          ! Map T^n to Y-space
+          call findY(Te(ix^D), Y1, fl)
+          ! FIP and cutoff are included here as multiplicative factors in Lambda_eff.
+          Y2 = Y1 + cool_fac * fact * rho(ix^D) * rc_gamma_1
+          ! Invert Y(T) to get T^{n+1}
+          call findT(Tlocal2, Y2, fl)
+          ! Convert delta_T to an energy loss delta_e, respecting internal-energy floor.
+          if (Tlocal2 <= fl%tcoolmin) then
+            de_thin = emax
+          else
+            de_thin = (Te(ix^D) - Tlocal2)*rho(ix^D)*Rfactor(ix^D)*invgam
+          end if
+          ! --- TRAC modification: approximate, NOT strictly EI ---
+          ! This rescaling is applied *after* the EI step and depends on T^n,
+          ! so it does not correspond to integrating dT/dt with a modified
+          ! Lambda(T). Kept here for practical reason, but should be
+          ! understood as an approximate correction on top of EI.
+          if (phys_trac) then
+            if (Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
+              de_thin = de_thin * sqrt( (Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5 )
+            end if
+          end if
+          de_thin = min(de_thin, emax)
+          w(ix^D,fl%e_) = w(ix^D,fl%e_) - de_thin
+          if (fl%rad_newton) then
+            xi_arr(ix^D) = xi
+            emax_rem_arr(ix^D) = max(zero, emax - de_thin)
+          end if
+        end if
       {end do\}
+
+      ! ------- (B) OPTICALLY-THICK (NEWTON) PART --------
+      if (fl%rad_newton) then
+      call fl%get_pthermal(w, x, ixI^L, ixO^L, p1)
+      {do ix^DB = ixO^LIM^DB\}
+          T1 = p1(ix^D) / (rho(ix^D) * Rfactor(ix^D))
+          tau = max(0.1d0 * sqrt( fl%rad_newton_rhosurf / rho(ix^D)), 4.d0 * qdt)
+          T2 = fl%rad_newton_trad + (T1 - fl%rad_newton_trad) * exp(-qdt / tau)
+          de_thick = min((one - xi_arr(ix^D)) * (T1 - T2) * rho(ix^D) * Rfactor(ix^D) * invgam, emax_rem_arr(ix^D))
+          w(ix^D,fl%e_) = w(ix^D,fl%e_) - de_thick
+      {end do\}
+      end if
     end subroutine cool_exact
 
     subroutine calc_l_extended (tpoint, lpoint,fl)
@@ -840,6 +934,33 @@ module mod_radiative_cooling
         lpoint = fl%Lcool(fl%ncool) * sqrt( tpoint / fl%tcoolmax)
       end if
     end subroutine calc_l_extended
+
+    double precision function lowFIP_fraction(tpoint, fl)
+      use mod_global_parameters
+  
+      double precision, intent(in) :: tpoint
+      type(rc_fluid), intent(in)   :: fl
+  
+      double precision :: lgtp
+      integer :: jl
+  
+      if (tpoint <= fl%tcool(1)) then
+        lowFIP_fraction = fl%frac_lowFIP(1)
+        return
+      else if (tpoint >= fl%tcool(fl%ncool)) then
+        lowFIP_fraction = fl%frac_lowFIP(fl%ncool)
+        return
+      end if
+  
+      lgtp = dlog10(tpoint)
+      jl   = int((lgtp - fl%lgtcoolmin) / fl%lgstep) + 1
+      jl   = max(1, min(fl%ncool-1, jl))
+  
+      lowFIP_fraction = fl%frac_lowFIP(jl) &
+           + (tpoint - fl%tcool(jl)) &
+           * (fl%frac_lowFIP(jl+1) - fl%frac_lowFIP(jl)) &
+           / (fl%tcool(jl+1) - fl%tcool(jl))
+    end function lowFIP_fraction
 
     subroutine findL (tpoint,Lpoint,fl)
     !  Fast search option to find correct point 

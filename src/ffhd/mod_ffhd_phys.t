@@ -538,11 +538,11 @@ contains
   
     !> Add cooling source in a split way (.true.) or un-split way (.false.)
     logical    :: rc_split=.false.
-    logical    :: rad_cut=.false.
-    double precision :: rad_cut_hgt=0.5d0
-    double precision :: rad_cut_dey=0.15d0
+    logical    :: rad_damp=.false.
+    double precision :: rad_damp_height=0.5d0
+    double precision :: rad_damp_scale=0.15d0
 
-    namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split, rad_cut, rad_cut_hgt, rad_cut_dey
+    namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split, rad_damp, rad_damp_height, rad_damp_scale
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -555,9 +555,9 @@ contains
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
-    fl%rad_cut=rad_cut
-    fl%rad_cut_hgt=rad_cut_hgt
-    fl%rad_cut_dey=rad_cut_dey
+    fl%rad_damp=rad_damp
+    fl%rad_damp_height=rad_damp_height
+    fl%rad_damp_scale=rad_damp_scale
   end subroutine rc_params_read
 
   subroutine ffhd_check_params

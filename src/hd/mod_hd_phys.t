@@ -74,6 +74,12 @@ module mod_hd_phys
   !> Indices of temperature
   integer, public, protected :: Te_
 
+  !> Index of the FIP passive scalar rho*fip in conserved form, fip in primitive form
+  integer, public, protected :: fip_ = -1
+
+  !> Whether FIP passive scalar is enabled
+  logical, public, protected :: hd_fip = .false.
+
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
 
@@ -154,7 +160,7 @@ contains
     hd_gravity, He_abundance,H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
     hd_trac_type, hd_cak_force, hd_partial_ionization, &
-    hd_radiation_fld
+    hd_radiation_fld, hd_fip
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -314,6 +320,12 @@ contains
         call dust_init(rho_, mom(:), e_)
     endif
 
+    if (hd_fip) then
+      fip_ = var_set_fluxvar('rho_fip', 'fip', need_bc=.false.)
+    else
+      fip_ = -1
+    end if
+
     allocate(tracer(hd_n_tracer))
 
     ! Set starting index of tracers
@@ -378,6 +390,7 @@ contains
            call mpistop("radiative cooling needs hd_energy=T")
       call radiative_cooling_init_params(hd_gamma,He_abundance)
       allocate(rc_fl)
+      rc_fl%fip_ = fip_
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%get_rho => hd_get_rho
       rc_fl%get_pthermal => hd_get_pthermal
@@ -555,8 +568,18 @@ contains
       !> Add cooling source in a split way (.true.) or un-split way (.false.)
       logical    :: rc_split=.false.
 
+      logical    :: rad_damp=.false.
+      double precision :: rad_damp_height=0.5d0
+      double precision :: rad_damp_scale=0.15d0
+      logical :: rad_newton = .false.
+      double precision :: rad_newton_trad = 0.006d0
+      double precision :: rad_newton_rhosurf = 1.d4
+      double precision :: rad_newton_pthick = 25.d0
 
-      namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split
+
+      namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split, &
+                         rad_newton, rad_newton_trad, rad_newton_rhosurf, &
+                         rad_newton_pthick, rad_damp, rad_damp_height, rad_damp_scale
   
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
@@ -569,6 +592,13 @@ contains
       fl%tlow=tlow
       fl%Tfix=Tfix
       fl%rc_split=rc_split
+      fl%rad_damp = rad_damp
+      fl%rad_damp_height = rad_damp_height
+      fl%rad_damp_scale = rad_damp_scale
+      fl%rad_newton = rad_newton
+      fl%rad_newton_trad = rad_newton_trad
+      fl%rad_newton_rhosurf = rad_newton_rhosurf
+      fl%rad_newton_pthick = rad_newton_pthick
     end subroutine rc_params_read
 !! end rad cool
 
@@ -888,6 +918,26 @@ contains
 
   end subroutine hd_check_w
 
+  subroutine hd_bound_fip(primitive, ixI^L, ixO^L, w)
+    use mod_global_parameters
+    logical, intent(in)             :: primitive
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+
+    double precision :: rho_safe(ixI^S), fip_prim(ixI^S)
+
+    if (.not. hd_fip) return
+
+    if (primitive) then
+      w(ixO^S,fip_) = min(maxfip, max(minfip, w(ixO^S,fip_)))
+    else
+      rho_safe(ixO^S) = max(w(ixO^S,rho_), small_density)
+      fip_prim(ixO^S) = w(ixO^S,fip_) / rho_safe(ixO^S)
+      fip_prim(ixO^S) = min(maxfip, max(minfip, fip_prim(ixO^S)))
+      w(ixO^S,fip_) = rho_safe(ixO^S) * fip_prim(ixO^S)
+    end if
+  end subroutine hd_bound_fip
+
   !> Transform primitive variables into conservative ones
   subroutine hd_to_conserved(ixI^L, ixO^L, w, x)
     use mod_global_parameters
@@ -898,6 +948,8 @@ contains
 
     integer :: ix^D
 
+    if (hd_fip) call hd_bound_fip(.true., ixI^L, ixO^L, w)
+
     {do ix^DB=ixOmin^DB,ixOmax^DB\}
       if (hd_energy) then
          ! Calculate total energy from pressure and kinetic energy
@@ -906,6 +958,7 @@ contains
       end if
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
+      if (hd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
     {end do\}
 
     if (hd_dust) then
@@ -931,6 +984,7 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho = 1.d0/w(ix^D,rho_)
+      if (hd_fip) w(ix^D,fip_) = w(ix^D,fip_) * inv_rho
       ! Convert momentum to velocity
       ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
       ! Calculate pressure = (gamma-1) * (e-ek)
@@ -940,6 +994,8 @@ contains
                   -half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
       end if
    {end do\}
+
+   if (hd_fip) call hd_bound_fip(.true., ixI^L, ixO^L, w)
 
     ! Convert dust momentum to dust velocity
     if (hd_dust) then
@@ -1460,6 +1516,10 @@ contains
        f(ixO^S, tracer(ix1)) = w(ixO^S,mom(idim)) * w(ixO^S, tracer(ix1))
     end do
 
+    if (hd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
+
     ! Dust fluxes
     if (hd_dust) then
       call dust_get_flux_prim(w, x, ixI^L, ixO^L, idim, f)
@@ -1860,6 +1920,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
+    if (hd_fip) call hd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine hd_handle_small_values
 
   subroutine Rfactor_from_temperature_ionization(w,x,ixI^L,ixO^L,Rfactor)
