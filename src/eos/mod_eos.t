@@ -112,7 +112,7 @@ contains
         p2eint_method = 'table'
         disable_FI_bypass = .false.
         call get_environment_variable("AMRVAC_DIR", AMRVAC_DIR)
-        table_location = trim(AMRVAC_DIR)//"/src/tables/eos_tables/"
+        table_location = trim(AMRVAC_DIR)//"/src/tables/eos_tables/uniform256/"
         ionE = .false.
         table_check = .false.
         He_abundance = 0.1d0
@@ -207,6 +207,7 @@ contains
                 call load_lte_tables("neOnH")
                 if (eos%ionE) then
                     call load_lte_tables("p2eint")
+                    call try_load_lte_tables("gamma1")
                     call try_load_lte_tables("eint_from_T")
                 endif
             end if
@@ -248,11 +249,26 @@ contains
                     eos%T%var1_max = eos%T%var1_max - dlog10(unit_numberdensity)
                     eos%T%var2_min = eos%T%var2_min - dlog10(unit_pressure/unit_numberdensity)
                     eos%T%var2_max = eos%T%var2_max - dlog10(unit_pressure/unit_numberdensity)
+                    if (.not. eos%T%is_uniform) then
+                        eos%T%var1_nodes = eos%T%var1_nodes - dlog10(unit_numberdensity)
+                        eos%T%var2_nodes = eos%T%var2_nodes - dlog10(unit_pressure/unit_numberdensity)
+                    end if
 
                     eos%neOnH%var1_min = eos%neOnH%var1_min - dlog10(unit_numberdensity)
                     eos%neOnH%var1_max = eos%neOnH%var1_max - dlog10(unit_numberdensity)
                     eos%neOnH%var2_min = eos%neOnH%var2_min - dlog10(unit_pressure/unit_numberdensity)
                     eos%neOnH%var2_max = eos%neOnH%var2_max - dlog10(unit_pressure/unit_numberdensity)
+                    if (.not. eos%neOnH%is_uniform) then
+                        eos%neOnH%var1_nodes = eos%neOnH%var1_nodes - dlog10(unit_numberdensity)
+                        eos%neOnH%var2_nodes = eos%neOnH%var2_nodes - dlog10(unit_pressure/unit_numberdensity)
+                    end if
+
+                    !> Ensure axis-node arrays exist for T and neOnH so that
+                    !> the build_*_table routines below can use a single
+                    !> code path (var1_nodes(i) / var2_nodes(j)) regardless
+                    !> of whether the source tables are uniform or adaptive.
+                    call ensure_axis_nodes(eos%T)
+                    call ensure_axis_nodes(eos%neOnH)
 
                     if (eos%ionE) then
                         if (allocated(eos%p2eint%table)) then
@@ -260,24 +276,83 @@ contains
                             eos%p2eint%var1_max = eos%p2eint%var1_max - dlog10(unit_numberdensity)
                             eos%p2eint%var2_min = eos%p2eint%var2_min - dlog10(unit_pressure/unit_numberdensity)
                             eos%p2eint%var2_max = eos%p2eint%var2_max - dlog10(unit_pressure/unit_numberdensity)
+                            if (.not. eos%p2eint%is_uniform) then
+                                eos%p2eint%var1_nodes = eos%p2eint%var1_nodes - dlog10(unit_numberdensity)
+                                eos%p2eint%var2_nodes = eos%p2eint%var2_nodes - dlog10(unit_pressure/unit_numberdensity)
+                            end if
+                            call ensure_axis_nodes(eos%p2eint)
                         end if
 
-                        !> Always build gamma1 from loaded T and neOnH tables
-                        !> to guarantee consistency (never use precomputed binary).
-                        call build_gamma1_table()
+                        !> Build derived tables from loaded T and neOnH.
+                        !> For tables that have a loaded adaptive version
+                        !> on disk (trailer present, is_uniform == .false.),
+                        !> *keep the loaded one* — this enables the hybrid
+                        !> mode where T+neOnH ship uniform (interleaved
+                        !> fast path preserved) while gamma1/p2eint/
+                        !> eint_from_T ship adaptive (γ₁ peak resolved,
+                        !> tighter closure). The loaded versions were
+                        !> built by the same Saha solver as T/neOnH so
+                        !> they are physically consistent.
+                        ! Skip rebuild for any derived table that was successfully
+                        ! loaded from disk (whether uniform or adaptive). This
+                        ! enables shipping pre-built tables and avoids the
+                        ! one-time runtime rebuild cost.
+                        if (.not. allocated(eos%gamma1%table)) then
+                            call build_gamma1_table()
+                        else
+                            if (mype == 0) write(*,'(A)') " Using loaded gamma1 table (skip rebuild)"
+                            !> gamma1 stored on disk on (log_nH, log_eint/nH) in CGS log10;
+                            !> shift axes to code units to match runtime queries.
+                            !> Values are dimensionless, no value shift needed.
+                            eos%gamma1%var1_min = eos%gamma1%var1_min - dlog10(unit_numberdensity)
+                            eos%gamma1%var1_max = eos%gamma1%var1_max - dlog10(unit_numberdensity)
+                            eos%gamma1%var2_min = eos%gamma1%var2_min - dlog10(unit_pressure/unit_numberdensity)
+                            eos%gamma1%var2_max = eos%gamma1%var2_max - dlog10(unit_pressure/unit_numberdensity)
+                            if (.not. eos%gamma1%is_uniform) then
+                                eos%gamma1%var1_nodes = eos%gamma1%var1_nodes - dlog10(unit_numberdensity)
+                                eos%gamma1%var2_nodes = eos%gamma1%var2_nodes - dlog10(unit_pressure/unit_numberdensity)
+                            end if
+                            call ensure_axis_nodes(eos%gamma1)
+                        end if
 
                         call build_gamma1_p_table()
                         call build_log_p_table()
                         call build_p_over_nH_table()
 
-                        if (allocated(eos%p2eint%table)) deallocate(eos%p2eint%table)
-                        call build_p2eint_table()
+                        if (.not. allocated(eos%p2eint%table)) then
+                            call build_p2eint_table()
+                        else
+                            if (mype == 0) write(*,'(A)') " Using loaded p2eint table (skip rebuild)"
+                            ! Note: p2eint axis bounds (and adaptive nodes if any) are
+                            ! already shifted to code units in the block above, before
+                            ! reaching this point.
+                            call ensure_axis_nodes(eos%p2eint)
+                        end if
 
-                        call build_eint_from_T_table()
+                        if (.not. allocated(eos%eint_from_T%table)) then
+                            call build_eint_from_T_table()
+                        else
+                            if (mype == 0) write(*,'(A)') " Using loaded eint_from_T table (skip rebuild)"
+                            !> eint_from_T stored on (log_nH, log_T) in CGS log10
+                            !> with values log10(eint/nH) in CGS. Shift axes AND values
+                            !> to code units.
+                            eos%eint_from_T%var1_min = eos%eint_from_T%var1_min - dlog10(unit_numberdensity)
+                            eos%eint_from_T%var1_max = eos%eint_from_T%var1_max - dlog10(unit_numberdensity)
+                            eos%eint_from_T%var2_min = eos%eint_from_T%var2_min - dlog10(unit_temperature)
+                            eos%eint_from_T%var2_max = eos%eint_from_T%var2_max - dlog10(unit_temperature)
+                            eos%eint_from_T%table = eos%eint_from_T%table - dlog10(unit_pressure/unit_numberdensity)
+                            if (.not. eos%eint_from_T%is_uniform) then
+                                eos%eint_from_T%var1_nodes = eos%eint_from_T%var1_nodes - dlog10(unit_numberdensity)
+                                eos%eint_from_T%var2_nodes = eos%eint_from_T%var2_nodes - dlog10(unit_temperature)
+                            end if
+                            call ensure_axis_nodes(eos%eint_from_T)
+                        end if
                     endif
 
                     call precompute_step_inv(eos%T)
                     call precompute_step_inv(eos%neOnH)
+                    call eos_build_guards(eos%T)
+                    call eos_build_guards(eos%neOnH)
                     if (eos%ionE) then
                         call precompute_step_inv(eos%p2eint)
                         call precompute_step_inv(eos%gamma1)
@@ -285,9 +360,30 @@ contains
                         call precompute_step_inv(eos%eint_from_T)
                         call precompute_step_inv(eos%log_p)
                         call precompute_step_inv(eos%p_over_nH)
+                        call eos_build_guards(eos%p2eint)
+                        call eos_build_guards(eos%gamma1)
+                        call eos_build_guards(eos%gamma1_p)
+                        call eos_build_guards(eos%eint_from_T)
+                        call eos_build_guards(eos%log_p)
+                        call eos_build_guards(eos%p_over_nH)
 
                         ! Build interleaved Group A table: T, neOnH, p_over_nH
                         call build_interleaved_eint_table()
+                    end if
+
+                    ! Defensive check: invariants on every populated table.
+                    ! Catches silent-failure modes (forgotten guard, mismatched
+                    ! node array length, non-monotonic nodes) at startup
+                    ! rather than at first lookup.
+                    call eos_validate_table(eos%T,           "eos%T")
+                    call eos_validate_table(eos%neOnH,       "eos%neOnH")
+                    if (eos%ionE) then
+                        call eos_validate_table(eos%p2eint,      "eos%p2eint")
+                        call eos_validate_table(eos%gamma1,      "eos%gamma1")
+                        call eos_validate_table(eos%gamma1_p,    "eos%gamma1_p")
+                        call eos_validate_table(eos%eint_from_T, "eos%eint_from_T")
+                        call eos_validate_table(eos%log_p,       "eos%log_p")
+                        call eos_validate_table(eos%p_over_nH,   "eos%p_over_nH")
                     end if
 
                     call precompute_FI_bypass_constants()
@@ -321,6 +417,35 @@ contains
         endif
     end subroutine eos_finalise
 
+    !> Ensure tc%var1_nodes / tc%var2_nodes are allocated and populated so
+    !> that build_*_table routines and other code can reference axis positions
+    !> uniformly (no is_uniform branching). For uniform tables we generate
+    !> evenly-spaced node arrays from var{1,2}_min/max.
+    !>
+    !> Lookup performance is unaffected: bicubic_lookup / bilinear_lookup
+    !> still branch on tc%is_uniform — uniform tables go through the affine
+    !> fast path; only adaptive tables consult var{1,2}_nodes.
+    subroutine ensure_axis_nodes(tc)
+        type(eos_table_container), intent(inout) :: tc
+        integer :: k
+        double precision :: dx
+        if (.not. allocated(tc%table)) return
+        if (.not. allocated(tc%var1_nodes)) then
+            allocate(tc%var1_nodes(tc%dim1))
+            dx = (tc%var1_max - tc%var1_min) / dble(tc%dim1 - 1)
+            do k = 1, tc%dim1
+                tc%var1_nodes(k) = tc%var1_min + (k - 1) * dx
+            end do
+        end if
+        if (.not. allocated(tc%var2_nodes)) then
+            allocate(tc%var2_nodes(tc%dim2))
+            dx = (tc%var2_max - tc%var2_min) / dble(tc%dim2 - 1)
+            do k = 1, tc%dim2
+                tc%var2_nodes(k) = tc%var2_min + (k - 1) * dx
+            end do
+        end if
+    end subroutine ensure_axis_nodes
+
     subroutine precompute_step_inv(tc)
         type(eos_table_container), intent(inout) :: tc
         if (allocated(tc%table)) then
@@ -328,6 +453,137 @@ contains
             tc%step_inv_2 = dble(tc%dim2-1) / (tc%var2_max - tc%var2_min)
         end if
     end subroutine precompute_step_inv
+
+    !> Build guard (bucket) arrays so that adaptive index lookup is O(1).
+    !> No-op for uniform tables. Safe to call repeatedly.
+    subroutine eos_build_guards(tc)
+        type(eos_table_container), intent(inout) :: tc
+        if (tc%is_uniform) return
+        if (.not. allocated(tc%var1_nodes)) return
+        if (.not. allocated(tc%var2_nodes)) return
+        call build_guard_for_axis(tc%var1_nodes, tc%dim1, &
+            tc%guard_1, tc%guard_M_1, tc%guard_scale_1)
+        call build_guard_for_axis(tc%var2_nodes, tc%dim2, &
+            tc%guard_2, tc%guard_M_2, tc%guard_scale_2)
+    end subroutine eos_build_guards
+
+    subroutine build_guard_for_axis(nodes, n, guard, M_out, scale_out)
+        double precision, intent(in) :: nodes(:)
+        integer, intent(in) :: n
+        integer, allocatable, intent(inout) :: guard(:)
+        integer, intent(out) :: M_out
+        double precision, intent(out) :: scale_out
+
+        integer, parameter :: SAFETY = 4
+        integer :: k, ii, M
+        double precision :: xmin, xmax, span, min_gap, bk
+
+        xmin = nodes(1); xmax = nodes(n)
+        span = xmax - xmin
+        if (span <= 0.0d0 .or. n < 2) then
+            M_out = 0; scale_out = 0.0d0
+            if (allocated(guard)) deallocate(guard)
+            return
+        end if
+        min_gap = huge(1.0d0)
+        do ii = 1, n-1
+            if (nodes(ii+1) - nodes(ii) < min_gap) min_gap = nodes(ii+1) - nodes(ii)
+        end do
+        if (min_gap <= 0.0d0) then
+            !> Degenerate node array — fall back to bsearch by leaving M=0
+            M_out = 0; scale_out = 0.0d0
+            if (allocated(guard)) deallocate(guard)
+            return
+        end if
+        M = max(2*n, SAFETY * int(ceiling(span / min_gap)))
+        if (allocated(guard)) deallocate(guard)
+        allocate(guard(M))
+        scale_out = dble(M) / span
+        M_out = M
+
+        ii = 1
+        do k = 1, M
+            bk = xmin + dble(k-1) * span / dble(M)
+            do while (ii < n .and. nodes(ii) < bk)
+                ii = ii + 1
+            end do
+            guard(k) = ii
+        end do
+    end subroutine build_guard_for_axis
+
+    !> Defensive consistency check for one table after init. Aborts with a
+    !> diagnostic message if any silent-failure invariant is violated.
+    subroutine eos_validate_table(tc, name)
+        type(eos_table_container), intent(in) :: tc
+        character(len=*), intent(in) :: name
+        integer :: i
+
+        if (.not. allocated(tc%table)) then
+            if (mype == 0) write(*,'(A,A)') " EOS validate FAIL: table not allocated for ", trim(name)
+            call mpistop("eos_validate_table: missing table data")
+        end if
+        if (size(tc%table, 1) /= tc%dim1 .or. size(tc%table, 2) /= tc%dim2) then
+            if (mype == 0) write(*,'(A,A)') " EOS validate FAIL: dim mismatch for ", trim(name)
+            call mpistop("eos_validate_table: dim mismatch")
+        end if
+        if (.not. tc%is_uniform) then
+            if (.not. allocated(tc%var1_nodes) .or. .not. allocated(tc%var2_nodes)) then
+                if (mype == 0) write(*,'(A,A)') &
+                    " EOS validate FAIL: adaptive table missing node arrays for ", trim(name)
+                call mpistop("eos_validate_table: adaptive table without nodes")
+            end if
+            if (size(tc%var1_nodes) /= tc%dim1 .or. size(tc%var2_nodes) /= tc%dim2) then
+                if (mype == 0) write(*,'(A,A)') &
+                    " EOS validate FAIL: node array length mismatch for ", trim(name)
+                call mpistop("eos_validate_table: node length mismatch")
+            end if
+            do i = 1, tc%dim1 - 1
+                if (tc%var1_nodes(i+1) <= tc%var1_nodes(i)) then
+                    if (mype == 0) write(*,'(A,A,A,I0)') &
+                        " EOS validate FAIL: var1_nodes not strictly monotonic for ", &
+                        trim(name), " at index ", i
+                    call mpistop("eos_validate_table: non-monotonic nodes")
+                end if
+            end do
+            do i = 1, tc%dim2 - 1
+                if (tc%var2_nodes(i+1) <= tc%var2_nodes(i)) then
+                    if (mype == 0) write(*,'(A,A,A,I0)') &
+                        " EOS validate FAIL: var2_nodes not strictly monotonic for ", &
+                        trim(name), " at index ", i
+                    call mpistop("eos_validate_table: non-monotonic nodes")
+                end if
+            end do
+            if (.not. allocated(tc%guard_1) .or. .not. allocated(tc%guard_2) .or. &
+                tc%guard_M_1 <= 0 .or. tc%guard_M_2 <= 0 .or. &
+                tc%guard_scale_1 <= 0.0d0 .or. tc%guard_scale_2 <= 0.0d0) then
+                if (mype == 0) write(*,'(A,A,A)') &
+                    " EOS validate WARN: adaptive table without guard for ", trim(name), &
+                    " - lookup will fall back to bsearch"
+            end if
+        end if
+        if (mype == 0) write(*,'(A,A)') " EOS validate OK: ", trim(name)
+    end subroutine eos_validate_table
+
+    !> Fast adaptive index lookup. Returns the smallest 1-based ii such that
+    !> nodes(ii) >= val. Falls back to binary search if the guard array is
+    !> not built (M = 0). Equivalent in result to find_index_bsearch but O(1)
+    !> when the guard is present.
+    pure integer function find_index_guard(nodes, n, val, guard, M, scale_M) result(ix)
+        use mod_lookup_table, only: find_index_bsearch
+        double precision, intent(in) :: nodes(n), val, scale_M
+        integer, intent(in) :: n, M
+        integer, intent(in) :: guard(*)
+        integer :: k
+        if (M > 0) then
+            k = 1 + min(M-1, max(0, int(floor((val - nodes(1)) * scale_M))))
+            ix = guard(k)
+            do while (ix < n .and. nodes(ix) < val)
+                ix = ix + 1
+            end do
+        else
+            ix = find_index_bsearch(nodes(1:n), val)
+        end if
+    end function find_index_guard
 
     subroutine precompute_FI_bypass_constants()
         !> Precompute constants for bypassing table lookups when gas is fully ionised.
@@ -425,25 +681,19 @@ contains
         select case (fieldname)
         case("T")
             eos%T%filename = filename
-            call read_eos_from_file(trim(filepath), eos%T%table, eos%T%dim1, eos%T%dim2, eos%T%var1_min, eos%T%var1_max, eos%T%var2_min, eos%T%var2_max, .true.)
+            call read_eos_from_file(trim(filepath), eos%T, .true.)
         case("neOnH")
             eos%neOnH%filename = filename
-            call read_eos_from_file(trim(filepath), eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, eos%neOnH%var1_min, eos%neOnH%var1_max, eos%neOnH%var2_min, eos%neOnH%var2_max, .true.)
+            call read_eos_from_file(trim(filepath), eos%neOnH, .true.)
         case("p2eint")
             eos%p2eint%filename = filename
-            call read_eos_from_file(trim(filepath), eos%p2eint%table, eos%p2eint%dim1, eos%p2eint%dim2, eos%p2eint%var1_min, eos%p2eint%var1_max, eos%p2eint%var2_min, eos%p2eint%var2_max, .false.)
+            call read_eos_from_file(trim(filepath), eos%p2eint, .false.)
         case("gamma1")
             eos%gamma1%filename = filename
-            call read_eos_from_file(trim(filepath), eos%gamma1%table, &
-                eos%gamma1%dim1, eos%gamma1%dim2, &
-                eos%gamma1%var1_min, eos%gamma1%var1_max, &
-                eos%gamma1%var2_min, eos%gamma1%var2_max, .false.)
+            call read_eos_from_file(trim(filepath), eos%gamma1, .false.)
         case("eint_from_T")
             eos%eint_from_T%filename = filename
-            call read_eos_from_file(trim(filepath), eos%eint_from_T%table, &
-                eos%eint_from_T%dim1, eos%eint_from_T%dim2, &
-                eos%eint_from_T%var1_min, eos%eint_from_T%var1_max, &
-                eos%eint_from_T%var2_min, eos%eint_from_T%var2_max, .false.)
+            call read_eos_from_file(trim(filepath), eos%eint_from_T, .false.)
         case default
             call mpistop("eos table name "//trim(fieldname)//" not recognised in load_lte_tables")
         end select
@@ -479,43 +729,85 @@ contains
         endif
     end subroutine try_load_lte_tables
 
-    subroutine read_eos_from_file(filename, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max, logtable)
+    !> Read an EoS table from a binary file written by generate_lte_tables.py.
+    !>
+    !> File format (uniform — legacy):
+    !>   [2 x int32]   : (dim1, dim2) = (dimy, dimx)   in Fortran column-major
+    !>   [4 x float64] : (var1_min, var1_max, var2_min, var2_max)
+    !>   [dim1*dim2 x float64] : table values
+    !>
+    !> File format (adaptive — extension): same prefix, then optional trailer
+    !>   [1 x int32]      : trailer_flag (= 1)
+    !>   [dim1 x float64] : x_nodes (axis-1 node positions, log10 space)
+    !>   [dim2 x float64] : y_nodes (axis-2 node positions, log10 space)
+    !>
+    !> The trailer is detected via end-of-file on the trailer_flag read:
+    !> uniform tables (no trailer) leave is_uniform = .true. and produce
+    !> ios /= 0 on the read; adaptive tables set is_uniform = .false. and
+    !> populate x_nodes, y_nodes.
+    subroutine read_eos_from_file(filename, tc, logtable)
         character(len=*), intent(in) :: filename
-        double precision, intent(out) :: var1_min, var1_max, var2_min, var2_max
-        integer, intent(out) :: dimx, dimy
-        double precision, allocatable, intent(inout) :: quantity_in(:,:)
+        type(eos_table_container), intent(inout) :: tc
         logical, intent(in) :: logtable
 
+        integer :: ios, trailer_flag
+
         open(unit=10, file=filename, access='stream', form='unformatted', action='read')
-        
+
         !> First read the header information, size from python file, and allocate
-        read(10) dimy,dimx
+        read(10) tc%dim1, tc%dim2
 
         !> Then read the header information, bounds from python file
-        read(10) var1_min, var1_max, var2_min, var2_max !> nHmin, nHmax, eintOnHmin, eintOnHmax
-        
-        allocate(quantity_in(dimy,dimx))
-        
+        read(10) tc%var1_min, tc%var1_max, tc%var2_min, tc%var2_max
+
+        if (allocated(tc%table)) deallocate(tc%table)
+        allocate(tc%table(tc%dim1, tc%dim2))
+
         !> Then read the 2D cube from the python file
-        read(10) quantity_in
+        read(10) tc%table
 
         if (logtable) then
-            quantity_in = dlog10(quantity_in) !> Store tables in log10 space for interpolation
+            tc%table = dlog10(tc%table) !> Store tables in log10 space for interpolation
         endif
+
+        !> Optional adaptive-grid trailer. Uniform (legacy) tables hit EOF here
+        !> and the iostat-guarded read keeps is_uniform = .true.
+        tc%is_uniform = .true.
+        if (allocated(tc%var1_nodes)) deallocate(tc%var1_nodes)
+        if (allocated(tc%var2_nodes)) deallocate(tc%var2_nodes)
+
+        read(10, iostat=ios) trailer_flag
+        if (ios == 0) then
+            if (trailer_flag == 1) then
+                tc%is_uniform = .false.
+                allocate(tc%var1_nodes(tc%dim1))
+                allocate(tc%var2_nodes(tc%dim2))
+                read(10) tc%var1_nodes
+                read(10) tc%var2_nodes
+                if (mype == 0) then
+                    print*, trim(filename), " (adaptive grid trailer detected)"
+                endif
+            else
+                if (mype == 0) then
+                    print*, "WARNING: unrecognised trailer flag ", trailer_flag, &
+                        " in ", trim(filename), " - treating as uniform"
+                endif
+            endif
+        end if
 
         if (mype==0) then
             if (eos%table_check) then
                 print*, filename, " table check"
-                print*, var1_min, var1_max, var2_min, var2_max
+                print*, tc%var1_min, tc%var1_max, tc%var2_min, tc%var2_max
                 print*, 'corners', ' interpolated'
-                print*, quantity_in(1,1), interp_clamped_bilinear_table(var1_min, &
-                    var2_min, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
-                print*, quantity_in(1,dimx), interp_clamped_bilinear_table(var1_min, &
-                    var2_max, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
-                print*, quantity_in(dimy,1), interp_clamped_bilinear_table(var1_max, &
-                    var2_min, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
-                print*, quantity_in(dimy,dimx), interp_clamped_bilinear_table(var1_max, &
-                    var2_max, quantity_in, dimy, dimx, var1_min, var1_max, var2_min, var2_max)
+                print*, tc%table(1,1), interp_clamped_bilinear_table(tc%var1_min, &
+                    tc%var2_min, tc%table, tc%dim1, tc%dim2, tc%var1_min, tc%var1_max, tc%var2_min, tc%var2_max)
+                print*, tc%table(1,tc%dim2), interp_clamped_bilinear_table(tc%var1_min, &
+                    tc%var2_max, tc%table, tc%dim1, tc%dim2, tc%var1_min, tc%var1_max, tc%var2_min, tc%var2_max)
+                print*, tc%table(tc%dim1,1), interp_clamped_bilinear_table(tc%var1_max, &
+                    tc%var2_min, tc%table, tc%dim1, tc%dim2, tc%var1_min, tc%var1_max, tc%var2_min, tc%var2_max)
+                print*, tc%table(tc%dim1,tc%dim2), interp_clamped_bilinear_table(tc%var1_max, &
+                    tc%var2_max, tc%table, tc%dim1, tc%dim2, tc%var1_min, tc%var1_max, tc%var2_min, tc%var2_max)
                 print*, "These should be identical, if not then the table structure is inconsistent"
                 print*, "###########"
             endif
@@ -819,19 +1111,28 @@ contains
                     end if
                     log_eint_nH_val = dlog10(w(ix^D, iw_e)) - log_nH_val
 
-                    ry = max(0.0d0, min((log_nH_val - eos%T%var1_min) * eos%T%step_inv_1, &
-                                         dble(eos%T%dim1-1)))
-                    rx = max(0.0d0, min((log_eint_nH_val - eos%T%var2_min) * eos%T%step_inv_2, &
-                                         dble(eos%T%dim2-1)))
-                    jy = int(ry); jx = int(rx)
-                    jy1 = min(jy+1, eos%T%dim1-1)
-                    jx1 = min(jx+1, eos%T%dim2-1)
-                    fy = ry - dble(jy); fx = rx - dble(jx)
-                    res(ix^D) = dexp(ln10 * ( &
-                        (1.0d0-fy)*((1.0d0-fx)*eos%T%table(jy+1,jx+1)  &
-                                          + fx *eos%T%table(jy+1,jx1+1)) &
-                       +      fy *((1.0d0-fx)*eos%T%table(jy1+1,jx+1)   &
-                                          + fx *eos%T%table(jy1+1,jx1+1))))
+                    if (eos%T%is_uniform) then
+                        !> Inlined uniform bilinear (hot path: no function call).
+                        ry = max(0.0d0, min((log_nH_val - eos%T%var1_min) * eos%T%step_inv_1, &
+                                             dble(eos%T%dim1-1)))
+                        rx = max(0.0d0, min((log_eint_nH_val - eos%T%var2_min) * eos%T%step_inv_2, &
+                                             dble(eos%T%dim2-1)))
+                        jy = int(ry); jx = int(rx)
+                        jy1 = min(jy+1, eos%T%dim1-1)
+                        jx1 = min(jx+1, eos%T%dim2-1)
+                        fy = ry - dble(jy); fx = rx - dble(jx)
+                        res(ix^D) = dexp(ln10 * ( &
+                            (1.0d0-fy)*((1.0d0-fx)*eos%T%table(jy+1,jx+1)  &
+                                              + fx *eos%T%table(jy+1,jx1+1)) &
+                           +      fy *((1.0d0-fx)*eos%T%table(jy1+1,jx+1)   &
+                                              + fx *eos%T%table(jy1+1,jx1+1))))
+                    else
+                        !> Non-uniform: dispatch to the binary-search bilinear.
+                        !> Slightly slower per cell (binary search adds ~8 cmps per axis)
+                        !> but unavoidable when the grid is non-uniform.
+                        res(ix^D) = dexp(ln10 * bilinear_lookup( &
+                            log_nH_val, log_eint_nH_val, eos%T))
+                    end if
                 end if
             end if
         {end do\}
@@ -873,10 +1174,7 @@ contains
             call saha_T_from_nH_eint(10.0d0**nH, 10.0d0**eint_nh, T_loc, y_loc)
             result_val = y_loc
         else
-            result_val = dexp(ln10 * interp_clamped_monotone_bicubic_table(nH, eint_nh, &
-                eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
-                eos%neOnH%var1_min, eos%neOnH%var1_max, &
-                eos%neOnH%var2_min, eos%neOnH%var2_max))
+            result_val = dexp(ln10 * bicubic_lookup(nH, eint_nh, eos%neOnH))
         end if
     end function y_from_nH_eint
 
@@ -899,10 +1197,7 @@ contains
             call saha_T_from_nH_eint(10.0d0**nH, 10.0d0**eint_nh, T_loc, y_loc)
             result_val = T_loc
         else
-            result_val = dexp(ln10 * interp_clamped_monotone_bicubic_table(nH, eint_nh,&
-                eos%T%table, eos%T%dim1, eos%T%dim2, &
-                eos%T%var1_min, eos%T%var1_max, &
-                eos%T%var2_min, eos%T%var2_max))
+            result_val = dexp(ln10 * bicubic_lookup(nH, eint_nh, eos%T))
         end if
     end function T_from_nH_eint
 
@@ -918,23 +1213,30 @@ contains
         if (eos%method == 'analytic') then
             call saha_T_from_nH_eint(10.0d0**log_nH, 10.0d0**log_eint_nH, T_out, y_out)
         else if (allocated(eos%table_eint_il)) then
-            ! Interleaved PCHIP: one kernel call gets T, y, and p/nH
-            call interp_pchip_interleaved(log_nH, log_eint_nH, &
-                eos%table_eint_il, 3, eos%T%dim2, eos%T%dim1, &
-                eos%T%var1_min, eos%T%var1_max, &
-                eos%T%var2_min, eos%T%var2_max, results)
+            ! Interleaved PCHIP fast-path. For uniform tables, the affine
+            ! index calculation is inlined; for adaptive tables, the same
+            ! kernel runs with binary-search index calculation. Both keep
+            ! the stride-1 access pattern over the 3 packed slots
+            ! (T, n_e/n_H, p/n_H), so cache behaviour is preserved.
+            if (eos%T%is_uniform) then
+                call interp_pchip_interleaved(log_nH, log_eint_nH, &
+                    eos%table_eint_il, 3, eos%T%dim2, eos%T%dim1, &
+                    eos%T%var1_min, eos%T%var1_max, &
+                    eos%T%var2_min, eos%T%var2_max, results)
+            else
+                call interp_pchip_interleaved_nu(log_nH, log_eint_nH, &
+                    eos%table_eint_il, 3, eos%T%dim2, eos%T%dim1, &
+                    eos%T%var1_nodes, eos%T%var2_nodes, &
+                    eos%T%guard_1, eos%T%guard_M_1, eos%T%guard_scale_1, &
+                    eos%T%guard_2, eos%T%guard_M_2, eos%T%guard_scale_2, &
+                    results)
+            end if
             T_out = dexp(ln10 * results(1))
             y_out = dexp(ln10 * results(2))
         else
-            ! Fallback: separate table lookups
-            T_out = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
-                eos%T%table, eos%T%dim1, eos%T%dim2, &
-                eos%T%var1_min, eos%T%var1_max, &
-                eos%T%var2_min, eos%T%var2_max))
-            y_out = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
-                eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
-                eos%neOnH%var1_min, eos%neOnH%var1_max, &
-                eos%neOnH%var2_min, eos%neOnH%var2_max))
+            ! No interleaved table built — separate dispatcher calls
+            T_out = dexp(ln10 * bicubic_lookup(log_nH, log_eint_nH, eos%T))
+            y_out = dexp(ln10 * bicubic_lookup(log_nH, log_eint_nH, eos%neOnH))
         end if
     end subroutine T_and_y_from_nH_eint
 
@@ -957,39 +1259,27 @@ contains
             call saha_p_to_T(nH_code, p_code, T_loc, y_loc, eint_nH_loc)
             result_val = eint_nH_loc * nH_code / p_code
         else
-            result_val = interp_clamped_monotone_bicubic_table(nH, ponH, &
-                eos%p2eint%table, eos%p2eint%dim1, eos%p2eint%dim2, &
-                eos%p2eint%var1_min, eos%p2eint%var1_max, &
-                eos%p2eint%var2_min, eos%p2eint%var2_max)
+            result_val = bicubic_lookup(nH, ponH, eos%p2eint)
         end if
     end function p2eint_from_nH_p
 
     double precision function gamma1_from_nH_eint(log_nH, log_eint_nH) result(g1)
         double precision, intent(in) :: log_nH, log_eint_nH
-        g1 = interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
-            eos%gamma1%table, eos%gamma1%dim1, eos%gamma1%dim2, &
-            eos%gamma1%var1_min, eos%gamma1%var1_max, &
-            eos%gamma1%var2_min, eos%gamma1%var2_max)
+        g1 = bicubic_lookup(log_nH, log_eint_nH, eos%gamma1)
     end function gamma1_from_nH_eint
 
     !> Gamma_1 from pressure-indexed table: (log10 nH, log10 p/nH) -> Gamma_1
     !> Same physical values as gamma1_from_nH_eint, re-indexed for primitive variables.
     double precision function gamma1_from_nH_p(log_nH, log_p_nH) result(g1)
         double precision, intent(in) :: log_nH, log_p_nH
-        g1 = interp_clamped_monotone_bicubic_table(log_nH, log_p_nH, &
-            eos%gamma1_p%table, eos%gamma1_p%dim1, eos%gamma1_p%dim2, &
-            eos%gamma1_p%var1_min, eos%gamma1_p%var1_max, &
-            eos%gamma1_p%var2_min, eos%gamma1_p%var2_max)
+        g1 = bicubic_lookup(log_nH, log_p_nH, eos%gamma1_p)
     end function gamma1_from_nH_p
 
     !> Merged log10(p/nH) lookup: (log10 nH, log10 eint/nH) -> log10(p/nH)
     !> Single PCHIP evaluation replacing separate T + neOnH lookups.
     double precision function log_p_from_nH_eint(log_nH, log_eint_nH) result(lp)
         double precision, intent(in) :: log_nH, log_eint_nH
-        lp = interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
-            eos%log_p%table, eos%log_p%dim1, eos%log_p%dim2, &
-            eos%log_p%var1_min, eos%log_p%var1_max, &
-            eos%log_p%var2_min, eos%log_p%var2_max)
+        lp = bicubic_lookup(log_nH, log_eint_nH, eos%log_p)
     end function log_p_from_nH_eint
 
     ! =========================================================================
@@ -1284,19 +1574,26 @@ contains
     !> Precomputes nH-direction indices and table values once, then
     !> bisects using only cheap PCHIP evaluations with varying tx.
     !> Expects a narrow initial bracket [lo, hi] (e.g. from p2eint guess).
+    !>
+    !> Adaptive-grid support: when eos%log_p%is_uniform is .false., the
+    !> y- and x-direction index calculations switch to binary search on
+    !> the explicit node arrays. The cached 4x4 stencil mechanism is
+    !> unchanged; only the index-to-cell mapping changes.
     subroutine log_p_bisect_cached(log_nH, log_p_target, &
         log_eint_lo, log_eint_hi, max_iter, log_eint_result)
+        use mod_lookup_table, only: find_index_bsearch
         double precision, intent(in)    :: log_nH, log_p_target
         double precision, intent(inout) :: log_eint_lo, log_eint_hi
         integer, intent(in)             :: max_iter
         double precision, intent(out)   :: log_eint_result
 
-        integer :: nx, ny, ix, iy, iter
+        integer :: nx, ny, ix, iy, iter, ii
         integer :: i0, i1, i2, i3, j0, j1, j2, j3
         double precision :: tx, ty, rx, ry
         double precision :: xstep_inv, ystep_inv
         double precision :: vmin_x, vmax_x, vmin_y, vmax_y
         double precision :: log_eint_mid, log_p_eval
+        logical :: is_unif
 
         !> Table values: tv(y_row, x_col) for 4 y-rows x 4 x-cols
         double precision :: tv(4,4)
@@ -1305,18 +1602,38 @@ contains
 
         nx = eos%log_p%dim2   ! eint axis (varx)
         ny = eos%log_p%dim1   ! nH axis (vary)
-        vmin_x = eos%log_p%var2_min
-        vmax_x = eos%log_p%var2_max
-        vmin_y = eos%log_p%var1_min
-        vmax_y = eos%log_p%var1_max
-        xstep_inv = dble(nx-1) / (vmax_x - vmin_x)
-        ystep_inv = dble(ny-1) / (vmax_y - vmin_y)
+        is_unif = eos%log_p%is_uniform
+
+        if (is_unif) then
+            vmin_x = eos%log_p%var2_min
+            vmax_x = eos%log_p%var2_max
+            vmin_y = eos%log_p%var1_min
+            vmax_y = eos%log_p%var1_max
+            xstep_inv = dble(nx-1) / (vmax_x - vmin_x)
+            ystep_inv = dble(ny-1) / (vmax_y - vmin_y)
+        end if
 
         !> Precompute nH indices (constant across all iterations)
-        ry = (log_nH - vmin_y) * ystep_inv
-        ry = max(0.0d0, min(ry, dble(ny-1)))
-        iy = int(ry)
-        ty = ry - dble(iy)
+        if (is_unif) then
+            ry = (log_nH - vmin_y) * ystep_inv
+            ry = max(0.0d0, min(ry, dble(ny-1)))
+            iy = int(ry)
+            ty = ry - dble(iy)
+        else
+            !> Non-uniform: binary search on var1_nodes (length ny = dim1)
+            if (log_nH <= eos%log_p%var1_nodes(1)) then
+                iy = 0; ty = 0.0d0
+            else if (log_nH >= eos%log_p%var1_nodes(ny)) then
+                iy = ny - 2; ty = 1.0d0
+            else
+                ii = find_index_guard(eos%log_p%var1_nodes, ny, log_nH, &
+                    eos%log_p%guard_1, eos%log_p%guard_M_1, eos%log_p%guard_scale_1)
+                iy = max(0, min(ii - 2, ny - 2))
+                ty = (log_nH - eos%log_p%var1_nodes(iy+1)) &
+                   / (eos%log_p%var1_nodes(iy+2) - eos%log_p%var1_nodes(iy+1))
+                ty = max(0.0d0, min(ty, 1.0d0))
+            end if
+        end if
 
         !> Clamped y-row indices
         j0 = max(0, min(ny-1, iy-1))
@@ -1330,10 +1647,26 @@ contains
             log_eint_mid = 0.5d0 * (log_eint_lo + log_eint_hi)
 
             !> Compute eint-direction index
-            rx = (log_eint_mid - vmin_x) * xstep_inv
-            rx = max(0.0d0, min(rx, dble(nx-1)))
-            ix = int(rx)
-            tx = rx - dble(ix)
+            if (is_unif) then
+                rx = (log_eint_mid - vmin_x) * xstep_inv
+                rx = max(0.0d0, min(rx, dble(nx-1)))
+                ix = int(rx)
+                tx = rx - dble(ix)
+            else
+                !> Non-uniform: binary search on var2_nodes (length nx = dim2)
+                if (log_eint_mid <= eos%log_p%var2_nodes(1)) then
+                    ix = 0; tx = 0.0d0
+                else if (log_eint_mid >= eos%log_p%var2_nodes(nx)) then
+                    ix = nx - 2; tx = 1.0d0
+                else
+                    ii = find_index_guard(eos%log_p%var2_nodes, nx, log_eint_mid, &
+                        eos%log_p%guard_2, eos%log_p%guard_M_2, eos%log_p%guard_scale_2)
+                    ix = max(0, min(ii - 2, nx - 2))
+                    tx = (log_eint_mid - eos%log_p%var2_nodes(ix+1)) &
+                       / (eos%log_p%var2_nodes(ix+2) - eos%log_p%var2_nodes(ix+1))
+                    tx = max(0.0d0, min(tx, 1.0d0))
+                end if
+            end if
 
             !> Load 16 table values only when ix changes
             if (ix /= ix_cached) then
@@ -1487,11 +1820,7 @@ contains
         double precision, parameter :: ln10 = 2.302585092994046d0
 
         if (allocated(eos%eint_from_T%table)) then
-            eint_nH = dexp(ln10 * interp_clamped_monotone_bicubic_table( &
-                log_nH, log_T, &
-                eos%eint_from_T%table, eos%eint_from_T%dim1, eos%eint_from_T%dim2, &
-                eos%eint_from_T%var1_min, eos%eint_from_T%var1_max, &
-                eos%eint_from_T%var2_min, eos%eint_from_T%var2_max))
+            eint_nH = dexp(ln10 * bicubic_lookup(log_nH, log_T, eos%eint_from_T))
         else
             eint_nH = saha_eint_from_nH_T(10.0d0**log_nH, 10.0d0**log_T)
         end if
@@ -1511,7 +1840,7 @@ contains
     !> For ideal gas: a=1, b=1, p/eint=gamma-1, so Gamma_1 = 1+(gamma-1) = gamma.
     subroutine build_gamma1_table()
         integer :: n1, n2, i, j, im, ip, jm, jp
-        double precision :: dx1, dx2, x1, x2
+        double precision :: x1, x2
         double precision, allocatable :: log_p(:,:)
         double precision :: T_val, y_val, p_val, eint_vol
         double precision :: a_val, b_val, g1_val
@@ -1520,7 +1849,8 @@ contains
         n1 = eos%T%dim1
         n2 = eos%T%dim2
 
-        !> Gamma1 table shares the same grid as T and neOnH
+        !> Gamma1 table shares the same grid as T and neOnH (inherits
+        !> uniform-or-adaptive node layout from the source).
         eos%gamma1%dim1 = n1
         eos%gamma1%dim2 = n2
         eos%gamma1%var1_min = eos%T%var1_min
@@ -1528,19 +1858,22 @@ contains
         eos%gamma1%var2_min = eos%T%var2_min
         eos%gamma1%var2_max = eos%T%var2_max
         eos%gamma1%filename = 'computed_gamma1'
+        eos%gamma1%is_uniform = eos%T%is_uniform
+        if (allocated(eos%gamma1%var1_nodes)) deallocate(eos%gamma1%var1_nodes)
+        if (allocated(eos%gamma1%var2_nodes)) deallocate(eos%gamma1%var2_nodes)
+        allocate(eos%gamma1%var1_nodes(n1)); eos%gamma1%var1_nodes = eos%T%var1_nodes
+        allocate(eos%gamma1%var2_nodes(n2)); eos%gamma1%var2_nodes = eos%T%var2_nodes
 
+        if (allocated(eos%gamma1%table)) deallocate(eos%gamma1%table)
         allocate(eos%gamma1%table(n1, n2))
         allocate(log_p(n1, n2))
 
-        dx1 = (eos%T%var1_max - eos%T%var1_min) / dble(n1 - 1)
-        dx2 = (eos%T%var2_max - eos%T%var2_min) / dble(n2 - 1)
-
-        !> Step 1: Compute log10(p) at each grid point
+        !> Step 1: Compute log10(p) at each grid point (using actual node positions)
         !> In code units: p = nH * T * (1 + He + y), kB absorbed
         do j = 1, n2
-            x2 = eos%T%var2_min + (j - 1) * dx2
+            x2 = eos%T%var2_nodes(j)
             do i = 1, n1
-                x1 = eos%T%var1_min + (i - 1) * dx1
+                x1 = eos%T%var1_nodes(i)
                 T_val = 10.0d0**eos%T%table(i, j)         !> T in code units
                 y_val = 10.0d0**eos%neOnH%table(i, j)     !> Ne/nH (dimensionless)
                 !> log10(p) = log10(nH) + log10(T) + log10(1 + He + y)
@@ -1548,14 +1881,15 @@ contains
             end do
         end do
 
-        !> Step 2: Compute Gamma_1 from finite differences of log_p
+        !> Step 2: Compute Gamma_1 from finite differences of log_p using
+        !> actual node spacings (correct for both uniform and adaptive grids).
         g1_min = 1.0d30
         g1_max = -1.0d30
 
         do j = 1, n2
-            x2 = eos%T%var2_min + (j - 1) * dx2
+            x2 = eos%T%var2_nodes(j)
             do i = 1, n1
-                x1 = eos%T%var1_min + (i - 1) * dx1
+                x1 = eos%T%var1_nodes(i)
 
                 !> Centered finite differences with one-sided at boundaries
                 im = max(i - 1, 1)
@@ -1575,9 +1909,11 @@ contains
                 else
                     !> Full formula: Gamma_1 = a + b * (p / eint_vol)
                     !> a = d(log10 p) / d(log10 nH) at constant eint/nH
-                    a_val = (log_p(ip, j) - log_p(im, j)) / ((ip - im) * dx1)
+                    a_val = (log_p(ip, j) - log_p(im, j)) &
+                          / (eos%T%var1_nodes(ip) - eos%T%var1_nodes(im))
                     !> b = d(log10 p) / d(log10 eint/nH) at constant nH
-                    b_val = (log_p(i, jp) - log_p(i, jm)) / ((jp - jm) * dx2)
+                    b_val = (log_p(i, jp) - log_p(i, jm)) &
+                          / (eos%T%var2_nodes(jp) - eos%T%var2_nodes(jm))
                     g1_val = a_val + b_val * (p_val / eint_vol)
                 endif
 
@@ -1620,7 +1956,13 @@ contains
         eos%log_p%var1_max = eos%T%var1_max
         eos%log_p%var2_min = eos%T%var2_min
         eos%log_p%var2_max = eos%T%var2_max
+        eos%log_p%is_uniform = eos%T%is_uniform
+        if (allocated(eos%log_p%var1_nodes)) deallocate(eos%log_p%var1_nodes)
+        if (allocated(eos%log_p%var2_nodes)) deallocate(eos%log_p%var2_nodes)
+        allocate(eos%log_p%var1_nodes(n1)); eos%log_p%var1_nodes = eos%T%var1_nodes
+        allocate(eos%log_p%var2_nodes(n2)); eos%log_p%var2_nodes = eos%T%var2_nodes
 
+        if (allocated(eos%log_p%table)) deallocate(eos%log_p%table)
         allocate(eos%log_p%table(n1, n2))
 
         do j = 1, n2
@@ -1657,7 +1999,13 @@ contains
         eos%p_over_nH%var2_min = eos%T%var2_min
         eos%p_over_nH%var2_max = eos%T%var2_max
         eos%p_over_nH%filename = 'computed_p_over_nH'
+        eos%p_over_nH%is_uniform = eos%T%is_uniform
+        if (allocated(eos%p_over_nH%var1_nodes)) deallocate(eos%p_over_nH%var1_nodes)
+        if (allocated(eos%p_over_nH%var2_nodes)) deallocate(eos%p_over_nH%var2_nodes)
+        allocate(eos%p_over_nH%var1_nodes(n1)); eos%p_over_nH%var1_nodes = eos%T%var1_nodes
+        allocate(eos%p_over_nH%var2_nodes(n2)); eos%p_over_nH%var2_nodes = eos%T%var2_nodes
 
+        if (allocated(eos%p_over_nH%table)) deallocate(eos%p_over_nH%table)
         allocate(eos%p_over_nH%table(n1, n2))
 
         p_min = 1.0d30
@@ -1699,10 +2047,7 @@ contains
                 p_nH = (1.0d0 + eos%He_abundance + y_loc) * T_loc
             end block
         else
-            p_nH = dexp(ln10 * interp_clamped_monotone_bicubic_table(log_nH, log_eint_nH, &
-                eos%p_over_nH%table, eos%p_over_nH%dim1, eos%p_over_nH%dim2, &
-                eos%p_over_nH%var1_min, eos%p_over_nH%var1_max, &
-                eos%p_over_nH%var2_min, eos%p_over_nH%var2_max))
+            p_nH = dexp(ln10 * bicubic_lookup(log_nH, log_eint_nH, eos%p_over_nH))
         end if
     end function p_nH_from_eint
 
@@ -1741,14 +2086,15 @@ contains
     !> This eliminates the intermediate p2eint lookup from hd_get_csound2_LTE.
     subroutine build_gamma1_p_table()
         integer :: n1, n2, i, j
-        double precision :: dx1, dx2, log_nH, log_p_nH
+        double precision :: log_nH, log_p_nH
         double precision :: p2eint_ratio, log_eint_nH
         double precision :: g1_val, g1_min, g1_max
 
         n1 = eos%p2eint%dim1
         n2 = eos%p2eint%dim2
 
-        ! gamma1_p shares the same axis ranges as p2eint
+        ! gamma1_p shares the same axis layout as p2eint (inherits adaptive
+        ! v1 nodes from T via p2eint; v2 is uniform over the log_p/nH range).
         eos%gamma1_p%dim1 = n1
         eos%gamma1_p%dim2 = n2
         eos%gamma1_p%var1_min = eos%p2eint%var1_min
@@ -1756,19 +2102,22 @@ contains
         eos%gamma1_p%var2_min = eos%p2eint%var2_min
         eos%gamma1_p%var2_max = eos%p2eint%var2_max
         eos%gamma1_p%filename = 'computed_gamma1_p'
+        eos%gamma1_p%is_uniform = eos%p2eint%is_uniform
+        if (allocated(eos%gamma1_p%var1_nodes)) deallocate(eos%gamma1_p%var1_nodes)
+        if (allocated(eos%gamma1_p%var2_nodes)) deallocate(eos%gamma1_p%var2_nodes)
+        allocate(eos%gamma1_p%var1_nodes(n1)); eos%gamma1_p%var1_nodes = eos%p2eint%var1_nodes
+        allocate(eos%gamma1_p%var2_nodes(n2)); eos%gamma1_p%var2_nodes = eos%p2eint%var2_nodes
 
+        if (allocated(eos%gamma1_p%table)) deallocate(eos%gamma1_p%table)
         allocate(eos%gamma1_p%table(n1, n2))
-
-        dx1 = (eos%p2eint%var1_max - eos%p2eint%var1_min) / dble(n1 - 1)
-        dx2 = (eos%p2eint%var2_max - eos%p2eint%var2_min) / dble(n2 - 1)
 
         g1_min = 1.0d30
         g1_max = -1.0d30
 
         do j = 1, n2
-            log_p_nH = eos%p2eint%var2_min + (j - 1) * dx2
+            log_p_nH = eos%p2eint%var2_nodes(j)
             do i = 1, n1
-                log_nH = eos%p2eint%var1_min + (i - 1) * dx1
+                log_nH = eos%p2eint%var1_nodes(i)
 
                 ! Convert from (nH, p/nH) to (nH, eint/nH) via the p2eint table
                 ! p2eint table stores the ratio eint/(p), so:
@@ -1888,10 +2237,7 @@ contains
         log_nH = dlog10(nH_code)
         log_T  = dlog10(T_code)
 
-        g1 = interp_clamped_monotone_bicubic_table(log_nH, log_T, &
-            eos%gamma1_p%table, eos%gamma1_p%dim1, eos%gamma1_p%dim2, &
-            eos%gamma1_p%var1_min, eos%gamma1_p%var1_max, &
-            eos%gamma1_p%var2_min, eos%gamma1_p%var2_max)
+        g1 = bicubic_lookup(log_nH, log_T, eos%gamma1_p)
 
     end function gamma1_from_nH_T_analytic
 
@@ -1946,6 +2292,18 @@ contains
         eos%p2eint%var2_min = p_global_min
         eos%p2eint%var2_max = p_global_max
         eos%p2eint%filename = 'computed_p2eint'
+        !> v1 axis inherited from T (adaptive if T is); v2 axis is uniform
+        !> over the (different) log_p/nH range. When T is adaptive, we still
+        !> store explicit var2_nodes so lookups dispatch via _nu uniformly.
+        eos%p2eint%is_uniform = eos%T%is_uniform
+        if (allocated(eos%p2eint%var1_nodes)) deallocate(eos%p2eint%var1_nodes)
+        if (allocated(eos%p2eint%var2_nodes)) deallocate(eos%p2eint%var2_nodes)
+        allocate(eos%p2eint%var1_nodes(n1)); eos%p2eint%var1_nodes = eos%T%var1_nodes
+        allocate(eos%p2eint%var2_nodes(n2_p))
+        do j = 1, n2_p
+            eos%p2eint%var2_nodes(j) = p_global_min &
+                + (j - 1) * (p_global_max - p_global_min) / dble(n2_p - 1)
+        end do
         allocate(eos%p2eint%table(n1, n2_p))
 
         dx_p = (p_global_max - p_global_min) / dble(n2_p - 1)
@@ -1956,33 +2314,16 @@ contains
         i_worst = 1
         j_worst = 1
         do i = 1, n1
-            log_nH_i = eos%T%var1_min + (i - 1) &
-                * (eos%T%var1_max - eos%T%var1_min) / dble(n1 - 1)
+            log_nH_i = eos%T%var1_nodes(i)
 
             !> Compute achievable p range for this nH from forward table endpoints
-            T_val = interp_clamped_monotone_bicubic_table( &
-                log_nH_i, eos%T%var2_min, &
-                eos%T%table, eos%T%dim1, eos%T%dim2, &
-                eos%T%var1_min, eos%T%var1_max, &
-                eos%T%var2_min, eos%T%var2_max)
-            y_val = interp_clamped_monotone_bicubic_table( &
-                log_nH_i, eos%T%var2_min, &
-                eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
-                eos%neOnH%var1_min, eos%neOnH%var1_max, &
-                eos%neOnH%var2_min, eos%neOnH%var2_max)
+            T_val = bicubic_lookup(log_nH_i, eos%T%var2_min, eos%T)
+            y_val = bicubic_lookup(log_nH_i, eos%T%var2_min, eos%neOnH)
             log_p_lo_i = dlog10(10.0d0**T_val &
                 * (1.0d0 + eos%He_abundance + 10.0d0**y_val))
 
-            T_val = interp_clamped_monotone_bicubic_table( &
-                log_nH_i, eos%T%var2_max, &
-                eos%T%table, eos%T%dim1, eos%T%dim2, &
-                eos%T%var1_min, eos%T%var1_max, &
-                eos%T%var2_min, eos%T%var2_max)
-            y_val = interp_clamped_monotone_bicubic_table( &
-                log_nH_i, eos%T%var2_max, &
-                eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
-                eos%neOnH%var1_min, eos%neOnH%var1_max, &
-                eos%neOnH%var2_min, eos%neOnH%var2_max)
+            T_val = bicubic_lookup(log_nH_i, eos%T%var2_max, eos%T)
+            y_val = bicubic_lookup(log_nH_i, eos%T%var2_max, eos%neOnH)
             log_p_hi_i = dlog10(10.0d0**T_val &
                 * (1.0d0 + eos%He_abundance + 10.0d0**y_val))
 
@@ -2007,16 +2348,8 @@ contains
                     log_eint_mid = 0.5d0 * (log_eint_lo + log_eint_hi)
 
                     !> Evaluate p from forward tables at (nH_i, eint_mid)
-                    T_val = interp_clamped_monotone_bicubic_table( &
-                        log_nH_i, log_eint_mid, &
-                        eos%T%table, eos%T%dim1, eos%T%dim2, &
-                        eos%T%var1_min, eos%T%var1_max, &
-                        eos%T%var2_min, eos%T%var2_max)
-                    y_val = interp_clamped_monotone_bicubic_table( &
-                        log_nH_i, log_eint_mid, &
-                        eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
-                        eos%neOnH%var1_min, eos%neOnH%var1_max, &
-                        eos%neOnH%var2_min, eos%neOnH%var2_max)
+                    T_val = bicubic_lookup(log_nH_i, log_eint_mid, eos%T)
+                    y_val = bicubic_lookup(log_nH_i, log_eint_mid, eos%neOnH)
 
                     log_p_eval = dlog10(10.0d0**T_val &
                         * (1.0d0 + eos%He_abundance + 10.0d0**y_val))
@@ -2096,6 +2429,17 @@ contains
         eos%eint_from_T%var2_min = T_global_min
         eos%eint_from_T%var2_max = T_global_max
         eos%eint_from_T%filename = 'computed_eint_from_T'
+        !> Inherit v1 axis from T (adaptive if T is); uniform v2 axis covers
+        !> [T_global_min, T_global_max] with explicit nodes.
+        eos%eint_from_T%is_uniform = eos%T%is_uniform
+        if (allocated(eos%eint_from_T%var1_nodes)) deallocate(eos%eint_from_T%var1_nodes)
+        if (allocated(eos%eint_from_T%var2_nodes)) deallocate(eos%eint_from_T%var2_nodes)
+        allocate(eos%eint_from_T%var1_nodes(n1)); eos%eint_from_T%var1_nodes = eos%T%var1_nodes
+        allocate(eos%eint_from_T%var2_nodes(n2_inv))
+        do j = 1, n2_inv
+            eos%eint_from_T%var2_nodes(j) = T_global_min &
+                + (j - 1) * (T_global_max - T_global_min) / dble(n2_inv - 1)
+        end do
 
         allocate(eos%eint_from_T%table(n1, n2_inv))
 
@@ -2109,8 +2453,7 @@ contains
         !> For each (nH_i, T_j): use bisection on the forward table where it
         !> has coverage, and the analytic FI formula above the table range.
         do i = 1, n1
-            log_nH_i = eos%T%var1_min + (i - 1) &
-                * (eos%T%var1_max - eos%T%var1_min) / dble(n1 - 1)
+            log_nH_i = eos%T%var1_nodes(i)
 
             !> Find the maximum T in the forward table at this nH
             T_max_at_nH = eos%T%table(i, n2_fwd)
@@ -2136,11 +2479,7 @@ contains
                     do iter = 1, 52
                         log_eint_mid = 0.5d0 * (log_eint_lo + log_eint_hi)
 
-                        T_eval = interp_clamped_monotone_bicubic_table( &
-                            log_nH_i, log_eint_mid, &
-                            eos%T%table, eos%T%dim1, eos%T%dim2, &
-                            eos%T%var1_min, eos%T%var1_max, &
-                            eos%T%var2_min, eos%T%var2_max)
+                        T_eval = bicubic_lookup(log_nH_i, log_eint_mid, eos%T)
 
                         if (T_eval < T_target) then
                             log_eint_lo = log_eint_mid
@@ -2209,25 +2548,13 @@ contains
 
                 !> === Round-trip 1: eint → T,y → p → p2eint → eint' ===
                 !> Forward: get T and y from eint
-                T_val = interp_clamped_monotone_bicubic_table( &
-                    log_nH, log_eint_nH, &
-                    eos%T%table, eos%T%dim1, eos%T%dim2, &
-                    eos%T%var1_min, eos%T%var1_max, &
-                    eos%T%var2_min, eos%T%var2_max)
-                y_val = interp_clamped_monotone_bicubic_table( &
-                    log_nH, log_eint_nH, &
-                    eos%neOnH%table, eos%neOnH%dim1, eos%neOnH%dim2, &
-                    eos%neOnH%var1_min, eos%neOnH%var1_max, &
-                    eos%neOnH%var2_min, eos%neOnH%var2_max)
+                T_val = bicubic_lookup(log_nH, log_eint_nH, eos%T)
+                y_val = bicubic_lookup(log_nH, log_eint_nH, eos%neOnH)
                 !> Compute p/nH
                 log_p_nH = dlog10(10.0d0**T_val &
                     * (1.0d0 + eos%He_abundance + 10.0d0**y_val))
                 !> Inverse: get eint from p via p2eint table
-                p2eint_val = interp_clamped_monotone_bicubic_table( &
-                    log_nH, log_p_nH, &
-                    eos%p2eint%table, eos%p2eint%dim1, eos%p2eint%dim2, &
-                    eos%p2eint%var1_min, eos%p2eint%var1_max, &
-                    eos%p2eint%var2_min, eos%p2eint%var2_max)
+                p2eint_val = bicubic_lookup(log_nH, log_p_nH, eos%p2eint)
                 log_eint_recovered = log_p_nH + dlog10(p2eint_val)
 
                 err_p = dabs(log_eint_recovered - log_eint_nH)
@@ -2239,11 +2566,7 @@ contains
                 end if
 
                 !> === Round-trip 2: eint → T → eint_from_T → eint' ===
-                eint_from_T_val = interp_clamped_monotone_bicubic_table( &
-                    log_nH, T_val, &
-                    eos%eint_from_T%table, eos%eint_from_T%dim1, eos%eint_from_T%dim2, &
-                    eos%eint_from_T%var1_min, eos%eint_from_T%var1_max, &
-                    eos%eint_from_T%var2_min, eos%eint_from_T%var2_max)
+                eint_from_T_val = bicubic_lookup(log_nH, T_val, eos%eint_from_T)
 
                 err_eint_T = dabs(eint_from_T_val - log_eint_nH)
                 mean_err_eint_T = mean_err_eint_T + err_eint_T
@@ -2449,6 +2772,241 @@ contains
 
     end function interp_clamped_monotone_bicubic_table
 
+    !> Dispatch wrapper: bicubic lookup that branches on the table's
+    !> is_uniform flag. Hides the uniform-vs-adaptive distinction from
+    !> call sites — they pass (var1, var2, eos%<table>) and get the
+    !> interpolated value, regardless of grid type.
+    pure double precision function bicubic_lookup(var1, var2, tc) result(z)
+        double precision, intent(in) :: var1, var2
+        type(eos_table_container), intent(in) :: tc
+        if (tc%is_uniform) then
+            !> Existing uniform routine signature has (vary, varx, ...) where
+            !> vary is the FIRST table axis (var1). Caller var1 -> vary,
+            !> caller var2 -> varx. The existing argument ordering passes
+            !> dim1, dim2 and the var1 / var2 bounds; the routine's internal
+            !> "y/x" labelling is consistent with that ordering for square
+            !> tables (which all our tables are).
+            z = interp_clamped_monotone_bicubic_table(var1, var2, tc%table, &
+                tc%dim1, tc%dim2, &
+                tc%var1_min, tc%var1_max, tc%var2_min, tc%var2_max)
+        else
+            z = interp_clamped_monotone_bicubic_table_nu(var1, var2, tc%table, &
+                tc%dim1, tc%dim2, tc%var1_nodes, tc%var2_nodes, &
+                tc%guard_1, tc%guard_M_1, tc%guard_scale_1, &
+                tc%guard_2, tc%guard_M_2, tc%guard_scale_2)
+        end if
+    end function bicubic_lookup
+
+    !> Dispatch wrapper: bilinear lookup that branches on is_uniform.
+    pure double precision function bilinear_lookup(var1, var2, tc) result(z)
+        double precision, intent(in) :: var1, var2
+        type(eos_table_container), intent(in) :: tc
+        if (tc%is_uniform) then
+            z = interp_clamped_bilinear_table(var1, var2, tc%table, &
+                tc%dim1, tc%dim2, &
+                tc%var1_min, tc%var1_max, tc%var2_min, tc%var2_max)
+        else
+            z = interp_clamped_bilinear_table_nu(var1, var2, tc%table, &
+                tc%dim1, tc%dim2, tc%var1_nodes, tc%var2_nodes, &
+                tc%guard_1, tc%guard_M_1, tc%guard_scale_1, &
+                tc%guard_2, tc%guard_M_2, tc%guard_scale_2)
+        end if
+    end function bilinear_lookup
+
+    !> Non-uniform-grid bilinear lookup. Same semantics as
+    !> interp_clamped_bilinear_table but with explicit per-axis node arrays.
+    !> Use binary search to locate the enclosing cell, then compute the
+    !> local fractional coordinate from the actual node positions. Falls
+    !> back to the boundary node value outside the grid (clamped).
+    !>
+    !> Convention (matches struct fields var1_nodes / var2_nodes):
+    !>   var1 has dim1 nodes, var2 has dim2 nodes.
+    !>   Table is stored as table(dim1, dim2) — Fortran column-major,
+    !>   matching how generate_lte_tables.py writes it (data.T.tofile).
+    !>   Element (i1, i2) of the table corresponds to node positions
+    !>   (var1_nodes(i1), var2_nodes(i2)).
+    pure double precision function interp_clamped_bilinear_table_nu( &
+        var1, var2, table, dim1, dim2, var1_nodes, var2_nodes, &
+        guard_1, M_1, scale_1, guard_2, M_2, scale_2) result(z)
+        double precision, intent(in) :: var1, var2
+        integer, intent(in)          :: dim1, dim2
+        double precision, intent(in) :: table(dim1, dim2)
+        double precision, intent(in) :: var1_nodes(dim1), var2_nodes(dim2)
+        integer, intent(in)          :: M_1, M_2
+        double precision, intent(in) :: scale_1, scale_2
+        integer, intent(in)          :: guard_1(*), guard_2(*)
+
+        integer          :: i1, i2, i1p, i2p, ii
+        double precision :: t1, t2
+
+        !> Axis-1 cell location
+        if (var1 <= var1_nodes(1)) then
+            i1 = 0; t1 = 0.0d0
+        else if (var1 >= var1_nodes(dim1)) then
+            i1 = dim1 - 2; t1 = 1.0d0
+        else
+            ii = find_index_guard(var1_nodes, dim1, var1, guard_1, M_1, scale_1)
+            i1 = max(0, min(ii - 2, dim1 - 2))            !> 0-based cell index
+            t1 = (var1 - var1_nodes(i1+1)) / (var1_nodes(i1+2) - var1_nodes(i1+1))
+            t1 = max(0.0d0, min(t1, 1.0d0))
+        end if
+
+        !> Axis-2 cell location
+        if (var2 <= var2_nodes(1)) then
+            i2 = 0; t2 = 0.0d0
+        else if (var2 >= var2_nodes(dim2)) then
+            i2 = dim2 - 2; t2 = 1.0d0
+        else
+            ii = find_index_guard(var2_nodes, dim2, var2, guard_2, M_2, scale_2)
+            i2 = max(0, min(ii - 2, dim2 - 2))
+            t2 = (var2 - var2_nodes(i2+1)) / (var2_nodes(i2+2) - var2_nodes(i2+1))
+            t2 = max(0.0d0, min(t2, 1.0d0))
+        end if
+
+        i1p = min(i1+1, dim1-1)
+        i2p = min(i2+1, dim2-1)
+
+        z = (1.0d0-t2) * ((1.0d0-t1)*table(i1+1, i2+1) + t1*table(i1p+1, i2+1)) &
+        +        t2  * ((1.0d0-t1)*table(i1+1, i2p+1) + t1*table(i1p+1, i2p+1))
+    end function interp_clamped_bilinear_table_nu
+
+    !> Non-uniform-grid monotone bicubic lookup. Same semantics as
+    !> interp_clamped_monotone_bicubic_table but with explicit per-axis
+    !> node arrays. The PCHIP kernel itself is unchanged: it uses the
+    !> "uniform" secant-slope formulation operating on the local 4-tuple
+    !> of values (this is the standard pragmatic approach for adaptive
+    !> grids with rectangular node structure — strictly suboptimal vs.
+    !> proper non-uniform PCHIP but empirically near-optimal for grids
+    !> designed by curvature equidistribution).
+    pure double precision function interp_clamped_monotone_bicubic_table_nu( &
+        var1, var2, table, dim1, dim2, var1_nodes, var2_nodes, &
+        guard_1, M_1, scale_1, guard_2, M_2, scale_2) result(z)
+        double precision, intent(in) :: var1, var2
+        integer, intent(in)          :: dim1, dim2
+        double precision, intent(in) :: table(dim1, dim2)
+        double precision, intent(in) :: var1_nodes(dim1), var2_nodes(dim2)
+        integer, intent(in)          :: M_1, M_2
+        double precision, intent(in) :: scale_1, scale_2
+        integer, intent(in)          :: guard_1(*), guard_2(*)
+
+        integer          :: i1, i2, ii
+        double precision :: t1, t2
+        double precision :: g0, g1, g2, g3
+
+        !> Axis-1 cell location
+        if (var1 <= var1_nodes(1)) then
+            i1 = 0; t1 = 0.0d0
+        else if (var1 >= var1_nodes(dim1)) then
+            i1 = dim1 - 2; t1 = 1.0d0
+        else
+            ii = find_index_guard(var1_nodes, dim1, var1, guard_1, M_1, scale_1)
+            i1 = max(0, min(ii - 2, dim1 - 2))
+            t1 = (var1 - var1_nodes(i1+1)) / (var1_nodes(i1+2) - var1_nodes(i1+1))
+            t1 = max(0.0d0, min(t1, 1.0d0))
+        end if
+
+        !> Axis-2 cell location
+        if (var2 <= var2_nodes(1)) then
+            i2 = 0; t2 = 0.0d0
+        else if (var2 >= var2_nodes(dim2)) then
+            i2 = dim2 - 2; t2 = 1.0d0
+        else
+            ii = find_index_guard(var2_nodes, dim2, var2, guard_2, M_2, scale_2)
+            i2 = max(0, min(ii - 2, dim2 - 2))
+            t2 = (var2 - var2_nodes(i2+1)) / (var2_nodes(i2+2) - var2_nodes(i2+1))
+            t2 = max(0.0d0, min(t2, 1.0d0))
+        end if
+
+        !> Four columns around i2: (i2-1, i2, i2+1, i2+2), interpolate
+        !> in axis-1 along each fixed-i2 column, then pchip in axis-2.
+        g0 = ax1_interp_col_nu(i2-1, i1, t1)
+        g1 = ax1_interp_col_nu(i2  , i1, t1)
+        g2 = ax1_interp_col_nu(i2+1, i1, t1)
+        g3 = ax1_interp_col_nu(i2+2, i1, t1)
+
+        z = pchip_interval_uniform_local(g0, g1, g2, g3, t2)
+
+    contains
+
+        pure integer function clampi_nu(i, lo, hi) result(o)
+            integer, intent(in) :: i, lo, hi
+            o = max(lo, min(hi, i))
+        end function clampi_nu
+
+        pure double precision function pchip_interval_uniform_local(p0, p1, p2, p3, t) result(v)
+            !> Identical to pchip_interval_uniform in the uniform routine.
+            !> Duplicated here because pure functions cannot reference
+            !> contained functions of a sibling routine in standard Fortran.
+            double precision, intent(in) :: p0, p1, p2, p3, t
+            double precision :: d0, d1, d2, m1, m2
+            double precision :: tt, ttt, h00, h10, h01, h11
+            double precision :: s, a1, a2, lim
+
+            d0 = p1 - p0
+            d1 = p2 - p1
+            d2 = p3 - p2
+
+            if (d1 == 0.0d0) then
+                m1 = 0.0d0
+                m2 = 0.0d0
+            else
+                if (d0*d1 <= 0.0d0) then
+                    m1 = 0.0d0
+                else
+                    m1 = 2.0d0*d0*d1 / (d0 + d1)
+                end if
+                if (d1*d2 <= 0.0d0) then
+                    m2 = 0.0d0
+                else
+                    m2 = 2.0d0*d1*d2 / (d1 + d2)
+                end if
+                s = sign(1.0d0, d1)
+                a1 = s*m1
+                a2 = s*m2
+                if (a1 < 0.0d0) a1 = 0.0d0
+                if (a2 < 0.0d0) a2 = 0.0d0
+                lim = 3.0d0*abs(d1)
+                if (a1 > lim) a1 = lim
+                if (a2 > lim) a2 = lim
+                m1 = s*a1
+                m2 = s*a2
+            end if
+
+            tt  = t*t
+            ttt = tt*t
+            h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
+            h10 = ttt - 2.0d0*tt + t
+            h01 = -2.0d0*ttt + 3.0d0*tt
+            h11 = ttt - tt
+
+            v = h00*p1 + h10*m1 + h01*p2 + h11*m2
+        end function pchip_interval_uniform_local
+
+        pure double precision function ax1_interp_col_nu(j2, i1_cell, t) result(v)
+            !> Interpolate in axis-1 at fixed axis-2 column j2 (0-based,
+            !> clamped) using axis-1 cell starting index i1_cell (0-based),
+            !> with the 4-point stencil i1_cell-1, i1_cell, i1_cell+1, i1_cell+2.
+            integer, intent(in) :: j2, i1_cell
+            double precision, intent(in) :: t
+            integer :: a0, a1, a2, a3, b
+            double precision :: p0, p1, p2, p3
+
+            b  = clampi_nu(j2, 0, dim2-1)
+            a0 = clampi_nu(i1_cell-1, 0, dim1-1)
+            a1 = clampi_nu(i1_cell  , 0, dim1-1)
+            a2 = clampi_nu(i1_cell+1, 0, dim1-1)
+            a3 = clampi_nu(i1_cell+2, 0, dim1-1)
+
+            p0 = table(a0+1, b+1)
+            p1 = table(a1+1, b+1)
+            p2 = table(a2+1, b+1)
+            p3 = table(a3+1, b+1)
+
+            v = pchip_interval_uniform_local(p0, p1, p2, p3, t)
+        end function ax1_interp_col_nu
+
+    end function interp_clamped_monotone_bicubic_table_nu
+
     !> Interleaved PCHIP: evaluate N quantities at the same (vary, varx) point.
     !> Table layout: table_il(nq, ny, nx) where nq quantities share the same grid.
     !> All nq values at each grid point are contiguous in memory (cache-optimal).
@@ -2567,6 +3125,137 @@ contains
         end do
 
     end subroutine interp_pchip_interleaved
+
+    !> Adaptive-grid sibling of interp_pchip_interleaved.  Replaces the
+    !> affine index calculation `(x - x_min) * step_inv` with binary
+    !> searches on the explicit node arrays var{1,2}_nodes (Q axis-1
+    !> binary searches: O(log_2 N) comparisons each, total ~16 cmps for
+    !> N = 256).  The PCHIP kernel itself is unchanged: it operates on
+    !> the local 4-tuple of values regardless of grid spacing.  The
+    !> stride-1 access pattern over the q-slot dimension is preserved,
+    !> so cache behaviour matches the uniform variant for the inner kernel.
+    subroutine interp_pchip_interleaved_nu(vary, varx, table_il, nq, nx, ny, &
+        var1_nodes, var2_nodes, &
+        guard_1, M_1, scale_1, guard_2, M_2, scale_2, results)
+        double precision, intent(in) :: vary, varx
+        integer, intent(in)          :: nq, nx, ny
+        double precision, intent(in) :: table_il(nq, ny, nx)
+        double precision, intent(in) :: var1_nodes(ny), var2_nodes(nx)
+        integer, intent(in)          :: M_1, M_2
+        double precision, intent(in) :: scale_1, scale_2
+        integer, intent(in)          :: guard_1(*), guard_2(*)
+        double precision, intent(out) :: results(nq)
+
+        double precision :: tx, ty
+        integer :: ix, iy, q, ii
+        integer :: i0, i1, i2, i3, j0, j1, j2, j3
+        double precision :: g0(nq), g1(nq), g2(nq), g3(nq)
+        double precision :: p0, p1, p2, p3
+        double precision :: d0, d1, d2, m1, m2, s, a1, a2, lim
+        double precision :: tt, ttt, h00, h10, h01, h11
+
+        ! Axis-1 (vary) cell index + local fractional coordinate
+        if (vary <= var1_nodes(1)) then
+            iy = 0; ty = 0.0d0
+        else if (vary >= var1_nodes(ny)) then
+            iy = ny - 2; ty = 1.0d0
+        else
+            ii = find_index_guard(var1_nodes, ny, vary, guard_1, M_1, scale_1)
+            iy = max(0, min(ii - 2, ny - 2))
+            ty = (vary - var1_nodes(iy+1)) &
+               / (var1_nodes(iy+2) - var1_nodes(iy+1))
+            ty = max(0.0d0, min(ty, 1.0d0))
+        end if
+
+        ! Axis-2 (varx) cell index + local fractional coordinate
+        if (varx <= var2_nodes(1)) then
+            ix = 0; tx = 0.0d0
+        else if (varx >= var2_nodes(nx)) then
+            ix = nx - 2; tx = 1.0d0
+        else
+            ii = find_index_guard(var2_nodes, nx, varx, guard_2, M_2, scale_2)
+            ix = max(0, min(ii - 2, nx - 2))
+            tx = (varx - var2_nodes(ix+1)) &
+               / (var2_nodes(ix+2) - var2_nodes(ix+1))
+            tx = max(0.0d0, min(tx, 1.0d0))
+        end if
+
+        i0 = max(0, min(nx-1, ix-1))
+        i1 = max(0, min(nx-1, ix))
+        i2 = max(0, min(nx-1, ix+1))
+        i3 = max(0, min(nx-1, ix+2))
+
+        ! Same kernel as the uniform variant — only the index calculation differs
+        do j0 = 0, 3
+            j1 = max(0, min(ny-1, iy - 1 + j0))
+            do q = 1, nq
+                p0 = table_il(q, j1+1, i0+1)
+                p1 = table_il(q, j1+1, i1+1)
+                p2 = table_il(q, j1+1, i2+1)
+                p3 = table_il(q, j1+1, i3+1)
+
+                d0 = p1 - p0; d1 = p2 - p1; d2 = p3 - p2
+                if (d1 == 0.0d0) then
+                    m1 = 0.0d0; m2 = 0.0d0
+                else
+                    if (d0*d1 <= 0.0d0) then; m1 = 0.0d0
+                    else; m1 = 2.0d0*d0*d1/(d0+d1)
+                    end if
+                    if (d1*d2 <= 0.0d0) then; m2 = 0.0d0
+                    else; m2 = 2.0d0*d1*d2/(d1+d2)
+                    end if
+                    s = sign(1.0d0, d1)
+                    a1 = s*m1; a2 = s*m2
+                    if (a1 < 0.0d0) a1 = 0.0d0
+                    if (a2 < 0.0d0) a2 = 0.0d0
+                    lim = 3.0d0*abs(d1)
+                    if (a1 > lim) a1 = lim
+                    if (a2 > lim) a2 = lim
+                    m1 = s*a1; m2 = s*a2
+                end if
+                tt = tx*tx; ttt = tt*tx
+                h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
+                h10 = ttt - 2.0d0*tt + tx
+                h01 = -2.0d0*ttt + 3.0d0*tt
+                h11 = ttt - tt
+                select case(j0)
+                case(0); g0(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                case(1); g1(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                case(2); g2(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                case(3); g3(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                end select
+            end do
+        end do
+
+        do q = 1, nq
+            d0 = g1(q) - g0(q); d1 = g2(q) - g1(q); d2 = g3(q) - g2(q)
+            if (d1 == 0.0d0) then
+                m1 = 0.0d0; m2 = 0.0d0
+            else
+                if (d0*d1 <= 0.0d0) then; m1 = 0.0d0
+                else; m1 = 2.0d0*d0*d1/(d0+d1)
+                end if
+                if (d1*d2 <= 0.0d0) then; m2 = 0.0d0
+                else; m2 = 2.0d0*d1*d2/(d1+d2)
+                end if
+                s = sign(1.0d0, d1)
+                a1 = s*m1; a2 = s*m2
+                if (a1 < 0.0d0) a1 = 0.0d0
+                if (a2 < 0.0d0) a2 = 0.0d0
+                lim = 3.0d0*abs(d1)
+                if (a1 > lim) a1 = lim
+                if (a2 > lim) a2 = lim
+                m1 = s*a1; m2 = s*a2
+            end if
+            tt = ty*ty; ttt = tt*ty
+            h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
+            h10 = ttt - 2.0d0*tt + ty
+            h01 = -2.0d0*ttt + 3.0d0*tt
+            h11 = ttt - tt
+            results(q) = h00*g1(q) + h10*m1 + h01*g2(q) + h11*m2
+        end do
+
+    end subroutine interp_pchip_interleaved_nu
 
     !> Root-finding inversion of the p2eint table for IonE mode.
     !> Given eint (internal energy, code units), nH (code units), and log10(nH),

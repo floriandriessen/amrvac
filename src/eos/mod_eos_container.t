@@ -52,12 +52,42 @@ module mod_eos_container
     end interface
     
     type eos_table_container
-    
+
         character(len=std_len) :: filename
         double precision, allocatable :: table(:,:)
         integer :: dim1, dim2
         double precision :: var1_min, var1_max, var2_min, var2_max
         double precision :: step_inv_1, step_inv_2  !> precomputed (dim-1)/(max-min) for each axis
+
+        !> Curvature-adaptive (non-uniform) grid support.
+        !> When .true. (default), the grid is uniform in log10 space and
+        !> the existing affine index calculation applies. When .false.,
+        !> the table file carries an explicit pair of axis node arrays
+        !> read from the binary trailer; index lookup uses binary search
+        !> and the local fractional coordinate becomes
+        !>   t1 = (var1 - var1_nodes(i)) / (var1_nodes(i+1) - var1_nodes(i))
+        !> The PCHIP/bicubic kernels themselves are unchanged.
+        !>
+        !> Naming follows the existing var1/var2 convention:
+        !>   var1_nodes has length dim1, var2_nodes has length dim2.
+        logical :: is_uniform = .true.
+        double precision, allocatable :: var1_nodes(:), var2_nodes(:)
+
+        !> Guard (bucket) array for O(1) adaptive index lookup. Built when
+        !> is_uniform = .false. via eos_build_guards. For each axis:
+        !>   guard_M    : number of buckets covering [v(1), v(N)]
+        !>   guard_scale: M / (v(N) - v(1))
+        !>   guard(:)   : 1-based array, size M; guard(k) is the smallest
+        !>                1-based node index ii such that v(ii) >= left
+        !>                edge of bucket k (i.e., v(1) + (k-1)*span/M).
+        !> Lookup:
+        !>   k  = 1 + min(M-1, max(0, floor((val - v(1)) * scale)))
+        !>   ii = guard(k); while (ii < N .and. v(ii) < val) ii = ii + 1
+        !> M is sized at build time so the safety while-loop iterates at
+        !> most once for typical curvature-equidistributed grids.
+        integer :: guard_M_1 = 0, guard_M_2 = 0
+        double precision :: guard_scale_1 = 0.0d0, guard_scale_2 = 0.0d0
+        integer, allocatable :: guard_1(:), guard_2(:)
 
     end type eos_table_container
 
