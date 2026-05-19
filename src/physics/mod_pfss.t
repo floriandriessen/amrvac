@@ -274,13 +274,15 @@ contains
     double complex :: Bt(0:lmax,0:lmax,ixOmin1:ixOmax1)
     double precision :: phase(ixI^S,1:ndir),Bpfiv(ixOmin3:ixOmax3,ixOmin2:ixOmax2)
     double precision :: miu(ixOmin2:ixOmax2),mius(ixOmin2:ixOmax2),xr
+    double precision :: tmp(ixOmin2:ixOmax2)
     integer :: l,m,ix^D,j,l1,l2,ntheta,nphi,ir,qlmax
 
     Bt=(0.d0,0.d0)
     nphi=ixOmax3-ixOmin3+1
     ntheta=ixOmax2-ixOmin2+1
-    miu(ixOmin2:ixOmax2)=dcos(x(ixOmin1,ixOmax2:ixOmin2:-1,ixOmin3,2))
-    mius(ixOmin2:ixOmax2)=dsin(x(ixOmin1,ixOmax2:ixOmin2:-1,ixOmin3,2))
+    tmp(ixOmin2:ixOmax2)=x(ixOmin1,ixOmax2:ixOmin2:-1,ixOmin3,2)
+    miu(ixOmin2:ixOmax2)=dcos(tmp(ixOmin2:ixOmax2))
+    mius(ixOmin2:ixOmax2)=dsin(tmp(ixOmin2:ixOmax2))
     do ix1=ixOmin1,ixOmax1
       xr=x(ix1,ixOmin2,ixOmin3,1)
       if(trunc) then
