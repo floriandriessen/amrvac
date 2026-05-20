@@ -1147,7 +1147,7 @@ contains
                   +gradT(ix1,ix2,ix3+1,idims)*block%surfaceC(ix1,ix2,ix3+1,1)&
                 +gradT(ix1,ix2+1,ix3+1,idims)*block%surfaceC(ix1,ix2+1,ix3+1,1))/&
               (block%surfaceC(ix1,ix2,ix3,1)+block%surfaceC(ix1,ix2+1,ix3,1)&
-              +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1))
+              +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1)+smalldouble)
        {end do\}
       else if(idims==2) then
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
@@ -1156,7 +1156,7 @@ contains
                   +gradT(ix1,ix2,ix3+1,idims)*block%surfaceC(ix1,ix2,ix3+1,2)&
                 +gradT(ix1+1,ix2,ix3+1,idims)*block%surfaceC(ix1+1,ix2,ix3+1,2))/&
             (block%surfaceC(ix1,ix2,ix3,2)+block%surfaceC(ix1+1,ix2,ix3,2)&
-          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+1.d-300)
+          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+smalldouble)
        {end do\}
       else
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
@@ -1180,7 +1180,7 @@ contains
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
           qdd(ix^D)=(gradT(ix1,ix2,idims)*block%surfaceC(ix1,ix2,2)&
                   +gradT(ix1+1,ix2,idims)*block%surfaceC(ix1+1,ix2,2))/&
-               (block%surfaceC(ix1,ix2,2)+block%surfaceC(ix1+1,ix2,2)+1.d-300)
+               (block%surfaceC(ix1,ix2,2)+block%surfaceC(ix1+1,ix2,2)+smalldouble)
        {end do\}
       end if
      }
@@ -1730,7 +1730,7 @@ contains
                      +ke(ix1,ix2,ix3+1)*block%surfaceC(ix1,ix2,ix3+1,1)&
                    +ke(ix1,ix2+1,ix3+1)*block%surfaceC(ix1,ix2+1,ix3+1,1))/&
             (block%surfaceC(ix1,ix2,ix3,1)+block%surfaceC(ix1,ix2+1,ix3,1)&
-          +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1))
+          +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1)+smalldouble)
        {end do\}
       else if(idims==2) then
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
@@ -1739,7 +1739,7 @@ contains
                      +ke(ix1,ix2,ix3+1)*block%surfaceC(ix1,ix2,ix3+1,2)&
                    +ke(ix1+1,ix2,ix3+1)*block%surfaceC(ix1+1,ix2,ix3+1,2))/&
             (block%surfaceC(ix1,ix2,ix3,2)+block%surfaceC(ix1+1,ix2,ix3,2)&
-          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+1.d-300)
+          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+smalldouble)
           ! zero theta-normal surface area at pole axis
        {end do\}
       else
