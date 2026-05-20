@@ -255,7 +255,9 @@ mod_ghostcells_update.o: mod_physics.mod
 mod_gimli.o: mod_functions_bfield.mod
 mod_gimli.o: mod_global_parameters.mod
 mod_gimli.o: mod_hd_phys.mod
+mod_gimli.o: mod_input_output.mod
 mod_gimli.o: mod_mhd_phys.mod
+mod_gimli.o: mod_physics.mod
 mod_global_parameters.o: mod_basic_types.mod
 mod_global_parameters.o: mod_connectivity.mod
 mod_global_parameters.o: mod_constants.mod

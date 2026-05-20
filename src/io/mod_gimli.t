@@ -166,16 +166,198 @@ contains
         integer :: idl, idu
 
         if (x <= grid(1)) then
-        amplitude = array(1)
+            amplitude = array(1)
+            ! amplitude = 0.d0
         else if (x >= grid(size(grid))) then
-        amplitude = array(size(grid))
+            amplitude = array(size(grid))
+            ! amplitude = 0.d0
         else
-        idl = maxloc(grid, mask=(grid < x), dim=1)
-        idu = minloc(grid, mask=(grid > x), dim=1)
-        amplitude = array(idl) + (x - grid(idl)) * &
-            (array(idu) - array(idl)) / (grid(idu) - grid(idl))
+            idl = maxloc(grid, mask=(grid < x), dim=1)
+            idu = minloc(grid, mask=(grid > x), dim=1)
+            amplitude = array(idl) + (x - grid(idl)) * &
+                (array(idu) - array(idl)) / (grid(idu) - grid(idl))
         end if
     end subroutine ef_amplitude
+
+    ! subroutine custom analytics log file
+    ! called in "usr_print_log => analytics_log" in mod_usr.t
+    subroutine analytics_log
+        use mod_global_parameters
+        use mod_input_output, only: get_volume_average_func, printlog_default
+
+        integer, parameter :: n_modes = 2
+        integer, parameter :: my_unit = 123
+        character(len=80)  :: fmt_string = '(9(es12.4))', filename
+        logical, save      :: alive, visited=.false.
+        double precision   :: volume, magn_avg
+        double precision   :: Tmax, Tmin, vmax, B1max, B2max, B3max
+
+        ! First output the standard log file:
+        call printlog_default
+
+        ! Now make the custom _c.log file:
+        call get_minmax_temperature(Tmax,Tmin)
+        call get_max_velocity(vmax)
+        if (mhd_bool == 1) then
+        call get_max_B(B1max, B2max, B3max)
+            call get_volume_average_func(magnetic, magn_avg, volume)
+        end if
+
+        filename = trim(base_filename) // "_c.log"
+
+        if (.not. visited) then
+        ! Delete the log when not doing a restart run
+            if (restart_from_file == undefined .or. reset_time) then
+                open(unit=my_unit,file=trim(filename),form='formatted',status='replace')
+                write(my_unit,'(a)') ''
+                if (mhd_bool == 1) then
+                    write(my_unit,'(a)') '#Global_time Tmax Tmin vmax B1max B2max B3max mag_avg'
+                else
+                    write(my_unit,'(a)') '#Global_time Tmax Tmin vmax'
+                end if
+            end if
+            visited = .true.
+        end if
+
+        if (mype == 0) then
+        write(filename,"(a)") filename
+        inquire(file=filename,exist=alive)
+        if(alive) then
+            open(unit=my_unit,file=filename,form='formatted',status='old',access='append')
+        else
+            open(unit=my_unit,file=filename,form='formatted',status='new')
+        endif
+
+        ! if number of output doubles is increase, don't forget to change the fmt_string above
+        if (mhd_bool == 1) then
+            write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax, B1max, B2max, B3max, magn_avg
+        else
+            write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax
+        end if
+        close(my_unit)
+        end if
+    end subroutine analytics_log
+
+    pure function magnetic(w_vec, w_size) result(magn_energy)
+        use mod_global_parameters
+        integer, intent(in)          :: w_size
+        double precision, intent(in) :: w_vec(w_size)
+        double precision             :: magn_energy
+
+        magn_energy = 0.5d0 * sum(w_vec(mag_mhd(:))**2,dim=ndir+1)
+    end function magnetic
+
+    ! Calculate both min and max of temperature on grid in one go.
+    subroutine get_minmax_temperature(Tmax, Tmin)
+        use mod_global_parameters
+        use mod_physics, only: phys_get_pthermal, phys_get_rho
+
+        double precision, intent(out) :: Tmax, Tmin
+
+        integer                       :: iigrid, igrid, iw
+        double precision              :: Tmax_mype, Tmax_recv, Tmin_mype, Tmin_recv
+        double precision              :: w(ixG^T,1:nw), wlocal(ixG^T,1:nw), xlocal(ixG^T,1:nw)
+        double precision              :: Te(ixG^T), pth(ixG^T), rho(ixG^T)
+
+        Tmax_mype = -bigdouble
+        Tmin_mype = bigdouble
+
+        !Loop over all the grids
+        do iigrid = 1, igridstail
+            igrid = igrids(iigrid)
+
+            wlocal(ixG^T,1:nw) = ps(igrid)%w(ixG^T,1:nw)
+            xlocal(ixG^T,1:ndim) = ps(igrid)%x(ixG^T,1:ndim)
+            call phys_get_pthermal(wlocal,xlocal,ixG^LL,ixG^LL,pth)
+            call phys_get_rho(wlocal,xlocal,ixG^LL,ixG^LL,rho)
+            Te(ixG^T) = pth(ixG^T)/rho(ixG^T)
+
+            ! Compare values on current grid to temporary max/min
+            Tmax_mype = max(Tmax_mype,maxval(Te(ixM^T)))
+            Tmin_mype = min(Tmin_mype,minval(Te(ixM^T)))
+        end do
+
+        ! Make the information available on all tasks
+        call mpi_allreduce(Tmax_mype, Tmax_recv, 1, mpi_double_precision, &
+            mpi_max, icomm, ierrmpi)
+        call mpi_allreduce(Tmin_mype, Tmin_recv, 1, mpi_double_precision, &
+            mpi_min, icomm, ierrmpi)
+
+        Tmax = Tmax_recv
+        Tmin = Tmin_recv
+
+    end subroutine get_minmax_temperature
+
+    subroutine get_max_velocity(vmax)
+        use mod_global_parameters
+        use mod_physics, only: phys_get_v
+
+        double precision, intent(out) :: vmax
+
+        integer                       :: iigrid, igrid, iw
+        double precision              :: vmax_mype,vmax_recv
+        double precision              :: v_vec(ixG^T,1:ndir), v(ixG^T)
+
+        vmax_mype = -bigdouble
+
+        !Loop over all the grids
+        do iigrid = 1, igridstail
+            igrid = igrids(iigrid)
+
+            call phys_get_v(ps(igrid)%w, ps(igrid)%x, ixG^LL, ixG^LL, v_vec)
+
+            v(ixM^T) = sqrt(sum(v_vec(ixM^T,:)**2,dim=ndir+1))
+
+            vmax_mype =max(vmax_mype ,maxval(v(ixM^T)))
+
+        end do
+
+        ! Make the information available on all tasks
+        call mpi_allreduce(vmax_mype, vmax_recv, 1, mpi_double_precision, &
+            mpi_max, icomm, ierrmpi)
+
+        vmax = vmax_recv
+
+    end subroutine get_max_velocity
+
+    subroutine get_max_B(B1max, B2max, B3max)
+        use mod_global_parameters
+
+        double precision, intent(out) :: B1max, B2max, B3max
+
+        integer                       :: iigrid, igrid, iw
+        double precision              :: B1max_mype, B1max_recv
+        double precision              :: B2max_mype, B2max_recv
+        double precision              :: B3max_mype, B3max_recv
+
+        B1max_mype = -bigdouble
+        B2max_mype = -bigdouble
+        B3max_mype = -bigdouble
+
+        !Loop over all the grids
+        do iigrid = 1, igridstail
+            igrid = igrids(iigrid)
+
+            B1max_mype = max(B1max_mype, maxval(ps(igrid)%w(ixG^T, mag_mhd(1))))
+            B2max_mype = max(B2max_mype, maxval(ps(igrid)%w(ixG^T, mag_mhd(2))))
+            if (ndir >= 3) then
+                B3max_mype = max(B3max_mype, maxval(ps(igrid)%w(ixG^T, mag_mhd(3))))
+            end if
+        end do
+
+        ! Make the information available on all tasks
+        call mpi_allreduce(B1max_mype, B1max_recv, 1, mpi_double_precision, &
+            mpi_max, icomm, ierrmpi)
+        call mpi_allreduce(B2max_mype, B2max_recv, 1, mpi_double_precision, &
+            mpi_max, icomm, ierrmpi)
+        call mpi_allreduce(B3max_mype, B3max_recv, 1, mpi_double_precision, &
+            mpi_max, icomm, ierrmpi)
+
+        B1max = B1max_recv
+        B2max = B2max_recv
+        B3max = B3max_recv
+
+    end subroutine get_max_B
 
 end module mod_gimli
 !
