@@ -160,17 +160,26 @@ contains
     end subroutine w_index_to_array
 
     subroutine ef_amplitude(x, grid, array, amplitude)
+        use mod_geometry, only: coordinate, cylindrical
         real(dp), intent(in) :: x, grid(ef_gridpts)
         complex(dp), intent(in) :: array(ef_gridpts)
         complex(dp), intent(out) :: amplitude
         integer :: idl, idu
 
-        if (x <= grid(1)) then
+        if (x <= grid(1) .and. xprobmin1 <= x) then
             amplitude = array(1)
-            ! amplitude = 0.d0
-        else if (x >= grid(size(grid))) then
+            
+            if (coordinate==cylindrical .and. grid(1) > 0) then
+                if (x >= grid(1)/2) then
+                    amplitude = (x - grid(1)/2) * array(1) / grid(1)
+                else
+                    amplitude = 0.d0
+                end if
+            end if
+        else if (x >= grid(size(grid)) .and. x <= xprobmax1) then
             amplitude = array(size(grid))
-            ! amplitude = 0.d0
+        else if (x < xprobmin1 .or. x > xprobmax1) then
+            amplitude = 0.d0
         else
             idl = maxloc(grid, mask=(grid < x), dim=1)
             idu = minloc(grid, mask=(grid > x), dim=1)
