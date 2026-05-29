@@ -40,6 +40,7 @@ jobs:
             brew install ${{ env.OSX_GCC_PACKAGE_NAME }}
             brew install open-mpi
             ln -s $(which ${{ matrix.FC_compiler }}) /usr/local/bin/gfortran
+            export PATH=$PATH:/usr/local/bin
           fi
       - name: check compiler versions
         run: |
