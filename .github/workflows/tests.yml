@@ -14,6 +14,10 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         compiler: [gfortran-11, gfortran-12, gfortran-13, gfortran-14]
+        include:
+          - os: macos-latest
+            compiler: gfortran-15
+
 
     env:
       FC: ${{ matrix.compiler }}
