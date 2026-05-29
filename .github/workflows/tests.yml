@@ -22,6 +22,7 @@ jobs:
     env:
       FC: ${{ matrix.compiler }}
       AMRVAC_DIR: ${GITHUB_WORKSPACE}
+      OSX_GCC_PACKAGE_NAME: gcc@15
 
     runs-on: ${{ matrix.os }}
 
@@ -35,6 +36,10 @@ jobs:
             sudo apt-get update
             sudo apt-get install ${{ matrix.compiler }}
             sudo apt-get install openmpi-bin libopenmpi-dev
+          else
+            brew install ${{ env.OSX_GCC_PACKAGE_NAME }}
+            brew install open-mpi
+            ln -s $(which ${{ matrix.FC_compiler }}) /usr/local/bin/gfortran
           fi
       - name: check compiler versions
         run: |
