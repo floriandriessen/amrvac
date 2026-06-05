@@ -504,18 +504,18 @@ contains
                *dsin(half*psc(igrid)%dx(ixCoG^S,2))}{^IFTHREED*psc(igrid)%dx(ixCoG^S,3)}
         ps(igrid)%ds(ixGext^S,1)=ps(igrid)%dx(ixGext^S,1)
         {^NOONED   ps(igrid)%ds(ixGext^S,2)=xext(ixGext^S,1)*ps(igrid)%dx(ixGext^S,2)}
-        {^IFTHREED ps(igrid)%ds(ixGext^S,3)=xext(ixGext^S,1)*dsin(xext(ixGext^S,2))*&
+        {^IFTHREED ps(igrid)%ds(ixGext^S,3)=xext(ixGext^S,1)*dabs(dsin(xext(ixGext^S,2)))*&
                                             ps(igrid)%dx(ixGext^S,3)}
         ps(igrid)%dsC(ixGext^S,1)=ps(igrid)%dx(ixGext^S,1)
         {^NOONED   ps(igrid)%dsC(ixGext^S,2)=(xext(ixGext^S,1)+half*ps(igrid)%dx(ixGext^S,1))*&
                                             ps(igrid)%dx(ixGext^S,2)
         if(ndir>ndim) then
           ps(igrid)%dsC(ixGext^S,3)=(xext(ixGext^S,1)+half*ps(igrid)%dx(ixGext^S,1))*&
-                                         dsin(xext(ixGext^S,2)+half*ps(igrid)%dx(ixGext^S,2))
+                                         dabs(dsin(xext(ixGext^S,2)+half*ps(igrid)%dx(ixGext^S,2)))
         end if
         }
         {^IFTHREED ps(igrid)%dsC(ixGext^S,3)=(xext(ixGext^S,1)+half*ps(igrid)%dx(ixGext^S,1))*&
-                                         dsin(xext(ixGext^S,2)+half*ps(igrid)%dx(ixGext^S,2))*&
+                                         dabs(dsin(xext(ixGext^S,2)+half*ps(igrid)%dx(ixGext^S,2)))*&
                                          ps(igrid)%dx(ixGext^S,3)}
       case (cylindrical)
         ps(igrid)%dvolume(ixGext^S)=dabs(xext(ixGext^S,1)) &
@@ -532,8 +532,8 @@ contains
           end if
         end if
         if(phi_>0.and.phi_<=ndim) then
-          ps(igrid)%ds(ixGext^S,phi_)=xext(ixGext^S,1)*ps(igrid)%dx(ixGext^S,phi_)
-          ps(igrid)%dsC(ixGext^S,phi_)=(xext(ixGext^S,1)+&
+          ps(igrid)%ds(ixGext^S,phi_)=dabs(xext(ixGext^S,1))*ps(igrid)%dx(ixGext^S,phi_)
+          ps(igrid)%dsC(ixGext^S,phi_)=dabs(xext(ixGext^S,1)+&
                      half*ps(igrid)%dx(ixGext^S,1))*ps(igrid)%dx(ixGext^S,phi_)
           if(z_>phi_.and.ndir>ndim) ps(igrid)%dsC(ixGext^S,z_)=1.d0
         end if
@@ -592,6 +592,7 @@ contains
     s%w=0.d0
     s%ixG^L=ixG^L;
     {^D& ixGsmin^D = ixGmin^D-1; ixGsmax^D = ixGmax^D|;}
+    s%ixGs^L=ixGs^L;
     if(stagger_grid) then
       allocate(s%ws(ixGs^S,1:nws))
       s%ws=0.d0
@@ -599,7 +600,6 @@ contains
         allocate(s%we(ixGs^S,1:nws))
         s%we=0.d0
       end if
-      s%ixGs^L=ixGs^L;
     end if
     if(alloc_once_for_ps) then
       ! allocate extra variables for ps state

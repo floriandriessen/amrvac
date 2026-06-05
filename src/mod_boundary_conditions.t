@@ -63,8 +63,8 @@ contains
                 w(ixO^S,iw) = - w(ixO^S,iw)
              case (bc_data)
                 ! skip it here, do AFTER all normal type boundaries are set
-           case (bc_icarus)
-              ! skip it here, do AFTER all normal type boundaries are set
+             case (bc_icarus)
+               ! skip it here, do AFTER all normal type boundaries are set
              case (bc_character)
                 ! skip it here, do AFTER all normal type boundaries are set
              case default
@@ -168,8 +168,8 @@ contains
                 w(ixO^S,iw) = - w(ixO^S,iw)
              case (bc_data)
                 ! skip it here, do AFTER all normal type boundaries are set
-           case (bc_icarus)
-              ! skip it here, do AFTER all normal type boundaries are set
+             case (bc_icarus)
+                ! skip it here, do AFTER all normal type boundaries are set
              case (bc_character)
                 ! skip it here, do AFTER all normal type boundaries are set
              case default

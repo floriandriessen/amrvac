@@ -1,6 +1,7 @@
 !> This is a template for a new user problem
 module mod_usr
-  use mod_rmhd 
+  use mod_mhd 
+  use mod_eos, only: eos
 
   implicit none
 
@@ -43,7 +44,7 @@ contains
     usr_init_vector_potential=>initvecpot_usr
 
     ! Active the physics module
-    call rmhd_activate() 
+    call mhd_activate() 
   end subroutine usr_init
 
 
@@ -54,8 +55,8 @@ contains
     call params_read(par_files)
 
 
-    eg0 = p0/(rmhd_gamma - one) + half*(B0x*B0x + B0y*B0y + B0z*B0z)/(4.0*dpi)
-    ca = dsqrt(rmhd_gamma*p0/rho0)
+    eg0 = p0/(eos%gamma - one) + half*(B0x*B0x + B0y*B0y + B0z*B0z)/(4.0*dpi)
+    ca = dsqrt(eos%gamma*p0/rho0)
     a0 = dsqrt(p0/rho0)
 
     T0 = const_mp*fld_mu/const_kB*(p0/rho0)
@@ -76,8 +77,8 @@ contains
     omega = 2.d0*dpi*vax/wvl 
     wavenumber = 2.d0*dpi/wvl
 
-    Bo = 4*rmhd_gamma*ca*eg0/(const_c*Er0) 
-    r_Bo = Er0/(4*rmhd_gamma*eg0)
+    Bo = 4*eos%gamma*ca*eg0/(const_c*Er0) 
+    r_Bo = Er0/(4*eos%gamma*eg0)
 
     !-------------------
     tau_c = const_c*fld_kappa0*rho0/omega
@@ -200,7 +201,7 @@ contains
     A_Bz = 0.d0
     A_vy = -(B0x*wavenumber/(omega*rho0))*A_By
     A_vz = 0.d0
-    A_e = A_p/(rmhd_gamma-one) + B0y*A_By + B0z*A_Bz
+    A_e = A_p/(eos%gamma-one) + B0y*A_By + B0z*A_Bz
 
     if (mype .eq. 0) then
       print*, 'A_rho', A_rho
@@ -276,11 +277,11 @@ contains
   end subroutine initial_conditions
 
 
-  subroutine Initialize_Wave(level,qt,ixI^L,ixO^L,w,x)
+  subroutine Initialize_Wave(level,qt,qdt,ixI^L,ixO^L,w,x)
     use mod_global_parameters
     use mod_fld
     integer, intent(in)             :: ixI^L,ixO^L,level
-    double precision, intent(in)    :: qt
+    double precision, intent(in)    :: qt, qdt
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
@@ -306,7 +307,7 @@ contains
       w(ixI^S, mom(2)) = w(ixI^S, rho_)*A_vy*dsin(wavenumber*x(ixI^S,1)-omega*global_time)
       w(ixI^S, mom(3)) = w(ixI^S, rho_)*A_vz*dsin(wavenumber*x(ixI^S,1)-omega*global_time)
 
-      w(ixI^S, e_) = press(ixI^S)/(rmhd_gamma - one) + half*(B0x*B0x + &
+      w(ixI^S, e_) = press(ixI^S)/(eos%gamma - one) + half*(B0x*B0x + &
        w(ixI^S, mag(2))*w(ixI^S, mag(2)) + w(ixI^S, mag(3))*w(ixI^S, mag(3)))
       
     endwhere

@@ -1,5 +1,6 @@
 module mod_usr
-  use mod_rmhd
+  use mod_mhd
+  use mod_eos, only: eos
   use mod_viscosity, only: vc_mu
   implicit none
   double precision :: usr_grav,bstr,temptop
@@ -23,7 +24,7 @@ contains
     unit_temperature   = 1.001d3 ! K
     unit_numberdensity = 1.001d9 ! cm^-3
 
-    call rmhd_activate()
+    call mhd_activate()
   end subroutine usr_init
 
   subroutine initglobaldata_usr
@@ -36,7 +37,7 @@ contains
      print *,"unit_numberdensity = ",unit_numberdensity
      print *,"unit_temperature = ",unit_temperature
      print *,"unit_length = ",unit_length
-     print *,"He_abundance = ",He_abundance
+     print *,"eos%He_abundance = ",eos%He_abundance
      print *,"He_ion_fr = ",He_ion_fr
      print *,"kB_cgs = ",kB_cgs
      print *,"mp_cgs = ",mp_cgs
@@ -79,7 +80,7 @@ contains
     ! allows calculation of all equation parameters, namely
     ! the general purpose ones:
     ! ------------------------
-    !  rmhd_gamma mhd_eta tc_k_para eqpar(grav1.2_) vc_mu
+    !  eos%gamma mhd_eta tc_k_para eqpar(grav1.2_) vc_mu
     !
     ! and the problem specific one:
     ! ----------------------------
@@ -103,7 +104,6 @@ contains
     endif
     
     temptop=zz0
-    rmhd_gamma=gamma
     usr_grav=-(qmpoly+one)
     
     ! dissipative parameters
@@ -125,14 +125,14 @@ contains
        call mpistop("Negative or too small value for eta**2")
     endif
     
-    rmhd_eta=dsqrt(eta2)
-    vc_mu=rmhd_eta*sigma/zeta0
-    tc_fl%tc_k_para=(gamma/(gamma-one))*rmhd_eta/zeta0
-    bstr=dsqrt(qchand*vc_mu*rmhd_eta)
+    mhd_eta=dsqrt(eta2)
+    vc_mu=mhd_eta*sigma/zeta0
+    tc_fl%tc_k_para=(gamma/(gamma-one))*mhd_eta/zeta0
+    bstr=dsqrt(qchand*vc_mu*mhd_eta)
     
     if (mype==0.and.first) then
       write(*,*)'dimensionless values for dissipative coefficients:'
-      write(*,*)'resistivity          eta=',rmhd_eta
+      write(*,*)'resistivity          eta=',mhd_eta
       write(*,*)'viscosity             mu=',vc_mu
       write(*,*)'thermal conduction tc_k_para=',tc_fl%tc_k_para
       write(*,*)'dimensionless magnetic field strength:',bstr
@@ -181,8 +181,8 @@ contains
     w(ix^S,mom(1))=dvx*dsin(x(ix^S,1)*nkx)*dsin(x(ix^S,2)*nky){^IFTHREED *dsin(x(ix^S,3)*nkz)}
     w(ix^S,mom(2))=dvy*dsin(x(ix^S,1)*nkx)*dsin(x(ix^S,2)*nky){^IFTHREED *dsin(x(ix^S,3)*nkz)}
     {^IFTHREED w(ix^S,mom(3))=zero }
-    w(ix^S,r_e) = const_rad_a*((zz0+one-x(ix^S,2))*unit_temperature)**4.d0/unit_pressure 
-    call rmhd_to_conserved(ixG^L,ix^L,w,x)
+    w(ix^S,iw_r_e) = const_rad_a*((zz0+one-x(ix^S,2))*unit_temperature)**4.d0/unit_pressure 
+    call eos%to_conserved(ixG^L,ix^L,w,x)
 
     if(mype == 0.and.first)then
        print *,"radn energy magnitude ~ ", const_rad_a*(unit_temperature)**4.d0/unit_pressure 
@@ -197,7 +197,7 @@ contains
        print *,"unit_magneticfield = ",unit_magneticfield
        print *,"unit_radflux = ",unit_radflux
        print *,"unit_opacity = ",unit_opacity
-       print *,"He_abundance = ",He_abundance
+       print *,"eos%He_abundance = ",eos%He_abundance
        print *,"eq_state_units = ",eq_state_units
        print *,"H_ion_fr = ",H_ion_fr
        print *,"He_ion_fr2 = ",He_ion_fr2
@@ -205,11 +205,11 @@ contains
     endif
   end subroutine initonegrid_usr
 
-  subroutine specialbound_usr(qt,ixG^L,ixO^L,iB,w,x)
+  subroutine specialbound_usr(qdt,qt,ixG^L,ixO^L,iB,w,x)
     use mod_global_parameters 
     ! special boundary types, user defined
     integer, intent(in) :: ixO^L, iB, ixG^L
-    double precision, intent(in) :: qt, x(ixG^S,1:ndim)
+    double precision, intent(in) :: qdt, qt, x(ixG^S,1:ndim)
     double precision, intent(inout) :: w(ixG^S,1:nw)
 
     double precision :: tempb(ixG^S)
@@ -228,7 +228,7 @@ contains
       ! in nghostcells rows above the bottom boundary: switch to primitive
       ixIMmin2=ixOmax2+1;ixIMmax2=ixOmax2+nghostcells;
       ixIMmin1=ixOmin1;ixIMmax1=ixOmax1;
-      call rmhd_to_primitive(ixG^L,ixIM^L,w,x)
+      call eos%to_primitive(ixG^L,ixIM^L,w,x)
       do ix2=ixOmax2,ixOmin2,-1
          w(ixOmin1:ixOmax1,ix2,rho_)= w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,rho_)
          w(ixOmin1:ixOmax1,ix2,mom(1)) = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mom(1))
@@ -236,7 +236,7 @@ contains
          w(ixOmin1:ixOmax1,ix2,mag(1)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mag(1))
          w(ixOmin1:ixOmax1,ix2,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mag(2))
          !case1
-         w(ixOmin1:ixOmax1,ix2,r_e)= w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,r_e) 
+         w(ixOmin1:ixOmax1,ix2,iw_r_e)= w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,iw_r_e) 
       enddo
       ! fill temperature array: extrapolate linearly with fixed dT/dy=-1, from bottom row
       do ix2=ixOmin2,ixOmax2
@@ -251,7 +251,7 @@ contains
       ixIMmin2=ixOmax2+1;ixIMmax2=ixOmax2+nghostcells;
       ixIMmin1=ixOmin1;ixIMmax1=ixOmax1;
       ixIMmin3=ixOmin3;ixIMmax3=ixOmax3;
-      call rmhd_to_primitive(ixG^L,ixIM^L,w,x)
+      call eos%to_primitive(ixG^L,ixIM^L,w,x)
       do ix2=ixOmax2,ixOmin2,-1
          w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,rho_)= w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,rho_)
          w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mom(1)) = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,mom(1))
@@ -271,9 +271,9 @@ contains
       w(ixO^S,p_)=w(ixO^S,rho_)*tempb(ixO^S)
       }
       ! now reset the inner mesh values to conservative
-      call rmhd_to_conserved(ixG^L,ixIM^L,w,x)
+      call eos%to_conserved(ixG^L,ixIM^L,w,x)
       ! now switch to conservative in full bottom ghost layer
-      call rmhd_to_conserved(ixG^L,ixO^L,w,x)
+      call eos%to_conserved(ixG^L,ixO^L,w,x)
     case(4)
       ! special top boundary
       ! ensure the fixed temperature in ghost layers
@@ -286,7 +286,7 @@ contains
       ! in nghostcells rows below top boundary: switch to primitive
       ixIMmin2=ixOmin2-nghostcells;ixIMmax2=ixOmin2-1;
       ixIMmin1=ixOmin1;ixIMmax1=ixOmax1;
-      call rmhd_to_primitive(ixG^L,ixIM^L,w,x)
+      call eos%to_primitive(ixG^L,ixIM^L,w,x)
       do ix2=ixOmin2,ixOmax2,+1
           w(ixOmin1:ixOmax1,ix2,rho_)= w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,rho_)
           w(ixOmin1:ixOmax1,ix2,mom(1)) = w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,mom(1))
@@ -296,7 +296,7 @@ contains
       enddo
       w(ixO^S,p_)=w(ixO^S,rho_)*temptop
       !case1
-      w(ixO^S,r_e)= const_rad_a*(temptop*unit_temperature)**4.d0/unit_pressure 
+      w(ixO^S,iw_r_e)= const_rad_a*(temptop*unit_temperature)**4.d0/unit_pressure 
     
       }
       {^IFTHREED
@@ -304,7 +304,7 @@ contains
       ixIMmin2=ixOmin2-nghostcells;ixIMmax2=ixOmin2-1;
       ixIMmin1=ixOmin1;ixIMmax1=ixOmax1;
       ixIMmin3=ixOmin3;ixIMmax3=ixOmax3;
-      call rmhd_to_primitive(ixG^L,ixIM^L,w,x)
+      call eos%to_primitive(ixG^L,ixIM^L,w,x)
       do ix2=ixOmin2,ixOmax2,+1
           w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,rho_)= w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,ixOmin3:ixOmax3,rho_)
           w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mom(1)) = w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,ixOmin3:ixOmax3,mom(1))
@@ -317,9 +317,9 @@ contains
       w(ixO^S,p_)=w(ixO^S,rho_)*temptop
       }
       ! now reset the inner mesh values to conservative
-      call rmhd_to_conserved(ixG^L,ixIM^L,w,x)
+      call eos%to_conserved(ixG^L,ixIM^L,w,x)
       ! now switch to conservative in full bottom ghost layer
-      call rmhd_to_conserved(ixG^L,ixO^L,w,x)
+      call eos%to_conserved(ixG^L,ixO^L,w,x)
     case default
        call mpistop("Special boundary is not defined for this region")
     end select
@@ -343,7 +343,7 @@ contains
       mg%bc(iB, mg_iphi)%bc_value = (const_rad_a*(temptop*unit_temperature)**4)/unit_pressure
 
     case default
-      print *, "Not a standard: ", typeboundary(r_e, iB)
+      print *, "Not a standard: ", typeboundary(iw_r_e, iB)
       error stop "Set special bound for this Boundary "
     end select
   end subroutine mg_boundary_conditions
@@ -392,7 +392,7 @@ contains
     integer          :: idirmin
 
     ! output Te
-    call rmhd_get_pthermal(w,x,ixI^L,ixO^L,tmp)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,tmp)
     w(ixO^S,nw+1)=tmp(ixO^S)/w(ixO^S,rho_)
     ! output B 
     w(ixO^S,nw+2)=dsqrt(sum(w(ixO^S,mag(:))**2,dim=ndim+1))
@@ -642,7 +642,7 @@ contains
     double precision, intent(in) :: w_vec(w_size)
     double precision             :: rad_energy
 
-    rad_energy = w_vec(r_e)
+    rad_energy = w_vec(iw_r_e)
   end function radiation
 
   ! Function that calculates internal energy, to be used in get_volume_average_func

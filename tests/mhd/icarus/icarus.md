@@ -1,4 +1,4 @@
-05/11/25
+11/12/25
 
 Tinatin Baratashvili
 
@@ -28,14 +28,14 @@ make -j 4
 you can run the testcase with
 
 ```
-mpirun -np 4 ./amrvac -i amrvac.par
+mpirun –np 4 ./amrvac -i test_icarus.par
 ```
 Note* 4 here is number of CPUs, can be modified depending on the availability of CPUs.
 
 
 # Standard testcase description
 
-This run will be short, to check that it does not crash and can be finished successfully. I would recommend not modifying this amrvac.par file, instead to work with test_icarus.par file which is also uploaded in this directory. By default this testcase runs a simulation in low resolution, uniform grid, without AMR, with 5 cone CMEs. The simulation lasts 24 days and the output is saved after 14 days.
+I would recommend not modifying this amrvac.par file, instead to work with test_icarus.par file. By default this testcase runs a simulation in low resolution, uniform grid, without AMR, with 5 cone CMEs from the datacube that is already provided. The simulation lasts 24 days and the output is saved after 10 days.
 
 
 
@@ -47,6 +47,7 @@ The most important files to run Icarus are the
 - Parameter file that fixes the numerical method, computational domain and Icarus specific settings
 - The solar wind boundary (.vtk file)
 - The CME parameter file (.in file)
+- The CME datacube if CMEs are injected
 
 # Setting Icarus parameters
 
@@ -61,6 +62,7 @@ Name | Standard values | Description
 `cme_insertion` | 0 | Duration is given in days
 `cme_parameter_file` | 'cme_parameters.in' | The file containing CME parameters
 `magnetogram_time` |'2015-06-25T01:04:00' | Magnetogram timestamp in 'YYYY-MM-DDTHH:mm:ss' format
+`amr_start_hour` | >= 0 |When the AMR refinement starts
 
 
 # Changing the parameters

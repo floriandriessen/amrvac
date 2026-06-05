@@ -13,25 +13,20 @@ contains
     use mod_usr_methods, only: usr_get_dt
     use mod_supertimestepping, only: set_dt_sts_ncycles, is_sts_initialized, sourcetype_sts,sourcetype_sts_split
     use mod_comm_lib, only: mpistop
-    use mod_trac, only: trac_nzones, tco_mype_zone, tco_global_zone, tco_prev_zone, get_trac_zone
-
-    integer :: iigrid, igrid, ncycle, ncycle2, ifile, idim, izone
+  
+    integer :: iigrid, igrid, ncycle, ncycle2, ifile, idim
     double precision   :: dtnew, qdtnew, dtmin_mype, factor, dx^D, dxmin^D
     double precision   :: dtmax, dxmin, cmax_mype
-    double precision   :: a2max_mype(ndim), tco_mype, tco_global, Tmax_mype, T_peak
+    double precision   :: tco_mype, tco_global, Tmax_mype, T_peak
     double precision   :: trac_alfa, trac_dmax, trac_tau, T_bott
     integer, parameter :: niter_print = 2000
   
     if (dtpar<=zero) then
       dtmin_mype  = bigdouble
       cmax_mype   = zero
-      a2max_mype  = zero
       tco_mype    = zero
       Tmax_mype   = zero
-      {^IFONED
-      if(allocated(tco_mype_zone)) tco_mype_zone = zero
-      }
-      !$OMP PARALLEL DO PRIVATE(igrid,qdtnew,dtnew,dx^D) REDUCTION(min:dtmin_mype) REDUCTION(max:cmax_mype,a2max_mype)
+      !$OMP PARALLEL DO PRIVATE(igrid,qdtnew,dtnew,dx^D) REDUCTION(min:dtmin_mype) REDUCTION(max:cmax_mype)
       do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
         dtnew=bigdouble
         dx^D=rnode(rpdx^D_,igrid);
@@ -40,12 +35,12 @@ contains
         if(local_timestep) then
           ps(igrid)%dt(ixM^T)=bigdouble
         endif
-        call getdt_courant(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x,&
-             cmax_mype,a2max_mype)
+        call getdt_courant_and_phys(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x,&
+             cmax_mype)
         dtnew=min(dtnew,qdtnew)
   
-        call phys_get_dt(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x)
-        dtnew=min(dtnew,qdtnew)
+!        call phys_get_dt(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x)
+!        dtnew=min(dtnew,qdtnew)
   
         if (associated(usr_get_dt)) then
            call usr_get_dt(ps(igrid)%w,ixG^LL,ixM^LL,qdtnew,dx^D,ps(igrid)%x)
@@ -131,8 +126,6 @@ contains
     ! so does GLM: 
     if(need_global_cmax)   call MPI_ALLREDUCE(cmax_mype,  cmax_global,  1,&
          MPI_DOUBLE_PRECISION,MPI_MAX,icomm,ierrmpi)
-    if(need_global_a2max)  call MPI_ALLREDUCE(a2max_mype, a2max_global, ndim,&
-         MPI_DOUBLE_PRECISION,MPI_MAX,icomm,ierrmpi)
   
     ! transition region adaptive thermal conduction (Johnston 2019 ApJL, 873, L22)
     ! transition region adaptive thermal conduction (Johnston 2020 A&A, 635, 168)
@@ -140,60 +133,43 @@ contains
       T_bott=2.d4/unit_temperature
       call MPI_ALLREDUCE(Tmax_mype,T_peak,1,MPI_DOUBLE_PRECISION,&
            MPI_MAX,icomm,ierrmpi)
-      ! TODO trac stuff should not be here at all
       if(phys_trac_type==1) then
         !> 1D TRAC method
         trac_dmax=0.1d0
         trac_tau=1.d0/unit_time
         trac_alfa=trac_dmax**(dt/trac_tau)
+        tco_global=zero
         {^IFONED
-        call MPI_ALLREDUCE(tco_mype_zone,tco_global_zone,trac_nzones,MPI_DOUBLE_PRECISION,&
+        call MPI_ALLREDUCE(tco_mype,tco_global,1,MPI_DOUBLE_PRECISION,&
              MPI_MAX,icomm,ierrmpi)
-        !> Zone-level Tcoff persistence (replaces per-block special_values(2) relaxation).
-        !> When hd_get_tcutoff returns 0 for all blocks in a zone (TR disrupted by
-        !> oscillations), freeze Tcoff at its previous value instead of decaying to T_bott.
-        !> When a positive but lower Tcoff is detected, apply asymmetric relaxation.
-        do izone = 1, trac_nzones
-          if (tco_global_zone(izone) == zero .and. tco_prev_zone(izone) > zero) then
-            ! No under-resolved TR detected but one existed before — freeze
-            tco_global_zone(izone) = tco_prev_zone(izone)
-          else if (tco_global_zone(izone) > zero .and. &
-                   tco_global_zone(izone) < trac_alfa * tco_prev_zone(izone)) then
-            ! Detected a lower Tcoff — apply asymmetric relaxation (slow decay)
-            tco_global_zone(izone) = trac_alfa * tco_prev_zone(izone)
-          end if
-          ! If tco_global_zone >= tco_prev_zone: instant jump up (Johnston Eq. 9)
-          tco_prev_zone(izone) = tco_global_zone(izone)
-        end do
         }
-        tco_global=tco_global_zone(1)
       endif
       if(.not. associated(phys_trac_after_setdt)) call mpistop("phys_trac_after_setdt not set")
       ! trac_alfa,tco_global are set only for phys_trac_type=1, should not be a problem when not initialized
       ! side effect of modifying T_bott from mod_trac -> T_bott sent as param
       call phys_trac_after_setdt(tco_global,trac_alfa,T_peak, T_bott)
-    end if
-
+    end if 
+  
     contains
   
       !> compute CFL limited dt (for variable time stepping)
-      subroutine getdt_courant(w,ixI^L,ixO^L,dtnew,dx^D,x,cmax_mype,a2max_mype)
+      subroutine getdt_courant_and_phys(w,ixI^L,ixO^L,dtnew,dx^D,x,cmax_mype)
         use mod_global_parameters
-        use mod_physics, only: phys_get_cmax,phys_get_a2max, &
+        use mod_physics, only: phys_get_cmax, &
                                phys_get_tcutoff,phys_get_auxiliary, phys_to_primitive
   
         integer, intent(in) :: ixI^L, ixO^L
         double precision, intent(in) :: x(ixI^S,1:ndim)
         double precision, intent(in)    :: dx^D
-        double precision, intent(inout) :: w(ixI^S,1:nw), dtnew, cmax_mype, a2max_mype(ndim)
+        double precision, intent(inout) :: w(ixI^S,1:nw), dtnew, cmax_mype
   
         double precision :: courantmax, dxinv(1:ndim), courantmaxtot, courantmaxtots
         double precision :: cmax(ixI^S), cmaxtot(ixI^S), wprim(ixI^S,1:nw)
-        double precision :: a2max(ndim), tco_local, Tmax_local
+        double precision :: tco_local, Tmax_local
+        double precision :: dtnewphys
         integer :: idims
         integer :: hxO^L
-        integer :: izone_trac
-
+  
         dtnew=bigdouble
   
         ! local timestep dt has to be calculated in the 
@@ -211,21 +187,9 @@ contains
         wprim=w
         call phys_to_primitive(ixI^L,ixI^L,wprim,x)
 
-        if(need_global_a2max) then
-          call phys_get_a2max(w,x,ixI^L,ixO^L,a2max)
-          do idims=1,ndim
-            a2max_mype(idims) = max(a2max_mype(idims),a2max(idims))
-          end do
-        end if
-
         if(phys_trac) then
           call phys_get_tcutoff(ixI^L,ixO^L,wprim,x,tco_local,Tmax_local)
-          {^IFONED
-          if(phys_trac_type==1) then
-            izone_trac = get_trac_zone(0.5d0*(rnode(rpxmin1_,igrid)+rnode(rpxmax1_,igrid)))
-            tco_mype_zone(izone_trac) = max(tco_mype_zone(izone_trac), tco_local)
-          end if
-          }
+          {^IFONED tco_mype=max(tco_mype,tco_local) }
           Tmax_mype=max(Tmax_mype,Tmax_local)
         end if
   
@@ -264,10 +228,6 @@ contains
           end if
   
         case (type_summax)
-          !TODO this should be mod_input_output?
-          if(local_timestep) then
-            call mpistop("Type courant summax incompatible with local_timestep")
-          end if
           courantmax=zero
           courantmaxtot=zero
           if(slab_uniform) then
@@ -289,9 +249,6 @@ contains
           ! courantmaxtot='summed max(c/dx)'
           if (courantmaxtot>smalldouble)  dtnew=min(dtnew,courantpar/courantmaxtot)
         case (type_minimum)
-          if(local_timestep) then
-            call mpistop("Type courant not implemented for local_timestep, use maxsum")
-          endif  
           courantmax=zero
           if(slab_uniform) then
             ^D&dxinv(^D)=one/dx^D;
@@ -310,6 +267,11 @@ contains
           ! courantmax='max(c/dx)'
           if (courantmax>smalldouble) dtnew=min(dtnew,courantpar/courantmax)
         end select
-      end subroutine getdt_courant
+
+
+       call phys_get_dt(wprim,ixI^L,ixO^L,dtnewphys,dx^D,x)
+       dtnew=min(dtnew,dtnewphys)
+
+      end subroutine getdt_courant_and_phys
   end subroutine setdt
 end module mod_dt

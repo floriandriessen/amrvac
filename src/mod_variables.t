@@ -59,9 +59,10 @@ module mod_variables
 
   !> Index of temperature
   integer :: iw_te = -1
-  
+
   !> Index of heat flux
   integer :: iw_q = -1
+
 
   !> Indices of the magnetic field components
   integer, allocatable, protected :: iw_mag(:)
@@ -118,8 +119,8 @@ contains
     if (add_bc) nwfluxbc = nwfluxbc + 1
 
     if (.not. present(ix)) then
-      prim_wnames(nwflux) = name_cons
-      cons_wnames(nwflux) = name_prim
+      cons_wnames(nwflux) = name_cons
+      prim_wnames(nwflux) = name_prim
     else
       write(cons_wnames(nwflux),"(A,I0)") name_cons, ix
       write(prim_wnames(nwflux),"(A,I0)") name_prim, ix

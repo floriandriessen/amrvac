@@ -1,7 +1,9 @@
 F90 := mpif90
 FFLAGS := -c
+# -fallow-argument-mismatch: silence gfortran 10+ checks on MPI choice-buffer
+# arguments. Not masking a code bug; matches OpenMPI/MPICH guidance.
 F90FLAGS := -cpp -ffree-form -fimplicit-none -O2 -finit-real=snan -finit-integer=-2147483648	\
 -g -fbacktrace -fcheck=all -ffpe-trap=invalid,zero \
 -Wall -Wno-unused-dummy-argument -Wno-unused-function -Wno-unused -Wno-zerotrip \
--Wno-maybe-uninitialized
+-Wno-maybe-uninitialized -fallow-argument-mismatch
 LINK := $(F90) $(F90FLAGS)

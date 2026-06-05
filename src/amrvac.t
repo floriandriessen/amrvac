@@ -18,7 +18,7 @@ program amrvac
   use mod_multigrid_coupling
   use mod_convert, only: init_convert
   use mod_physics
-  use mod_eos, only: eos_init, prepare_eos_w_fields
+  use mod_eos, only: eos, eos_init, eos_finalise, prepare_eos_w_fields
   use mod_amr_grid, only: resettree, settree, resettree_convert
   use mod_trac, only: initialize_trac_after_settree
   use mod_convert_files, only: generate_plotfile
@@ -46,7 +46,18 @@ program amrvac
   ! the user_init routine should load a physics module
   call usr_init()
 
-  call eos_finalise() !> associate various eos methods based on physics module
+  call eos_finalise() !> finalise the EoS dispatch (tables, pointers) for the loaded physics
+
+  !> The EoS dispatch is now complete. Wire it into the two lower-level modules
+  !> that must call the EoS but cannot depend on mod_eos (hence these pointers).
+  !> Both are set only when there is real work to do and guarded at the call site:
+  !>   - the ghost-cell update refreshes Te/ne on boundary cells, which only the
+  !>     LTE EoS needs (FI's update_eos is a no-op);
+  !>   - the physics layer binds the EoS into its source terms (thermal
+  !>     conduction / cooling / radiation fluid objects), set only by physics
+  !>     modules that have an EoS hook.
+  if (eos%eos_type == 'LTE') update_eos_4_bc => eos%update_eos
+  if (associated(phys_bind_eos_to_source)) call phys_bind_eos_to_source()
 
   call initialize_amrvac() !> Grid bounds are set up here (ixG^D_ etc)
 
@@ -186,8 +197,9 @@ program amrvac
   call timeintegration()
 
   if (mype==0) then
+     time0=MPI_WTIME()-time0
      print*,'-------------------------------------------------------------------------------'
-     write(*,'(a,f17.3,a)')' Finished AMRVAC in : ',MPI_WTIME()-time0,' sec'
+     write(*,'(a,f17.3,a,f17.3,a)')' Finished AMRVAC in : ',time0,' sec', dble(npe)*time0/3.6d3,' core hour'
      print*,'-------------------------------------------------------------------------------'
   end if
 
@@ -209,12 +221,11 @@ contains
 
     double precision :: time_last_print, time_write0, time_write, time_before_advance, dt_loop
     integer(kind=8) ncells_update
-    integer :: level, ifile, fixcount, ncells_block, igrid, iigrid
+    integer :: level, ifile, ncells_block, igrid, iigrid
     logical :: crashall
 
     time_in=MPI_WTIME()
     time_last_print = -bigdouble
-    fixcount=1
 
     n_saves(filelog_:fileout_) = snapshotini
 
@@ -358,18 +369,13 @@ contains
           call process_advanced(it,global_time)
        end if
 
-       ! update AMR mesh and tree
+       ! update time variables
+       it = it + 1
+       global_time = global_time + dt
+
+       ! update AMR mesh and tree (upstream-style: mod-based regrid)
        timegr0=MPI_WTIME()
-       if(ditregrid>1) then
-          if(fixcount<ditregrid) then
-             fixcount=fixcount+1
-          else
-             if (refine_max_level>1 .and. .not.(fixgrid())) call resettree
-             fixcount=1
-          end if
-       else
-          if (refine_max_level>1 .and. .not.(fixgrid())) call resettree
-       end if
+       if (mod(it,ditregrid)==0 .and. refine_max_level>1 .and. .not.(fixgrid())) call resettree
        tw_regrid=MPI_WTIME()-timegr0
        timegr_tot=timegr_tot+tw_regrid
 
@@ -390,10 +396,6 @@ contains
          call flush(timing_unit)
        end if
 
-       ! update time variables
-       it = it + 1
-       global_time = global_time + dt
-
        if(it>9000000)then
           it = slowsteps+it_init
           itsavelast(:)=0
@@ -407,6 +409,7 @@ contains
     end do time_evol
 
     if(use_particles) then
+      call write_particle_output()
       call finish_gridvars()
     end if
 

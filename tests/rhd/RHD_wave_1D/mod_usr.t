@@ -2,7 +2,8 @@
 module mod_usr
 
   ! Include a physics module
-  use mod_rhd
+  use mod_hd
+  use mod_eos, only: eos
 
   implicit none
 
@@ -37,7 +38,7 @@ contains
     usr_internal_bc => Initialize_Wave
 
     ! Active the physics module
-    call rhd_activate()
+    call hd_activate()
 
   end subroutine usr_init
 
@@ -49,8 +50,8 @@ contains
     call params_read(par_files)
 
 
-    p0 = eg0*(rhd_gamma - one)
-    ca = dsqrt(rhd_gamma*p0/rho0)
+    p0 = eg0*(eos%gamma - one)
+    ca = dsqrt(eos%gamma*p0/rho0)
     a0 = dsqrt(p0/rho0)
 
     T0 = const_mp*fld_mu/const_kB*(p0/rho0)
@@ -59,8 +60,8 @@ contains
     omega = 2.d0*dpi*a0/wvl
     wavenumber = 2.d0*dpi/wvl
 
-    Bo = 4*rhd_gamma*ca*eg0/(const_c*Er0)
-    r_Bo = Er0/(4*rhd_gamma*eg0)
+    Bo = 4*eos%gamma*ca*eg0/(const_c*Er0)
+    r_Bo = Er0/(4*eos%gamma*eg0)
 
     !-------------------
     tau_c = const_c*fld_kappa0*rho0/omega
@@ -69,11 +70,11 @@ contains
     ! Choose independent normalization units if using dimensionless variables.
     unit_length = wvl ! cm
     unit_velocity   = a0 ! cm/s
-    unit_numberdensity = rho0/((1.d0+4.d0*He_abundance)*mp_cgs) ! cm^-3
+    unit_numberdensity = rho0/((1.d0+4.d0*eos%He_abundance)*mp_cgs) ! cm^-3
 
-    unit_density=(1.d0+4.d0*He_abundance)*mp_cgs*unit_numberdensity
+    unit_density=(1.d0+4.d0*eos%He_abundance)*mp_cgs*unit_numberdensity
     unit_pressure=unit_density*unit_velocity**2
-    unit_temperature=unit_pressure/((2.d0+3.d0*He_abundance)*unit_numberdensity*const_kb)
+    unit_temperature=unit_pressure/((2.d0+3.d0*eos%He_abundance)*unit_numberdensity*const_kb)
     unit_time=unit_length/unit_velocity
 
     unit_radflux = unit_velocity*unit_pressure
@@ -114,7 +115,7 @@ contains
     A_rho = ampl
     A_v = omega/(wavenumber*rho0)*A_rho
     A_p = omega**2/wavenumber**2*A_rho
-    A_e = 1.d0/(rhd_gamma-one)*p0/rho0*A_rho
+    A_e = 1.d0/(eos%gamma-one)*p0/rho0*A_rho
     A_Er = Er0/rho0*A_rho
 
   end subroutine initglobaldata_usr
@@ -157,16 +158,16 @@ contains
     temp(ixI^S) = (const_mp*fld_mu/const_kb)*press(ixI^S)/w(ixI^S, rho_)&
     *(unit_pressure/unit_density)/unit_temperature
 
-    w(ixI^S, r_e) = const_rad_a*(temp(ixI^S)*unit_temperature)**4.d0/unit_pressure
+    w(ixI^S, iw_r_e) = const_rad_a*(temp(ixI^S)*unit_temperature)**4.d0/unit_pressure
 
   end subroutine initial_conditions
 
 
-  subroutine Initialize_Wave(level,qt,ixI^L,ixO^L,w,x)
+  subroutine Initialize_Wave(level,qt,qdt,ixI^L,ixO^L,w,x)
     use mod_global_parameters
     use mod_fld
     integer, intent(in)             :: ixI^L,ixO^L,level
-    double precision, intent(in)    :: qt
+    double precision, intent(in)    :: qt, qdt
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
@@ -183,7 +184,7 @@ contains
       temp(ixI^S) = (const_mp*fld_mu/const_kb)*press(ixI^S)/w(ixI^S, rho_)&
       *(unit_pressure/unit_density)/unit_temperature
 
-      w(ixI^S, r_e) = const_rad_a*(temp(ixI^S)*unit_temperature)**4.d0/unit_pressure
+      w(ixI^S, iw_r_e) = const_rad_a*(temp(ixI^S)*unit_temperature)**4.d0/unit_pressure
     endwhere
 
   end subroutine Initialize_Wave

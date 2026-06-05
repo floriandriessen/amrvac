@@ -1,6 +1,7 @@
 !> Magnetic bipolar field
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   implicit none
   integer, save :: nx1,nx2,nxbc^D
   integer, parameter :: jmax=8000
@@ -204,7 +205,7 @@ contains
       w(ixO^S,rho_)=sum(w(ixO^S,mag(:))**2,dim=ndim+1)
     end if
 
-    call mhd_to_conserved(ixI^L,ixO^L,w,x)
+    call eos%to_conserved(ixI^L,ixO^L,w,x)
 
   end subroutine initonegrid_usr
 
@@ -283,11 +284,11 @@ contains
 
   end subroutine driven_electric_field
 
-  subroutine specialbound_usr(qt,ixI^L,ixO^L,iB,w,x)
+  subroutine specialbound_usr(qdt,qt,ixI^L,ixO^L,iB,w,x)
     ! special boundary types, user defined
     use mod_global_parameters
     integer, intent(in) :: ixO^L, iB, ixI^L
-    double precision, intent(in) :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in) :: qdt, qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision :: tmp1(ixI^S),tmp2(ixI^S),pth(ixI^S),Qp(ixI^S)
     double precision :: xlen^D,dxb^D,startpos^D,coeffrho
@@ -343,7 +344,7 @@ contains
        if(mhd_energy) then
          ixIM^L=ixO^L;
          ixIMmin1=ixOmax1+1;ixIMmax1=ixOmax1+nghostcells;
-         call mhd_get_pthermal(w,x,ixI^L,ixIM^L,pth)
+         call eos%get_thermal_pressure(w,x,ixI^L,ixIM^L,pth)
          w(ixO^S,rho_)=w(ixOmax1+nghostcells:ixOmax1+1:-1,ixOmin2:ixOmax2,ixOmin3:ixOmax3,rho_)
          w(ixO^S,p_)=pth(ixOmax1+nghostcells:ixOmax1+1:-1,ixOmin2:ixOmax2,ixOmin3:ixOmax3)
        else if(mhd_adiab==0) then
@@ -354,7 +355,7 @@ contains
          w(ixO^S,rho_)=rhob*dexp(usr_grav*SRadius**2/Tiso*&
                        (1.d0/SRadius-1.d0/(x(ixO^S,3)+SRadius)))
        end if
-       call mhd_to_conserved(ixI^L,ixO^L,w,x)
+       call eos%to_conserved(ixI^L,ixO^L,w,x)
      case(2)
        w(ixO^S,mom(1))=-w(ixOmin1-1:ixOmin1-nghostcells:-1,ixOmin2:ixOmax2,ixOmin3:ixOmax3,mom(1))/&
                         w(ixOmin1-1:ixOmin1-nghostcells:-1,ixOmin2:ixOmax2,ixOmin3:ixOmax3,rho_)
@@ -403,7 +404,7 @@ contains
        if(mhd_energy) then
          ixIM^L=ixO^L;
          ixIMmin1=ixOmin1-nghostcells;ixIMmax1=ixOmin1-1;
-         call mhd_get_pthermal(w,x,ixI^L,ixIM^L,pth)
+         call eos%get_thermal_pressure(w,x,ixI^L,ixIM^L,pth)
          w(ixO^S,rho_)=w(ixOmin1-1:ixOmin1-nghostcells:-1,ixOmin2:ixOmax2,ixOmin3:ixOmax3,rho_)
          w(ixO^S,p_)=pth(ixOmin1-1:ixOmin1-nghostcells:-1,ixOmin2:ixOmax2,ixOmin3:ixOmax3)
        else if(mhd_adiab==0) then
@@ -413,7 +414,7 @@ contains
          w(ixO^S,rho_)=rhob*dexp(usr_grav*SRadius**2/Tiso*&
                        (1.d0/SRadius-1.d0/(x(ixO^S,3)+SRadius)))
        end if
-       call mhd_to_conserved(ixI^L,ixO^L,w,x)
+       call eos%to_conserved(ixI^L,ixO^L,w,x)
      case(3)
        w(ixO^S,mom(1))=-w(ixOmin1:ixOmax1,ixOmax2+nghostcells:ixOmax2+1:-1,ixOmin3:ixOmax3,mom(1))/&
                         w(ixOmin1:ixOmax1,ixOmax2+nghostcells:ixOmax2+1:-1,ixOmin3:ixOmax3,rho_)
@@ -462,7 +463,7 @@ contains
        if(mhd_energy) then
          ixIM^L=ixO^L;
          ixIMmin2=ixOmax2+1;ixIMmax2=ixOmax2+nghostcells;
-         call mhd_get_pthermal(w,x,ixI^L,ixIM^L,pth)
+         call eos%get_thermal_pressure(w,x,ixI^L,ixIM^L,pth)
          w(ixO^S,p_)=pth(ixOmin1:ixOmax1,ixOmax2+nghostcells:ixOmax2+1:-1,ixOmin3:ixOmax3)
          w(ixO^S,rho_)=w(ixOmin1:ixOmax1,ixOmax2+nghostcells:ixOmax2+1:-1,ixOmin3:ixOmax3,rho_)
        else if(mhd_adiab==0) then
@@ -472,7 +473,7 @@ contains
          w(ixO^S,rho_)=rhob*dexp(usr_grav*SRadius**2/Tiso*&
                        (1.d0/SRadius-1.d0/(x(ixO^S,3)+SRadius)))
        end if
-       call mhd_to_conserved(ixI^L,ixO^L,w,x)
+       call eos%to_conserved(ixI^L,ixO^L,w,x)
      case(4)
        w(ixO^S,mom(1))=-w(ixOmin1:ixOmax1,ixOmin2-1:ixOmin2-nghostcells:-1,ixOmin3:ixOmax3,mom(1))/&
                         w(ixOmin1:ixOmax1,ixOmin2-1:ixOmin2-nghostcells:-1,ixOmin3:ixOmax3,rho_)
@@ -521,7 +522,7 @@ contains
        if(mhd_energy) then
          ixIM^L=ixO^L;
          ixIMmin2=ixOmin2-nghostcells;ixIMmax2=ixOmin2-1;
-         call mhd_get_pthermal(w,x,ixI^L,ixIM^L,pth)
+         call eos%get_thermal_pressure(w,x,ixI^L,ixIM^L,pth)
          w(ixO^S,p_)=pth(ixOmin1:ixOmax1,ixOmin2-1:ixOmin2-nghostcells:-1,ixOmin3:ixOmax3)
          w(ixO^S,rho_)=w(ixOmin1:ixOmax1,ixOmin2-1:ixOmin2-nghostcells:-1,ixOmin3:ixOmax3,rho_)
        else if(mhd_adiab==0) then
@@ -531,7 +532,7 @@ contains
          w(ixO^S,rho_)=rhob*dexp(usr_grav*SRadius**2/Tiso*&
                        (1.d0/SRadius-1.d0/(x(ixO^S,3)+SRadius)))
        end if
-       call mhd_to_conserved(ixI^L,ixO^L,w,x)
+       call eos%to_conserved(ixI^L,ixO^L,w,x)
      case(5)
        w(ixO^S,mom(1))=-w(ixOmin1:ixOmax1,ixOmin2:ixOmax2,ixOmax3+nghostcells:ixOmax3+1:-1,mom(1))/&
                         w(ixOmin1:ixOmax1,ixOmin2:ixOmax2,ixOmax3+nghostcells:ixOmax3+1:-1,rho_)
@@ -592,7 +593,7 @@ contains
          w(ixO^S,rho_)=rhob*dexp(usr_grav*SRadius**2/Tiso*&
                        (1.d0/SRadius-1.d0/(x(ixO^S,3)+SRadius)))
        end if
-       call mhd_to_conserved(ixI^L,ixO^L,w,x)
+       call eos%to_conserved(ixI^L,ixO^L,w,x)
      case(6)
        w(ixO^S,mom(1))=w(ixOmin1:ixOmax1,ixOmin2:ixOmax2,ixOmin3-1:ixOmin3-nghostcells:-1,mom(1))/&
                        w(ixOmin1:ixOmax1,ixOmin2:ixOmax2,ixOmin3-1:ixOmin3-nghostcells:-1,rho_)
@@ -645,7 +646,7 @@ contains
          ixIMmin3=ixOmin3-1;ixIMmax3=ixOmax3;
          call getggrav(tmp1,ixI^L,ixIM^L,x)
          ixIMmin3=ixOmin3-1;ixIMmax3=ixOmin3-1;
-         call mhd_get_pthermal(w,x,ixI^L,ixIM^L,pth)
+         call eos%get_thermal_pressure(w,x,ixI^L,ixIM^L,pth)
          pth(ixOmin3-1^%3ixO^S)=pth(ixOmin3-1^%3ixO^S)/w(ixOmin3-1^%3ixO^S,rho_)
          where(pth(ixOmin3-1^%3ixO^S)<1.618d0)
            pth(ixOmin3-1^%3ixO^S)=1.618d0
@@ -666,7 +667,7 @@ contains
            x(ixOmin3-1^%3ixO^S,3))-1.d0/(SRadius+x(ix3^%3ixO^S,3))))
          enddo
        end if
-       call mhd_to_conserved(ixI^L,ixO^L,w,x)
+       call eos%to_conserved(ixI^L,ixO^L,w,x)
      case default
       call mpistop("Special boundary is not defined for this region")
     end select
@@ -815,7 +816,7 @@ contains
     call get_divb(w,ixI^L,ixO^L,divb)
     w(ixO^S,nw+2)=divb(ixO^S)
     ! output the plasma beta p*2/B**2
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,tmp)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,tmp)
     where(B2(ixO^S)/=0.d0)
       w(ixO^S,nw+3)=2.d0*tmp(ixO^S)/B2(ixO^S)
     else where

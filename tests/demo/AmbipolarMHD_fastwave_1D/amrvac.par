@@ -59,7 +59,6 @@
         mhd_dump_full_vars = .true.
         mhd_gravity   =  .true.
         SI_unit       =  .true.
-        He_abundance  =  0d0
         H_ion_fr = 1d-3
         mhd_ambipolar =  .true.
         mhd_eta_ambi=1d-4
@@ -88,3 +87,7 @@
         random_ambi = .false.
 
 /
+ &eos_list
+  He_abundance = 0d0
+ /
+

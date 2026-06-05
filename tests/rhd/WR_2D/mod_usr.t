@@ -3,6 +3,7 @@ module mod_usr
 
   ! Include a physics module
   use mod_rhd
+  use mod_eos, only: eos
   use mod_fld
 
   implicit none
@@ -79,7 +80,7 @@ contains
     usr_refine_grid => refine_base
 
     ! Active the physics module
-    call rhd_activate()
+    call hd_activate()
 
     i_v1 = var_set_extravar("v1", "v1")
     i_v2 = var_set_extravar("v2", "v2")
@@ -345,7 +346,7 @@ contains
 
       if (rhd_energy) then
         temp(ixB^S) = (w(ixB^S,r_e)*unit_pressure/const_rad_a)**0.25d0/unit_temperature
-        w(ixB^S,e_) = w(ixB^S,rho_)*temp(ixB^S)/(rhd_gamma-1.d0) + half*(w(ixB^S,mom(1))**2+w(ixB^S,mom(2))**2)/w(ixB^S,rho_)
+        w(ixB^S,e_) = w(ixB^S,rho_)*temp(ixB^S)/(eos%gamma-1.d0) + half*(w(ixB^S,mom(1))**2+w(ixB^S,mom(2))**2)/w(ixB^S,rho_)
       endif
 
 
@@ -426,13 +427,13 @@ contains
     !if (any(press(ixO^S) .lt. 0.d0)) then
       mean_p = max(sum(pth(ixO^S))/(block_nx1*block_nx2),small_pressure)
       where (pth(ixO^S) .le. small_pressure)
-        w(ixO^S,e_) = mean_p/(rhd_gamma - 1) +  0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1)/w(ixO^S,rho_)
+        w(ixO^S,e_) = mean_p/(eos%gamma - 1) +  0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1)/w(ixO^S,rho_)
       end where
     !endif
 
     !> Temperature ceil, Tmax 1d6
     where ((pth(ixO^S)/w(ixO^S,rho_)*unit_temperature) .gt. 1.d6)
-      w(ixO^S,e_) = 1.d6/unit_temperature*w(ixO^S,rho_)/(rhd_gamma - 1) &
+      w(ixO^S,e_) = 1.d6/unit_temperature*w(ixO^S,rho_)/(eos%gamma - 1) &
           + 0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1)/w(ixO^S,rho_)
     end where
 
@@ -1135,7 +1136,7 @@ subroutine get_kappa_CAK2(ixI^L,ixO^L,w,x,kappa)
     radius(ixO^S) = x(ixO^S,1)*unit_length
     mass = M_star*(unit_density*unit_length**3.d0)
 
-    call fld_get_opacity(w, x, ixI^L, ixO^L, kappa)
+    call fld_get_opacity_prim(w, x, ixI^L, ixO^L, kappa)
     call fld_get_radflux(w, x, ixI^L, ixO^L, rad_flux)
 
     if (rhd_energy) call rhd_get_tgas(w, x, ixI^L, ixO^L, Tgas)
@@ -1167,7 +1168,7 @@ subroutine get_kappa_CAK2(ixI^L,ixO^L,w,x,kappa)
     w(ixO^S,i_v1) = w(ixO^S,mom(1))/w(ixO^S,rho_)
     w(ixO^S,i_v2) = w(ixO^S,mom(2))/w(ixO^S,rho_)
     if (rhd_energy) w(ixO^S,i_p) = (w(ixO^S,e_) - 0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1) / w(ixO^S, rho_)) &
-          *(rhd_gamma - 1)
+          *(eos%gamma - 1)
 
     w(ixO^S,i_Trad) = Trad(ixO^S)*unit_temperature
     if (rhd_energy) w(ixO^S,i_Tgas) = Tgas(ixO^S)*unit_temperature

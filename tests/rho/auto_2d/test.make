@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=2
+SETUP_FLAGS := -d=2 -v=2
 SCHEME_DIR := ../../schemes
 
 SCHEMES := 1step_tvd 2step_tvdlf_mm 2step_tvdmu_al trap_hll_ko 3step_hll_cada	\

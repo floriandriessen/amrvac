@@ -10,6 +10,7 @@
 
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   implicit none
 
 contains
@@ -179,7 +180,7 @@ contains
       wlocal(ixG^T,1:nw) = ps(igrid)%w(ixG^T,1:nw)
       xlocal(ixG^T,1:ndim) = ps(igrid)%x(ixG^T,1:ndim)
       ! for some reason, get_pthermal only works with (ixG,ixG) not with (ixM,ixG)
-      call mhd_get_pthermal(wlocal,xlocal,ixG^LL,ixG^LL,pth)
+      call eos%get_thermal_pressure(wlocal,xlocal,ixG^LL,ixG^LL,pth)
       Te(ixG^T) = pth(ixG^T)/wlocal(ixG^T,rho_)
 
       ! Compare values on current grid to temporary max/min

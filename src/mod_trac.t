@@ -18,15 +18,7 @@ module mod_trac
   integer, allocatable :: trac_grid(:),ground_grid(:)
   integer :: ngrid_trac,ngrid_ground
   logical, allocatable :: trac_pe(:)
-  ! TRAC_simple multi-zone (type 1 only)
-  integer, public :: trac_nzones = 1
-  double precision, allocatable, public :: trac_zone_bounds(:)   ! size nzones-1
-  double precision, allocatable, public :: tco_mype_zone(:)      ! size nzones, per-rank max
-  double precision, allocatable, public :: tco_global_zone(:)    ! size nzones, post-reduce
-  double precision, allocatable, public :: tco_prev_zone(:)      ! size nzones, previous step
   public :: initialize_trac_after_settree
-  public :: init_trac_simple_zones
-  public :: get_trac_zone
 contains
 
   subroutine init_trac_line(mask)
@@ -151,64 +143,17 @@ contains
     }
   end subroutine init_trac_block
 
-  !> Initialize TRAC_simple multi-zone arrays from mod_global_parameters settings.
-  !> Called from initialize_trac_after_settree when phys_trac_type==1.
-  subroutine init_trac_simple_zones()
-    integer :: k
-    trac_nzones = phys_trac_nzones
-    allocate(trac_zone_bounds(max(1, trac_nzones-1)))
-    allocate(tco_mype_zone(trac_nzones))
-    allocate(tco_global_zone(trac_nzones))
-    allocate(tco_prev_zone(trac_nzones))
-    tco_mype_zone   = 0.d0
-    tco_global_zone = 0.d0
-    tco_prev_zone   = 0.d0
-    do k = 1, trac_nzones-1
-      if (phys_trac_zone_splits(k) < 0.d0) then
-        ! sentinel: auto even partition
-        trac_zone_bounds(k) = xprobmin1 + k*(xprobmax1-xprobmin1)/dble(trac_nzones)
-      else
-        trac_zone_bounds(k) = phys_trac_zone_splits(k)
-      end if
-    end do
-    if (mype==0) then
-      write(*,*) 'TRAC_simple: using ', trac_nzones, ' zone(s)'
-      do k = 1, trac_nzones-1
-        write(*,'(a,i2,a,es12.4)') '  zone boundary ', k, ' at x = ', trac_zone_bounds(k)
-      end do
-    end if
-    ! Warn if any boundary is within 10% of either end
-    do k = 1, trac_nzones-1
-      if (trac_zone_bounds(k) < xprobmin1 + 0.1d0*(xprobmax1-xprobmin1) .or. &
-          trac_zone_bounds(k) > xprobmax1 - 0.1d0*(xprobmax1-xprobmin1)) then
-        if (mype==0) write(*,*) 'WARNING: TRAC zone boundary ', k, ' is near a domain edge!'
-        if (mype==0) write(*,*) '  Zone boundaries must be in the CORONA (T >> Tcoff).'
-      end if
-    end do
-  end subroutine init_trac_simple_zones
-
-  !> Return zone index (1..trac_nzones) for a given x coordinate.
-  integer function get_trac_zone(x_cen)
-    double precision, intent(in) :: x_cen
-    integer :: k
-    get_trac_zone = trac_nzones   ! default: last zone
-    do k = 1, trac_nzones-1
-      if (x_cen <= trac_zone_bounds(k)) then
-        get_trac_zone = k
-        return
-      end if
-    end do
-  end function get_trac_zone
-
-  subroutine TRAC_simple(tco_global,T_peak)
-    double precision, intent(in) :: tco_global,T_peak
+  subroutine TRAC_simple(tco_global,trac_alfa,T_peak)
+    double precision, intent(in) :: tco_global, trac_alfa,T_peak
     integer :: iigrid, igrid
 
     do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
       {^IFONED
-      ps(igrid)%special_values(1)=tco_global_zone(get_trac_zone( &
-          0.5d0*(rnode(rpxmin1_,igrid)+rnode(rpxmax1_,igrid))))
+      ps(igrid)%special_values(1)=tco_global
       }
+      if(ps(igrid)%special_values(1)<trac_alfa*ps(igrid)%special_values(2)) then
+        ps(igrid)%special_values(1)=trac_alfa*ps(igrid)%special_values(2)
+      end if
       if(ps(igrid)%special_values(1) .lt. T_bott) then
         ps(igrid)%special_values(1)=T_bott
       else if(ps(igrid)%special_values(1) .gt. 0.2d0*T_peak) then
@@ -641,9 +586,7 @@ contains
     ixO^L=ixM^LL;
     do j=1,ngrid_trac
       igrid=trac_grid(j)
-      ! call phys_get_pthermal(ps(igrid)%w,ps(igrid)%x,ixI^L,ixI^L,ps(igrid)%wextra(ixI^S,iw_Tcoff))
-      ! call phys_get_rho(ps(igrid)%w,ps(igrid)%x,ixI^L,ixI^L,rho)
-      ! ps(igrid)%wextra(ixI^S,iw_Tcoff)=ps(igrid)%wextra(ixI^S,iw_Tcoff)/rho(ixI^S)
+      ! EoS-aware temperature (correct for LTE; equals p/rho for FI).
       call eos%get_Te(ps(igrid)%w,ps(igrid)%x,ixI^L,ixI^L,ps(igrid)%wextra(ixI^S,iw_Tcoff))
     enddo
   end subroutine get_Te_grid
@@ -901,7 +844,7 @@ contains
         !> do nothing here
       case(1)
         !> 1D TRAC method
-        call TRAC_simple(tco,T_peak)
+        call TRAC_simple(tco,trac_alfa,T_peak)
       case(2)
         !> LTRAC method, by iijima et al. 2021
         !> do nothing here 
@@ -919,7 +862,7 @@ contains
         !> 2D or 3D TRACB(lock) method with mask
         call TRACB(.true.,T_peak)
       case(7)
-        !> Johnston et al. 2021 local TRAC — clamp per-cell Tcoff
+        !> Johnston et al. 2021 local TRAC (clamp per-cell Tcoff)
         call LTRAC(T_peak)
       case default
         call mpistop("undefined TRAC method type")
@@ -932,7 +875,6 @@ contains
   
     if(phys_trac) then
       phys_trac_after_setdt => trac_after_setdt
-      if(phys_trac_type .eq. 1) call init_trac_simple_zones()
       if(phys_trac_type .eq. 3) then
         if(mype .eq. 0) write(*,*) 'Using TRACL(ine) global method'
         if(mype .eq. 0) write(*,*) 'By default, magnetic field lines are traced every 4 grid cells'

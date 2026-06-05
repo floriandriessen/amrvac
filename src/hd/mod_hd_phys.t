@@ -3,6 +3,7 @@ module mod_hd_phys
   use mod_thermal_conduction, only: tc_fluid
   use mod_radiative_cooling, only: rc_fluid
   use mod_thermal_emission, only: te_fluid
+  use mod_fld, only: fld_fluid
   use mod_physics
   use mod_eos
   use mod_comm_lib, only: mpistop
@@ -14,6 +15,12 @@ module mod_hd_phys
 
   !> Whether thermal conduction is added
   logical, public, protected              :: hd_thermal_conduction = .false.
+  !> Whether hyperbolic thermal conduction (Cattaneo relaxation) is used.
+  !> 1D only — the q-variable is treated as a scalar carrying the
+  !> heat flux along the only spatial direction.
+  logical, public, protected              :: hd_hyperbolic_thermal_conduction = .false.
+  !> Whether saturation is considered for hyperbolic TC
+  logical, public, protected              :: hd_htc_sat = .false.
   type(tc_fluid), allocatable, public :: tc_fl
   type(te_fluid), allocatable, public :: te_fl_hd
 
@@ -23,6 +30,14 @@ module mod_hd_phys
 
   !> Whether dust is added
   logical, public, protected              :: hd_dust = .false.
+
+  !> Whether dust is added using and implicit update in IMEX
+  logical, public, protected              :: hd_dust_implicit = .false.
+
+  !> Whether radiation-gas interaction is handled using flux limited diffusion
+  logical, public, protected              :: hd_radiation_fld = .false.
+  !> Radiation fluid object (gas-EoS callbacks for FLD), wired in hd_link_eos
+  type(fld_fluid), allocatable, public    :: fld_fl
 
   !> Whether viscosity is added
   logical, public, protected              :: hd_viscosity = .false.
@@ -66,11 +81,88 @@ module mod_hd_phys
   !> Index of the electron number density for LTE module
   integer, public, protected :: Ne_
 
+  !> Index of the radiation energy (when fld active)
+  integer, public, protected              :: r_e
+
   !> Indices of temperature
   integer, public, protected :: Te_
 
+  !> Index of the FIP passive scalar rho*fip in conserved form, fip in primitive form
+  integer, public, protected :: fip_ = -1
+
+  !> Whether FIP passive scalar is enabled
+  logical, public, protected :: hd_fip = .false.
+
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
+
+  !> Index of the hyperbolic-TC heat-flux variable (-1 if not present)
+  integer, public, protected              :: q_
+
+  !> Thermal-conductivity prefactor in hyperbolic TC, set in hd_physical_units.
+  !> Spitzer form: κ(T) = hypertc_kappa · T^{5/2}.
+  double precision, public                :: hypertc_kappa
+
+  !> Optional parfile override for hypertc_kappa (e.g. to match a constant-κ
+  !> parabolic TC run for benchmarking). Default -1.0 leaves the Spitzer
+  !> value computed from physical units.
+  double precision, public, protected     :: hd_htc_kappa_override = -1.0d0
+
+  !> Hyperdiffusion coefficient applied to the cell-refreshed q at the
+  !> end of each face-recipe substep. 4th-order undivided difference
+  !> smoother:  q -= alpha * (qdt/dt) * (q_{i+2} + q_{i-2}
+  !>                                     - 4(q_{i+1} + q_{i-1})
+  !>                                     + 6 q_i).
+  !> MURaM (Rempel 2017) uses 0.02. Damps cell-scale q oscillations
+  !> arising from kappa(T) amplifying small persistent T bumps in the
+  !> EoS-derived cell-centred T profile; without it, the face-recipe
+  !> q field has visible 5-cell-scale wiggles even where T is smooth.
+  !> This is the only one of the OLD code's three q-smoothers (HLL
+  !> diffusion, Koren reconstruction, hyperdiff) that the face-recipe
+  !> needs -- the architectural problems with the other two are not
+  !> reintroduced.
+  double precision, public, protected     :: hd_htc_hyp_diff = 0.02d0
+
+  !> Face-recipe heat-wave speed scaling: c_HTC,f = hd_htc_beta * c_max,f.
+  !> Higher value -> closer to diffusion limit (q tracks Spitzer noise
+  !> aggressively, AMR-triggering corona noise). Lower value -> more
+  !> hyperbolic (q lags Spitzer target by Delta_t/tau ~ 1/beta^2 per
+  !> step, dampening high-frequency noise). At our resolution beta=2-3
+  !> is the practical sweet spot: q evolves slowly enough that T-table
+  !> round-off noise doesn't propagate, but fast enough that real TR
+  !> conduction equilibrates within O(100) hydro timesteps.
+  double precision, public, protected     :: hd_htc_beta = 2.0d0
+
+  !> Cowie-McKee saturation coefficient: q_sat = hd_htc_sat_alpha *
+  !> rho * c_s^3. Standard convention is alpha ~ 1 (absorbs the
+  !> sqrt(m_p/m_e) factor that would appear if c_s were replaced by
+  !> the electron thermal speed). Default 1.0.
+  double precision, public, protected     :: hd_htc_sat_alpha = 1.0d0
+
+  !> Per-face energy-positivity safety fraction: |q_f^{n+1/2} dt A_f|
+  !> <= hd_htc_pos_eta * min(e_int_L V_L, e_int_R V_R). Default 0.5
+  !> leaves headroom against simultaneous PdV and cooling decrements.
+  double precision, public, protected     :: hd_htc_pos_eta = 0.5d0
+
+  !> Validity-monitor threshold for l_r,f / Delta_x_f. Warn if any face
+  !> exceeds this in a given block (printed once per dtsave_log step).
+  !> Default 0.1: above this, HTC is modifying the physics beyond pure
+  !> Spitzer; above 1.0 the local Spitzer approximation breaks down.
+  double precision, public, protected     :: hd_htc_validity_warn = 0.1d0
+
+  !> Gradient deadband: zero out the Spitzer face flux when
+  !>   abs(T_R - T_L) / max(T_L, T_R) < hd_htc_gradT_floor
+  !> This suppresses sign-flipping q noise driven by EoS-table round-off
+  !> (~1e-4 in T) being amplified by huge coronal kappa. Default 1.0e-3
+  !> sits 10x above the table noise floor but 5x below typical coronal
+  !> gradients (Delta_x / L_T ~ 5e-3 at our resolution), so it kills the
+  !> noise without suppressing real conduction. Set to 0.0 to disable.
+  double precision, public, protected     :: hd_htc_gradT_floor = 1.0d-3
+
+  !> Running max of l_r,f / dx_f across all face-recipe calls since
+  !> simulation start. Inspect post-hoc via debugger or dump alongside
+  !> dat files. Not reset per timestep -- monotonic non-decreasing.
+  double precision, public                :: hd_htc_validity_max_runtime = 0.0d0
 
   !> Index into wextra for escape probability column mass
   integer, public, protected              :: iw_colmass = -1
@@ -79,9 +171,6 @@ module mod_hd_phys
 
   !> The adiabatic constant
   double precision, public                :: hd_adiab = 1.0d0
-
-  !> The small_est allowed energy
-  double precision, protected             :: small_e
 
   !> Whether TRAC method is used
   logical, public, protected              :: hd_trac = .false.
@@ -136,6 +225,23 @@ module mod_hd_phys
   public :: hd_check_params
   public :: hd_check_w
   public :: hd_handle_small_values
+  public :: hd_e_to_ei
+  public :: hd_ei_to_e
+  ! hd_get_Rfactor was the FI pointer; FLD uses phys_get_Rfactor which is
+  ! bound by mod_hd_eos:bind_eos_to_source to eos%get_Rfactor.
+  ! Begin: following relevant for radiative hydro using FLD
+  ! first four are local and only of interest for mod_usr applications
+  ! where they can be used in diagnostics
+  ! NOTE those with _prim expect primitives on entry
+  public :: hd_get_pthermal_plus_pradiation
+  public :: hd_get_csrad2
+  public :: hd_get_trad
+  public :: hd_get_pradiation_from_prim
+  ! the following used in FLD modules
+  !    as pointer phys_get_csrad2
+  public :: hd_get_csrad2_prim
+  ! End: following relevant for radiative hydro using FLD
+  public :: hd_get_temperature_from_etot
 
 contains
 
@@ -146,11 +252,17 @@ contains
     integer                      :: n
 
     namelist /hd_list/ hd_energy, hd_n_tracer, hd_adiab, &
-    hd_dust, hd_thermal_conduction, hd_radiative_cooling, hd_viscosity, &
+    hd_dust, hd_dust_implicit, hd_thermal_conduction, &
+    hd_hyperbolic_thermal_conduction, hd_htc_sat, &
+    hd_htc_kappa_override, hd_htc_hyp_diff, &
+    hd_htc_beta, hd_htc_sat_alpha, hd_htc_pos_eta, hd_htc_validity_warn, &
+    hd_htc_gradT_floor, &
+    hd_radiative_cooling, hd_viscosity, &
     hd_gravity, H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
-    hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_trac_delta, hd_trac_v_thresh, hd_cak_force, &
-    hd_partial_ionization, hd_well_balanced
+    hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_trac_delta, hd_trac_v_thresh, &
+    hd_cak_force, hd_partial_ionization, hd_well_balanced, &
+    hd_radiation_fld, hd_fip
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -186,7 +298,6 @@ contains
     use mod_dust, only: dust_init
     use mod_viscosity, only: viscosity_init
     use mod_gravity, only: gravity_init
-    use mod_particles, only: particles_init
     use mod_rotating_frame, only:rotating_frame_init
     use mod_cak_force, only: cak_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
@@ -194,6 +305,7 @@ contains
     use mod_ionization_degree
     use mod_usr_methods, only: usr_Rfactor, usr_get_heating
     use mod_escape_probability, only: escape_prob_init
+    use mod_fld
 
     integer :: itr, idir
 
@@ -233,6 +345,10 @@ contains
         hd_thermal_conduction=.false.
         if(mype==0) write(*,*) 'WARNING: set hd_thermal_conduction=F when hd_energy=F'
       end if
+      if(hd_hyperbolic_thermal_conduction) then
+        hd_hyperbolic_thermal_conduction=.false.
+        if(mype==0) write(*,*) 'WARNING: set hd_hyperbolic_thermal_conduction=F when hd_energy=F'
+      end if
       if(hd_radiative_cooling) then
         hd_radiative_cooling=.false.
         if(mype==0) write(*,*) 'WARNING: set hd_radiative_cooling=F when hd_energy=F'
@@ -266,6 +382,22 @@ contains
        p_ = -1
     end if
 
+    ! HTC q-variable must be allocated BEFORE any wextra slots (Ne, Te, ...)
+    ! so its iw_q index doesn't collide with the wextra indices, which are
+    ! assigned from nw (not nwflux). ffHD does the same ordering.
+    if(hd_hyperbolic_thermal_conduction) then
+      q_ = var_set_q()
+      need_global_cmax=.true.
+      ! q is a noisy diagnostic-like quantity (face-recipe construction
+      ! produces cell-to-cell sign flips in nearly-uniform-T regions
+      ! where -kappa*grad(T) is round-off-dominated). Excluding it from
+      ! AMR refinement avoids triggering full-domain refinement everywhere.
+      ! Lohner already refines on rho and E.
+      if (allocated(w_refine_weight)) w_refine_weight(q_) = 0.0d0
+    else
+      q_=-1
+    end if
+
     if (eos%eos_type == 'LTE') then
       Ne_ = var_set_ne()
       Te_ = var_set_te()
@@ -277,9 +409,43 @@ contains
       Te_ = -1
     end if
 
+    if(hd_radiation_fld)then
+       if(hd_cak_force)then
+          if(mype==0) then
+            write(*,*)'Warning: CAK force addition together with FLD radiation'
+          endif
+       endif
+       if(hd_radiative_cooling)then
+          if(mype==0) then
+            write(*,*)'Warning: Optically thin cooling together with FLD radiation'
+          endif
+       endif
+       if(hd_dust.and.hd_dust_implicit)then
+          call mpistop('implicit dust addition not compatible with FLD radiation')
+       endif
+       if(.not.hd_energy)then
+          call mpistop('using FLD implies the use of an energy equation, set hd_energy=T')
+       else
+          !> set added variable and equation for radiation energy
+          r_e = var_set_radiation_energy()
+          phys_get_csrad2          => hd_get_csrad2_prim
+          !> Radiation fluid object: its EoS callbacks are wired in hd_link_eos
+          allocate(fld_fl)
+          !> Initiate radiation-closure module
+          call fld_init()
+          !> The implicit (MG diffusion) hooks need the fld_fl object, so they
+          !> are wired here to physics-module wrappers that inject it.
+          if(use_multigrid)then
+             phys_implicit_update   => hd_fld_implicit_update
+             phys_evaluate_implicit => hd_fld_evaluate_implicit
+          endif
+       endif
+    else
+      r_e=-1
+    endif
+
     phys_get_dt              => hd_get_dt
     phys_get_cmax            => hd_get_cmax
-    phys_get_a2max           => hd_get_a2max
     phys_get_tcutoff         => hd_get_tcutoff
     phys_get_cbounds         => hd_get_cbounds
     phys_get_flux            => hd_get_flux
@@ -301,9 +467,29 @@ contains
     ! derive units from basic units
     call hd_physical_units()
 
+    ! Spitzer prefactor for hyperbolic TC in code units. κ(T) = κ_0 · T^{5/2}
+    ! with κ_0 = 8e-12 (SI) or 8e-7 (CGS), unless the user provides an override
+    ! (e.g. to match a constant-κ parabolic TC run for benchmarking).
+    if(hd_hyperbolic_thermal_conduction) then
+      if (hd_htc_kappa_override > 0.0d0) then
+        hypertc_kappa = hd_htc_kappa_override
+        if (mype == 0) write(*,*) ' HTC: using hd_htc_kappa_override =', hypertc_kappa
+      else if(SI_unit) then
+        hypertc_kappa=8.d-12*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+      else
+        hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+      end if
+    end if
+
     if (hd_dust) then
         call dust_init(rho_, mom(:), e_)
     endif
+
+    if (hd_fip) then
+      fip_ = var_set_fluxvar('rho_fip', 'fip', need_bc=.false.)
+    else
+      fip_ = -1
+    end if
 
     allocate(tracer(hd_n_tracer))
 
@@ -318,8 +504,6 @@ contains
     ! set the index of the last flux variable for species 1
     stop_indices(1)=nwflux
 
-    
-
     if(hd_trac) then
       Tcoff_ = var_set_wextra()
       iw_tcoff=Tcoff_
@@ -332,16 +516,7 @@ contains
         iw_log_nH = var_set_wextra()
     end if
 
-
-    ! ! choose Rfactor in ideal gas law
-    ! if(hd_partial_ionization) then
-    !   hd_get_Rfactor=>Rfactor_from_temperature_ionization
-    !   phys_update_temperature => hd_update_temperature
-    ! else if(associated(usr_Rfactor)) then
-    !   hd_get_Rfactor=>usr_Rfactor
-    ! else
-    !   hd_get_Rfactor=>Rfactor_from_constant_ionization
-    ! end if
+    ! phys_get_Rfactor is bound by mod_hd_eos:bind_eos_to_source to eos%get_Rfactor.
 
     ! initialize thermal conduction module
     if (hd_thermal_conduction) then
@@ -368,6 +543,17 @@ contains
       ! tc_fl%get_rho => eos%get_rho
       tc_fl%e_ = e_
       tc_fl%Tcoff_ = Tcoff_
+    else if (hd_hyperbolic_thermal_conduction .and. hd_trac) then
+      ! HTC + TRAC: allocate a stub tc_fl so TRAC type 7 can read tc_k_para.
+      ! Use hypertc_kappa (Spitzer prefactor, same form as tc_k_para) so the
+      ! TRAC kappa-effective formula reduces to the same expression as in
+      ! the PTC branch. No STS init; no flux routine; this is read-only.
+      call tc_init_params(eos%gamma)
+      allocate(tc_fl)
+      tc_fl%tc_k_para = hypertc_kappa
+      tc_fl%tc_saturate = hd_htc_sat
+      tc_fl%e_ = e_
+      tc_fl%Tcoff_ = Tcoff_
     end if
 
     ! Initialize radiative cooling module
@@ -376,6 +562,7 @@ contains
            call mpistop("radiative cooling needs hd_energy=T")
       call radiative_cooling_init_params(eos%gamma,eos%He_abundance)
       allocate(rc_fl)
+      rc_fl%fip_ = fip_
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
@@ -414,9 +601,15 @@ contains
         phys_wb_transform => hd_wb_transform
         phys_wb_inverse   => hd_wb_inverse
         phys_wb_prolong   => hd_wb_prolong
-        if (eos%ionE .and. eos%p2eint_method /= 'bisect') then
+        if (eos%ionE .and. eos%p2eint_method /= 'bisect' &
+            .and. eos%method /= 'entropy') then
           eos%p2eint_method = 'bisect'
           if(mype==0) write(*,*) 'WB + ionE: forcing p2eint_method = bisect'
+        end if
+        if (eos%method == 'entropy' .and. mype == 0) then
+          write(*,*) 'WB + ionE + entropy: p2eint_method stays "table" &
+                     &(eint_from_p_bisect uses legacy log_p table not built &
+                     &for entropy method)'
         end if
         if(mype==0) write(*,*) 'Well-balanced reconstruction enabled'
       end if
@@ -428,10 +621,6 @@ contains
     ! Initialize CAK radiation force module
     if (hd_cak_force) call cak_init(eos%gamma)
 
-    ! Initialize particles module
-    if (hd_particles) then
-       call particles_init()
-    end if
 
     ! Check whether custom flux types have been defined
     if (.not. allocated(flux_type)) then
@@ -483,9 +672,8 @@ contains
   end subroutine hd_sts_set_source_tc_hd
 
   function hd_get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
-    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
-    !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
-    !and                        T=p/rho
+    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para/rho)
+    !and   tc_k_para can depend on T=p/rho
     use mod_global_parameters
     use mod_thermal_conduction, only: get_tc_dt_hd
  
@@ -575,13 +763,9 @@ contains
       integer                      :: n
       ! list parameters
       integer :: ncool = 4000
-      double precision :: cfrac=0.1d0
     
       !> Name of cooling curve
       character(len=std_len)  :: coolcurve='JCcorona'
-    
-      !> Name of cooling method
-      character(len=std_len)  :: coolmethod='exact'
     
       !> Fixed temperature not lower than tlow
       logical    :: Tfix=.false.
@@ -591,6 +775,9 @@ contains
     
       !> Add cooling source in a split way (.true.) or un-split way (.false.)
       logical    :: rc_split=.false.
+
+      !> Cooling fraction (HEAD addition; used for explicit-mode dt scaling, kept for compat)
+      double precision :: cfrac=0.1d0
 
       !> Master switch for radiative loss modification (spatial + density taper)
       logical :: rad_modify=.false.
@@ -611,7 +798,7 @@ contains
       logical :: rad_escape_prob=.false.
       !> Effective opacity for escape probability (code units)
       double precision :: rad_kappa_eff=0.0d0
-      !> Temperature above which kappa→0 (Kelvin); 0 = constant kappa
+      !> Temperature above which kappa goes to 0 (Kelvin); 0 = constant kappa
       double precision :: rad_kappa_Tcutoff=0.0d0
       !> Sigmoid sharpness exponent for kappa(T) cutoff
       double precision :: rad_kappa_alpha=4.0d0
@@ -624,13 +811,24 @@ contains
       !> Variable-c_V Townsend extension (Y_mod): quadrature and sub-intervals
       character(len=8) :: rc_Y_mod_quadrature='boole'
       integer :: rc_Y_mod_N_sub=16
+      !> Upstream: cutoff radiative cooling below rad_damp_height (Gaussian damp)
+      logical          :: rad_damp=.false.
+      double precision :: rad_damp_height=0.5d0
+      double precision :: rad_damp_scale=0.15d0
+      !> Upstream: Newton-radiative damping (surface treatment)
+      logical          :: rad_newton=.false.
+      double precision :: rad_newton_trad=0.006d0
+      double precision :: rad_newton_rhosurf=1.d4
+      double precision :: rad_newton_pthick=25.d0
 
-      namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split, &
+      namelist /rc_list/ coolcurve, ncool, cfrac, tlow, Tfix, rc_split, &
           rad_modify, rad_modify_sym, rad_suppress_temp, &
           rad_cut_hgt, rad_cut_dey, rad_taper_rho, rad_taper_dey, &
           rad_escape_prob, rad_kappa_eff, rad_kappa_Tcutoff, rad_kappa_alpha, &
           rad_escape_type, rad_escape_tau_cutoff, rad_escape_height, &
-          rc_Y_mod_quadrature, rc_Y_mod_N_sub
+          rc_Y_mod_quadrature, rc_Y_mod_N_sub, &
+          rad_damp, rad_damp_height, rad_damp_scale, &
+          rad_newton, rad_newton_trad, rad_newton_rhosurf, rad_newton_pthick
 
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
@@ -640,7 +838,6 @@ contains
 
       fl%ncool=ncool
       fl%coolcurve=coolcurve
-      fl%coolmethod=coolmethod
       fl%tlow=tlow
       fl%Tfix=Tfix
       fl%rc_split=rc_split
@@ -661,12 +858,30 @@ contains
       fl%rad_escape_height=rad_escape_height/unit_length
       fl%Y_mod_quadrature=rc_Y_mod_quadrature
       fl%Y_mod_N_sub=rc_Y_mod_N_sub
+      fl%rad_damp = rad_damp
+      fl%rad_damp_height = rad_damp_height
+      fl%rad_damp_scale = rad_damp_scale
+      fl%rad_newton = rad_newton
+      fl%rad_newton_trad = rad_newton_trad
+      fl%rad_newton_rhosurf = rad_newton_rhosurf
+      fl%rad_newton_pthick = rad_newton_pthick
     end subroutine rc_params_read
 !! end rad cool
 
   subroutine hd_check_params
     use mod_global_parameters
+    use mod_geometry, only: coordinate
     use mod_dust, only: dust_check_params, dust_implicit_update, dust_evaluate_implicit
+    use mod_particles, only: particles_init
+    use mod_particles, only: npayload,nusrpayload,ngridvars,num_particles,physics_type_particles
+    use mod_fld
+
+    double precision :: a,b,Xfrac,Yfrac
+
+    ! Initialize particles module, put here so additional gridvars and user payloads are known
+    if (hd_particles) then
+       call particles_init()
+    end if
 
     if (.not. hd_energy) then
        if (eos%gamma <= 0.0d0) call mpistop ("Error: eos%gamma <= 0")
@@ -677,30 +892,180 @@ contains
             call mpistop ("Error: eos%gamma <= 0 or eos%gamma == 1.0")
        ! For LTE+ionE, this floor excludes ionisation energy. At tlow (~1000 K)
        ! ionisation is negligible, so the thermal-only floor is adequate.
-       small_e = small_pressure/(eos%gamma - 1.0d0)
+       small_e = small_pressure * eos%inv_gamma_minus_1
+       small_r_e = small_pressure * eos%inv_gamma_minus_1
        ! gamma_minus_1 and inv_gamma_minus_1 are set by eos_init
     end if
 
     if (hd_dust) call dust_check_params()
-    if(use_imex_scheme) then
+
+    if(hd_dust_implicit) then
+        if(.not.use_imex_scheme)then
+           call mpistop('select IMEX scheme for implicit dust update')
+        endif
         ! implicit dust update
         phys_implicit_update => dust_implicit_update
         phys_evaluate_implicit => dust_evaluate_implicit
-    endif  
+    endif
+
+    ! Hyperbolic TC in HD is only implemented for 1D: q is a scalar carrying
+    ! the heat flux along the single spatial direction. For ndim>1 the user
+    ! should use the ffHD module (B-aligned conduction) or the parabolic
+    ! tc_init path. Restrict here rather than silently giving wrong fluxes.
+    if (hd_hyperbolic_thermal_conduction .and. ndim /= 1) then
+      call mpistop("hd_hyperbolic_thermal_conduction is implemented for ndim=1 only;" // &
+                   " for ndim>1 use mod_ffhd or parabolic mod_thermal_conduction.")
+    end if
+    if (hd_hyperbolic_thermal_conduction .and. hd_thermal_conduction) then
+      call mpistop("hd_hyperbolic_thermal_conduction and hd_thermal_conduction are mutually exclusive;" // &
+                   " choose one TC implementation.")
+    end if
+
+    if(hd_radiation_fld) then
+        if(.not.use_imex_scheme)then
+           call mpistop('select IMEX scheme for FLD radiation use')
+        endif
+        if(use_multigrid)then
+           call phys_set_mg_bounds()
+        else
+           if(.not.fld_no_mg)call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
+        endif
+        if(mype==0)then
+           write(*,*)'==FLD SETUP======================'
+           write(*,*)'Using FLD with settings:'
+           write(*,*)'Using FLD with settings: hd_radiation_fld=',hd_radiation_fld
+           write(*,*)'Using FLD with settings: fld_fluxlimiter=',fld_fluxlimiter
+           write(*,*)'Using FLD with settings: fld_interaction_method=',fld_interaction_method
+           write(*,*)'Using FLD with settings: fld_opacity_law=',fld_opacity_law
+           write(*,*)'Using FLD with settings: fld_kappa0=',fld_kappa0
+           write(*,*)'Using FLD with settings: fld_opal_table=',fld_opal_table
+           write(*,*)'Using FLD with settings: fld_Radforce_split=',fld_Radforce_split
+           write(*,*)'Using FLD with settings: fld_bisect_tol=',fld_bisect_tol
+           write(*,*)'Using FLD with settings: fld_diff_tol=',fld_diff_tol
+           write(*,*)'Using FLD with settings: nth_for_diff_mg=',nth_for_diff_mg
+           write(*,*)'      FLD has use_imex_scheme and use_multigrid=',use_imex_scheme,use_multigrid
+           print *,'const_rad_a   =',const_rad_a
+           print *,'NORMALIZED arad_norm=',arad_norm
+           print *,'NORMALIZED c_norm=',c_norm
+           print *,'const_kappae  =',const_kappae
+           if(trim(fld_opacity_law).eq.'const_norm')then
+               print *,'NORMALIZED fld_kappa0          =',fld_kappa0
+               print *,'physical value (in cgs or SI)  =',fld_kappa0*unit_opacity
+           endif
+           if(trim(fld_opacity_law).eq.'const')then
+               print *,'physical fld_kappa (in cgs or SI) =',fld_kappa0
+               print *,'NORMALIZED value                  =',fld_kappa0/unit_opacity
+           endif
+           write(*,*)'===FLD SETUP====================='
+        endif
+    endif
+    if(mype==0)then
+           write(*,*)'====HD run with settings===================='
+           write(*,*)'Using mod_hd_phys with settings:'
+           write(*,*)'SI_unit=',SI_unit
+           write(*,*)'Dimensionality   :',ndim
+           write(*,*)'vector components:',ndir
+           write(*,*)'coordinate set to type,slab:',coordinate,slab
+           write(*,*)'number of variables          nw=',nw
+           write(*,*)'    start index         iwstart=',iwstart
+           write(*,*)'number of      vector variables=',nvector
+           write(*,*)'number of stagger variables nws=',nws
+           write(*,*)'number of    variables with BCs=',nwgc
+           write(*,*)'number of      vars with fluxes=',nwflux
+           write(*,*)'number of   vars with flux + BC=',nwfluxbc
+           write(*,*)'number of   auxiliary variables=',nwaux
+           write(*,*)'number of extra vars without flux=',nwextra
+           write(*,*)'number of extra vars   for wextra=',nw_extra
+           write(*,*)'number of auxiliary I/O variables=',nwauxio
+           write(*,*)'number of             hd_n_tracer=',hd_n_tracer
+           write(*,*)'    hd_energy=',hd_energy
+           write(*,*)'    hd_gravity=',hd_gravity
+           write(*,*)'    hd_viscosity=',hd_viscosity
+           write(*,*)'    hd_radiative_cooling=',hd_radiative_cooling
+           write(*,*)'    hd_cak_force=',hd_cak_force
+           write(*,*)'    hd_radiation_fld=',hd_radiation_fld
+           write(*,*)'    hd_thermal_conduction=',hd_thermal_conduction
+           write(*,*)'    hd_hyperbolic_thermal_conduction=',hd_hyperbolic_thermal_conduction
+           write(*,*)'    hd_trac=',hd_trac
+           write(*,*)'    hd_dust=',hd_dust
+           write(*,*)'    hd_rotating_frame=',hd_rotating_frame
+           write(*,*)'    hd_particles=',hd_particles
+           if(hd_particles) then
+              write(*,*) '*****Using particles: npayload,ngridvars :', npayload,ngridvars
+              write(*,*) '*****Using particles:        nusrpayload :', nusrpayload
+              write(*,*) '*****Using particles:      num_particles :', num_particles
+              write(*,*) '*****Using particles: physics_type_particles=',physics_type_particles
+           end if
+           write(*,*)'number of             ghostcells=',nghostcells
+           write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
+           write(*,*)'==========================================='
+           print *,'========EOS and UNITS==========='
+           print *,'SI_unit       =',SI_unit
+           print *,'gamma=',eos%gamma
+           print *,'eq_state_units=',eq_state_units
+           print *,'He_abundance  =',eos%He_abundance
+           print *,'RR            =',RR
+           print *,'========EOS and UNITS==========='
+           print *,'unit_time          =',unit_time
+           print *,'unit_length        =',unit_length
+           print *,'unit_velocity      =',unit_velocity
+           print *,'unit_pressure      =',unit_pressure
+           print *,'unit_numberdensity =',unit_numberdensity
+           print *,'unit_density       =',unit_density
+           print *,'unit_temperature   =',unit_temperature
+           print *,'unit_mass          =',unit_mass
+           print *,'unit_Erad          =',unit_Erad
+           print *,'unit_radflux       =',unit_radflux
+           print *, 'CHECK that p_u ',unit_pressure,' equals ',unit_density*unit_velocity**2
+           print *, 'CHECK that L_u ',unit_length,' equals ',unit_velocity*unit_time
+           print *, 'CHECK that M_u',unit_mass,' equals ',unit_density*unit_length**3
+           print *, 'density to numberdensity has factor   ',unit_density/unit_numberdensity
+           if(SI_unit)then
+                print *, '                     compare  this to ',mp_SI*(1.d0+4.d0*eos%He_abundance)
+           else
+                print *, '                     compare  this to ',mp_cgs*(1.d0+4.d0*eos%He_abundance)
+           endif
+           print *, 'pressure to n T has factor            ',unit_pressure/(unit_numberdensity*unit_temperature)
+           if(SI_unit)then
+                print *, '                     compare  this to ',kB_SI*(2.d0+3.d0*eos%He_abundance)
+                a=unit_density/unit_numberdensity/mp_SI
+                b=unit_pressure/(unit_numberdensity*unit_temperature*kB_SI)
+           else
+                print *, '                     compare  this to ',kB_cgs*(2.d0+3.d0*eos%He_abundance)
+                a=unit_density/unit_numberdensity/mp_cgs
+                b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
+           endif
+           if(eq_state_units)then
+              print *, 'mean molecular weight mu is =',a/b,' = ', (1.d0+4.d0*eos%He_abundance)/(2.d0+3.d0*eos%He_abundance)
+              Xfrac=1.d0/a
+              Yfrac=4.d0*eos%He_abundance/(1.d0+4.d0*eos%He_abundance)
+              print *, 'mass fraction hydrogen X is =',1/a,' and this equals ', 1.d0/(1.d0+4.d0*eos%He_abundance)
+              print *, 'mass fraction helium   Y is =',Yfrac
+              print *, ' check that 1/mu', b/a,' is equal to 2X+3Y/4=',2.d0*Xfrac+3.d0*Yfrac/4.d0
+              print *, ' ratio n_e/n_p=',1.d0+2.0d0*eos%He_abundance
+           endif
+           print *,'========UNITS==========='
+    endif
 
   end subroutine hd_check_params
 
   subroutine hd_physical_units
     use mod_global_parameters
-    double precision :: mp,kB
+    double precision :: mp,kB,c_lightspeed,Xfrac,sigma_Telectron
     double precision :: a,b
     ! Derive scaling units
     if(SI_unit) then
       mp=mp_SI
       kB=kB_SI
+      const_sigmaSB=sigma_SB_SI
+      c_lightspeed=c_SI
+      sigma_Telectron=sigma_Te_SI
     else
       mp=mp_cgs
       kB=kB_cgs
+      const_sigmaSB=sigma_SB_cgs
+      c_lightspeed=const_c
+      sigma_Telectron=sigma_Te_cgs
     end if
     if(eq_state_units) then
       a=1d0+4d0*eos%He_abundance
@@ -710,16 +1075,19 @@ contains
         b=2d0+3d0*eos%He_abundance
       end if
       RR=1d0
+      Xfrac=1.d0/a
     else if (eos%eos_type == 'LTE') then
       !> Remove the assumed FI normalisation from the units and handle in EoS
       a=1d0
       b=1d0
       eos%nH2rhoFactor = 1d0+4d0*eos%He_abundance
       RR=(2d0+3d0*eos%He_abundance) / (1d0+4d0*eos%He_abundance)
+      Xfrac=1.d0/(1.d0+4.d0*eos%He_abundance)
     else
       a=1d0
       b=1d0
       RR=(1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*eos%He_abundance)
+      Xfrac=1.d0/(1.d0+4.d0*eos%He_abundance)
     end if
     if(unit_density/=1.d0 .or. unit_numberdensity/=1.d0) then
       if(unit_density/=1.d0) then
@@ -787,6 +1155,25 @@ contains
     end if
     unit_mass = unit_density * unit_length**3
 
+    !> Units needed for radiative flux and opacity as used in FLD
+    ! normalized light speed
+    c_norm=c_lightspeed/unit_velocity
+    ! this is the radiation constant in either cgs or SI units
+    const_rad_a=4.d0*const_sigmaSB/c_lightspeed
+    ! this is the dimensionless conversion factor for Erad to Trad
+    arad_norm=const_rad_a*unit_temperature**4/unit_pressure
+    ! This is the Thomson scattering opacity in the correct units
+    ! note that the hydrogen mass fraction X=1/a in eq_state_units
+    if(eq_state_units) then
+       const_kappae=sigma_Telectron*(1.d0+Xfrac)/(2.0d0*mp)
+    else
+       const_kappae=0.34d0 ! specific value in cm^2/g for He=0.1 in cgs 
+    endif
+    ! these are the units
+    unit_Erad = unit_pressure
+    unit_radflux = unit_velocity*unit_Erad
+    unit_opacity = one/(unit_density*unit_length)
+
   end subroutine hd_physical_units
 
   !> Returns logical argument flag where values are ok
@@ -808,8 +1195,15 @@ contains
        if (primitive) then
           where(w(ixO^S, e_) < small_pressure) flag(ixO^S,e_) = .true.
        else
-          call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, tmp)
+          ! Inline (gamma-1)*(e - KE) to avoid eos%get_thermal_pressure side
+          ! effects (fix_small_values clipping / crash=.true.) that would
+          ! suppress the flag or abort before remediation could run.
+          tmp(ixO^S)=(eos%gamma-1.0d0)*(w(ixO^S,e_)-&
+           half*(^C&w(ixO^S,m^C_)**2+)/w(ixO^S,rho_))
           where(tmp(ixO^S) < small_pressure) flag(ixO^S,e_) = .true.
+       endif
+       if(hd_radiation_fld)then
+          where(w(ixO^S, r_e) < small_r_e) flag(ixO^S,r_e) = .true.
        endif
     end if
 
@@ -818,6 +1212,26 @@ contains
     if(hd_dust) call dust_check_w(ixI^L,ixO^L,w,x,flag)
 
   end subroutine hd_check_w
+
+  subroutine hd_bound_fip(primitive, ixI^L, ixO^L, w)
+    use mod_global_parameters
+    logical, intent(in)             :: primitive
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+
+    double precision :: rho_safe(ixI^S), fip_prim(ixI^S)
+
+    if (.not. hd_fip) return
+
+    if (primitive) then
+      w(ixO^S,fip_) = min(maxfip, max(minfip, w(ixO^S,fip_)))
+    else
+      rho_safe(ixO^S) = max(w(ixO^S,rho_), small_density)
+      fip_prim(ixO^S) = w(ixO^S,fip_) / rho_safe(ixO^S)
+      fip_prim(ixO^S) = min(maxfip, max(minfip, fip_prim(ixO^S)))
+      w(ixO^S,fip_) = rho_safe(ixO^S) * fip_prim(ixO^S)
+    end if
+  end subroutine hd_bound_fip
 
   ! !> Transform primitive variables into conservative ones
   ! subroutine hd_to_conserved(ixI^L, ixO^L, w, x)
@@ -982,28 +1396,6 @@ contains
     end if
   end subroutine hd_get_cmax
 
-  subroutine hd_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
-
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nw)=dabs(-w(kxO^S,1:nw)+16.d0*w(jxO^S,1:nw)&
-        -30.d0*w(ixO^S,1:nw)+16.d0*w(hxO^S,1:nw)-w(gxO^S,1:nw))
-      a2max(i)=maxval(a2(ixO^S,i,1:nw))/12.d0/dxlevel(i)**2
-    end do
-  end subroutine hd_get_a2max
-
   !> get adaptive cutoff temperature for TRAC (Johnston 2019 ApJL, 873, L22)
   subroutine hd_get_tcutoff(ixI^L,ixO^L,w,x,tco_local,Tmax_local)
     use mod_global_parameters
@@ -1056,7 +1448,7 @@ contains
     case(2)
       !> iijima et al. 2021, LTRAC method
       ltrc=1.5d0
-      ltrp=4.d0
+      ltrp=2.5d0
       ixP^L=ixO^L^LADD1;
       hxO^L=ixO^L-1;
       jxO^L=ixO^L+1;
@@ -1143,7 +1535,7 @@ contains
       block%wextra(ixOmin1-1,Tcoff_) = block%wextra(ixOmin1,Tcoff_)
       block%wextra(ixOmax1+1,Tcoff_) = block%wextra(ixOmax1,Tcoff_)
     case default
-      call mpistop("mhd_trac_type not allowed for 1D simulation")
+      call mpistop("hd_trac_type not allowed for 1D simulation")
     end select
     }
   end subroutine hd_get_tcutoff
@@ -1182,8 +1574,9 @@ contains
         call eos%get_csound2(wLp, x, ixI^L, ixO^L, csoundL)
         call eos%get_csound2(wRp, x, ixI^L, ixO^L, csoundR)
       else
-        call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
-        call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
+         ! note usage of conservatives here
+         call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
+         call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
       end if
 
       dmean(ixO^S) = (tmp1(ixO^S)*csoundL(ixO^S)+tmp2(ixO^S)*csoundR(ixO^S)) * &
@@ -1210,9 +1603,17 @@ contains
       end if
 
     case (2)
-      wmean(ixO^S,1:nwflux)=0.5d0*(wLC(ixO^S,1:nwflux)+wRC(ixO^S,1:nwflux))
-      tmp1(ixO^S)=wmean(ixO^S,mom(idim))/wmean(ixO^S,rho_)
-      call hd_get_csound2(wmean,x,ixI^L,ixO^L,csoundR)
+      !if(hd_energy) then
+      !   ! note usage of primitives here
+      !   wmean(ixO^S,1:nwflux)=0.5d0*(wLp(ixO^S,1:nwflux)+wRp(ixO^S,1:nwflux))
+      !   tmp1(ixO^S)=wmean(ixO^S,mom(idim))
+      !   csoundR(ixO^S)=hd_gamma*wmean(ixO^S,p_)/wmean(ixO^S,rho_)
+      !else
+         ! note usage of conservatives here
+         wmean(ixO^S,1:nwflux)=0.5d0*(wLC(ixO^S,1:nwflux)+wRC(ixO^S,1:nwflux))
+         tmp1(ixO^S)=wmean(ixO^S,mom(idim))/wmean(ixO^S,rho_)
+         call hd_get_csound2(wmean,x,ixI^L,ixO^L,csoundR)
+      !endif
       csoundR(ixO^S) = dsqrt(csoundR(ixO^S))
 
       if(present(cmin)) then
@@ -1237,8 +1638,9 @@ contains
         call eos%get_csound2(wLp, x, ixI^L, ixO^L, csoundL)
         call eos%get_csound2(wRp, x, ixI^L, ixO^L, csoundR)
       else
-        call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
-        call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
+         ! note usage of conservatives here
+         call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
+         call hd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
       end if
       csoundL(ixO^S)=max(dsqrt(csoundL(ixO^S)),dsqrt(csoundR(ixO^S)))
       if(present(cmin)) then
@@ -1386,40 +1788,140 @@ contains
   end subroutine hd_get_csound2
 
 
-  ! !> Calculate temperature=p/rho when in e_ the  total energy is stored
-  ! subroutine hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
-  !   use mod_global_parameters
-  !   integer, intent(in)          :: ixI^L, ixO^L
-  !   double precision, intent(in) :: w(ixI^S, 1:nw)
-  !   double precision, intent(in) :: x(ixI^S, 1:ndim)
-  !   double precision, intent(out):: res(ixI^S)
+  !> Calculate modified squared sound speed for FLD
+  !> NOTE: only for diagnostic purposes, unused subroutine
+  subroutine hd_get_csrad2(w,x,ixI^L,ixO^L,csound)
+    use mod_global_parameters
 
-  !   double precision :: R(ixI^S)
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
+    double precision, intent(out):: csound(ixI^S)
 
-  !   call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-  !   call hd_get_pthermal(w, x, ixI^L, ixO^L, res)
-  !   res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
-  ! end subroutine hd_get_temperature_from_etot
+    double precision :: wprim(ixI^S, nw)
 
-  ! !> Calculate temperature=p/rho when in e_ the  internal energy is stored
-  ! subroutine hd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
-  !   use mod_global_parameters
-  !   integer, intent(in)          :: ixI^L, ixO^L
-  !   double precision, intent(in) :: w(ixI^S, 1:nw)
-  !   double precision, intent(in) :: x(ixI^S, 1:ndim)
-  !   double precision, intent(out):: res(ixI^S)
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call eos%to_primitive(ixI^L,ixO^L,wprim,x)
+    call hd_get_csrad2_prim(wprim,x,ixI^L,ixO^L,csound)
 
-  !   double precision :: R(ixI^S)
+  end subroutine hd_get_csrad2
 
-  !   call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-  !   res(ixO^S) = (hd_gamma - 1.0d0) * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
-  ! end subroutine hd_get_temperature_from_eint
+  !> Calculate modified squared sound speed for FLD
+  !> NOTE: w is primitive on entry here!
+  !> NOTE: used in FLD module as phys_get_csrad2
+  subroutine hd_get_csrad2_prim(w,x,ixI^L,ixO^L,csound)
+    use mod_global_parameters
+
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
+    double precision, intent(out):: csound(ixI^S)
+
+    integer :: ix^D
+    double precision :: inv_rho
+    double precision :: prad_tensor(ixI^S, 1:ndim, 1:ndim)
+    double precision :: prad_max(ixI^S)
+
+    call hd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad_tensor)
+
+   {do ix^DB=ixOmin^DB,ixOmax^DB \}
+      inv_rho=1.d0/w(ix^D,rho_)
+      prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
+      csound(ix^D)=(eos%gamma*w(ix^D,p_)+prad_max(ix^D))*inv_rho
+   {end do\}
+
+   if(minval(csound(ixO^S))<smalldouble)then
+     print *,'issue with squared speed and rad pressure'
+     print *,minval(csound(ixO^S))
+     print *,minval(prad_max(ixO^S))
+     call mpistop("negative squared speed in get_csrad2 for dt")
+   endif
+
+  end subroutine hd_get_csrad2_prim
+
+  !> Calculate radiation pressure within ixO^L
+  !> NOTE: w is primitive on entry here!
+  !> NOTE: used in FLD module as it is called from phys_get_csrad2
+  subroutine hd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad)
+    use mod_global_parameters
+    use mod_fld
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: prad(ixI^S, 1:ndim, 1:ndim)
+
+    call fld_get_radpress(w, x, ixI^L, ixO^L, prad, fld_fl)
+
+  end subroutine hd_get_pradiation_from_prim
+
+  !> calculates the sum of the gas pressure and max Prad tensor element
+  !> NOTE: only for diagnostic purposes, unused subroutine
+  subroutine hd_get_pthermal_plus_pradiation(w, x, ixI^L, ixO^L, pth_plus_prad)
+    use mod_global_parameters
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: pth_plus_prad(ixI^S)
+
+    double precision             :: wprim(ixI^S, 1:nw)
+    double precision             :: prad_tensor(ixI^S, 1:ndim, 1:ndim)
+    double precision             :: prad_max(ixI^S)
+    integer :: ix^D
+
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call eos%to_primitive(ixI^L,ixO^L,wprim,x)
+    call hd_get_pradiation_from_prim(wprim, x, ixI^L, ixO^L, prad_tensor)
+    {do ix^D = ixOmin^D,ixOmax^D\}
+      prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
+    {enddo\}
+    pth_plus_prad(ixO^S) = wprim(ixO^S,p_) + prad_max(ixO^S)
+  end subroutine hd_get_pthermal_plus_pradiation
+
+  !> Calculates radiation temperature
+  subroutine hd_get_trad(w, x, ixI^L, ixO^L, trad)
+    use mod_global_parameters
+    use mod_constants
+
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: trad(ixI^S)
+
+    trad(ixI^S) = (w(ixI^S,r_e)/arad_norm)**(1.d0/4.d0)
+
+  end subroutine hd_get_trad
+
+  !> Calculate temperature=p/rho when in e_ the  total energy is stored
+  subroutine hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
+    use mod_global_parameters
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: res(ixI^S)
+
+    double precision :: R(ixI^S)
+
+    call eos%get_Rfactor(w,x,ixI^L,ixO^L,R)
+    call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, res)
+    res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+  end subroutine hd_get_temperature_from_etot
+
+  !> Calculate temperature=p/rho when in e_ the  internal energy is stored
+  subroutine hd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
+    use mod_global_parameters
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: res(ixI^S)
+
+    double precision :: R(ixI^S)
+
+    call eos%get_Rfactor(w,x,ixI^L,ixO^L,R)
+    res(ixO^S) = (eos%gamma - 1.0d0) * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+  end subroutine hd_get_temperature_from_eint
 
   ! Calculate flux f_idim[iw]
   subroutine hd_get_flux(wC, w, x, ixI^L, ixO^L, idim, f)
     use mod_global_parameters
     use mod_dust, only: dust_get_flux_prim
-    use mod_viscosity, only: visc_get_flux_prim ! viscInDiv
 
     integer, intent(in)             :: ixI^L, ixO^L, idim
     ! conservative w
@@ -1441,6 +1943,18 @@ contains
         ! Energy flux is v_i*(e + p)
         f(ix^D,e_)=w(ix^D,mom(idim))*(wC(ix^D,e_)+w(ix^D,p_))
      {end do\}
+
+     ! FACE-RECIPE: q is NOT contributing to the Riemann energy flux.
+     ! The conductive heat-flux contribution is added by the face-
+     ! recipe in add_hypertc_source as a post-Riemann sweep, computed
+     ! from cell-centred Te (read from the cached Te_ field, which
+     ! update_eos sets correctly each substep using the proper
+     ! internal-energy/EoS path). q's own advective flux is zero.
+     if(hd_hyperbolic_thermal_conduction) then
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+         f(ix^D,q_)=zero
+      {end do\}
+     end if
     else
       call eos%get_thermal_pressure(wC, x, ixI^L, ixO^L, pth)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -1451,19 +1965,25 @@ contains
      {end do\}
     end if
 
+    if(hd_radiation_fld)then
+     {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        ! advection of radiation enery v_i*r_e
+        f(ix^D,r_e)=w(ix^D,mom(idim))*wC(ix^D,r_e)
+     {end do\}
+    endif
+
     do ix1 = 1, hd_n_tracer
        f(ixO^S, tracer(ix1)) = w(ixO^S,mom(idim)) * w(ixO^S, tracer(ix1))
     end do
+
+    if (hd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
 
     ! Dust fluxes
     if (hd_dust) then
       call dust_get_flux_prim(w, x, ixI^L, ixO^L, idim, f)
     end if
-
-    ! Viscosity fluxes - viscInDiv
-    if (hd_viscosity) then
-      call visc_get_flux_prim(w, x, ixI^L, ixO^L, idim, f, hd_energy)
-    endif
 
   end subroutine hd_get_flux
 
@@ -1472,21 +1992,15 @@ contains
   !> Notice that the expressions of the geometrical terms depend only on ndir,
   !> not ndim. Eg, they are the same in 2.5D and in 3D, for any geometry.
   !>
-  !> Ileyk : to do :
-  !>     - address the source term for the dust in case (coordinate == spherical)
   subroutine hd_add_source_geom(qdt, dtfactor, ixI^L, ixO^L, wCT, wprim, w, x)
     use mod_global_parameters
     use mod_usr_methods, only: usr_set_surface, usr_set_pthermal
-    use mod_viscosity, only: visc_add_source_geom ! viscInDiv
     use mod_rotating_frame, only: rotating_frame_add_source
     use mod_dust, only: dust_n_species, dust_mom, dust_rho
     use mod_geometry
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, dtfactor, x(ixI^S, 1:ndim)
     double precision, intent(inout) :: wCT(ixI^S, 1:nw), wprim(ixI^S,1:nw),w(ixI^S, 1:nw)
-    ! to change and to set as a parameter in the parfile once the possibility to
-    ! solve the equations in an angular momentum conserving form has been
-    ! implemented (change tvdlf.t eg)
     double precision :: pth(ixI^S), source(ixI^S), minrho
     integer                         :: iw,idir, h1x^L{^NOONED, h2x^L}
     integer :: mr_,mphi_ ! Polar var. names
@@ -1602,8 +2116,6 @@ contains
        }
     end select
 
-    if (hd_viscosity) call visc_add_source_geom(qdt,ixI^L,ixO^L,wprim,w,x)
-
     if (hd_rotating_frame) then
        if (hd_dust) then
           call mpistop("Rotating frame not implemented yet with dust")
@@ -1634,7 +2146,7 @@ contains
     double precision :: gravity_field(ixI^S, 1:ndim)
     integer :: idust, idim, ix^D
 
-    if(hd_dust .and. .not. use_imex_scheme) then
+    if(hd_dust .and. .not. hd_dust_implicit) then
       call dust_add_source(qdt,ixI^L,ixO^L,wCT,w,x,qsourcesplit,active)
     end if
 
@@ -1652,13 +2164,13 @@ contains
     end if
 
     if(hd_viscosity) then
-      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,w,x,&
+      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
            hd_energy,qsourcesplit,active)
     end if
 
     if (hd_gravity) then
       call gravity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,&
-           hd_energy,.false.,qsourcesplit,active)
+           hd_energy,qsourcesplit,active)
 
       if (hd_dust .and. qsourcesplit .eqv. grav_split) then
          active = .true.
@@ -1677,51 +2189,255 @@ contains
       call cak_add_source(qdt,ixI^L,ixO^L,wCT,w,x,hd_energy,qsourcesplit,active)
     end if
 
+    ! This is where the radiation force and heating/cooling are added
+    if (hd_radiation_fld) then
+       call hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
+    endif
+
     if(hd_partial_ionization) then
       if(.not.qsourcesplit) then
         active = .true.
-        call eos%update_PI_temperature(ixI^L,ixO^L,wCT,w,x)
+        call phys_update_temperature(ixI^L,ixO^L,wCT,w,x)
       end if
+    end if
+
+    ! Hyperbolic TC: cell-centred Cattaneo relaxation source for q.
+    if(hd_hyperbolic_thermal_conduction .and. .not. qsourcesplit) then
+      active = .true.
+      call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
     end if
 
   end subroutine hd_add_source
 
-  subroutine hd_get_dt(w, ixI^L, ixO^L, dtnew, dx^D, x)
+  !> FACE-RECIPE for hyperbolic thermal conduction.
+  !>
+  !> Replaces the OLD cell-centred Cattaneo source. Architecture:
+  !>  1. q is removed from the Riemann pipeline (f(e_) does NOT get +q
+  !>     in hd_get_flux); q has no advective flux of its own.
+  !>  2. Each face i+1/2 computes a Cattaneo-relaxed face heat flux
+  !>     q_f from the local centred T gradient. Te is read from the
+  !>     cached Te_ field (set by update_eos using the correct
+  !>     internal-energy/EoS path; calling get_temperature_from_eint
+  !>     directly on the conservative wCT inflates Te by KE/(R*rho)
+  !>     at fast-flow cells, hence the cache read).
+  !>  3. Energy update: E_i -= qdt * (q_{i+1/2} - q_{i-1/2}) / dx_i.
+  !>  4. Cell-centred q refreshed from the face values for next step.
+  !>
+  !> Why face-recipe vs HLL-on-q: avoids reconstruction (Koren limiter
+  !> applied to q at faces) and HLL wave-speed bias (q weighted by
+  !> hydro signal speeds during HLL combination, which has no physical
+  !> justification for a scalar conductive flux).
+  !>
+  !> 1D only.
+  subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+    use mod_global_parameters
+
+    integer, intent(in) :: ixI^L,ixO^L
+    double precision, intent(in) :: qdt
+    double precision, dimension(ixI^S,1:ndim), intent(in) :: x
+    double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
+    double precision, dimension(ixI^S,1:nw), intent(inout) :: w
+
+    double precision :: Te(ixI^S), Rfactor(ixI^S)
+    double precision :: qf_half(ixGlo1:ixGhi1)
+    double precision :: qf_full(ixGlo1:ixGhi1)
+    double precision :: T_L, T_R, T_cool_L, T_cool_R, T_kap_L, T_kap_R
+    double precision :: kappa_L, kappa_R, kappa_f
+    double precision :: sigma_T7_f, dT_face, dx_f
+    double precision :: rho_f, p_L, p_R, p_f, cs_f, q_sat, q_Sp, q_Sp_star
+    double precision :: f_sat, eint_loc_L, eint_loc_R, eint_loc_f
+    double precision :: qn_face, tau_f, ratio, decay, ave_factor
+    double precision :: q_face_max
+    double precision, parameter :: ratio_cap = 50.0d0
+    integer :: ix1, nface_lo, nface_hi
+
+    ! Te via cached field (correct EoS path) or primitives (FI fallback).
+    if (Te_ > 0) then
+      Te(ixI^S) = wCT(ixI^S, Te_)
+    else
+      call eos%get_Rfactor(wCTprim, x, ixI^L, ixI^L, Rfactor)
+      Te(ixI^S) = wCTprim(ixI^S, p_) / (Rfactor(ixI^S) * wCTprim(ixI^S, rho_))
+    end if
+
+    {^IFONED
+    nface_lo = ixOmin1 - 1
+    nface_hi = ixOmax1
+    qf_half(:) = 0.0d0
+    qf_full(:) = 0.0d0
+
+    do ix1 = nface_lo, nface_hi
+      ! Cell-centred T on either side of face, with TRAC clip
+      T_L = Te(ix1)
+      T_R = Te(ix1 + 1)
+      if (hd_trac) then
+        T_cool_L = block%wextra(ix1,     Tcoff_)
+        T_cool_R = block%wextra(ix1 + 1, Tcoff_)
+      else
+        T_cool_L = 0.0d0
+        T_cool_R = 0.0d0
+      end if
+      T_kap_L = max(T_L, T_cool_L)
+      T_kap_R = max(T_R, T_cool_R)
+      kappa_L = hypertc_kappa * dsqrt(T_kap_L**5)
+      kappa_R = hypertc_kappa * dsqrt(T_kap_R**5)
+
+      ! Harmonic-mean face kappa: limits to cold side at sharp jumps,
+      ! preserves flux conservation across kappa discontinuities.
+      if (kappa_L + kappa_R > smalldouble) then
+        kappa_f = 2.0d0 * kappa_L * kappa_R / (kappa_L + kappa_R)
+      else
+        kappa_f = 0.0d0
+      end if
+
+      dx_f    = 0.5d0 * (block%ds(ix1, 1) + block%ds(ix1 + 1, 1))
+      dT_face = T_R - T_L
+      q_Sp    = -kappa_f * dT_face / dx_f
+
+      ! Face-averaged primitives for saturation
+      rho_f = 0.5d0 * (wCTprim(ix1, rho_) + wCTprim(ix1 + 1, rho_))
+      p_L   = wCTprim(ix1,     p_)
+      p_R   = wCTprim(ix1 + 1, p_)
+      p_f   = 0.5d0 * (p_L + p_R)
+      cs_f  = dsqrt(max(smalldouble, eos%gamma * p_f / max(rho_f, smalldouble)))
+
+      ! Cowie-McKee saturation cap on the Spitzer target
+      if (hd_htc_sat) then
+        q_sat = 1.5d0 * rho_f * (p_f / max(rho_f, smalldouble))**1.5d0
+        if (q_sat > smalldouble) then
+          f_sat = 1.0d0 / (1.0d0 + dabs(q_Sp) / q_sat)
+        else
+          f_sat = 1.0d0
+        end if
+        q_Sp_star = f_sat * q_Sp
+      else
+        q_Sp_star = q_Sp
+      end if
+
+      ! Internal energy from conservatives (matches eint fix)
+      eint_loc_L = wCT(ix1,     e_) &
+                 - 0.5d0 * wCT(ix1,     m1_)**2 / max(wCT(ix1,     rho_), smalldouble)
+      eint_loc_R = wCT(ix1 + 1, e_) &
+                 - 0.5d0 * wCT(ix1 + 1, m1_)**2 / max(wCT(ix1 + 1, rho_), smalldouble)
+      eint_loc_L = max(eint_loc_L, smalldouble)
+      eint_loc_R = max(eint_loc_R, smalldouble)
+      eint_loc_f = 0.5d0 * (eint_loc_L + eint_loc_R)
+
+      ! MHD-style tau formula, using face quantities + global cmax.
+      ! sigma_T7_f = kappa_f * T_f acts as the conductivity*temperature
+      ! product entering tau. Floor tau at 4*dt for stability.
+      sigma_T7_f = kappa_f * 0.5d0 * (T_L + T_R)
+      tau_f = max(4.0d0 * dt, &
+              sigma_T7_f * courantpar**2 / (eint_loc_f * cmax_global**2))
+
+      ! Cattaneo relaxation: closed-form exponential
+      ratio = min(qdt / tau_f, ratio_cap)
+      decay = dexp(-ratio)
+      if (ratio > 1.0d-6) then
+        ave_factor = (1.0d0 - decay) / ratio
+      else
+        ave_factor = 1.0d0 - 0.5d0 * ratio + ratio * ratio / 6.0d0
+      end if
+
+      qn_face = 0.5d0 * (wCT(ix1, q_) + wCT(ix1 + 1, q_))
+
+      qf_full(ix1) = q_Sp_star + (qn_face - q_Sp_star) * decay
+      qf_half(ix1) = q_Sp_star + (qn_face - q_Sp_star) * ave_factor
+
+      ! Energy-positivity clip on the n+1/2 flux
+      q_face_max = hd_htc_pos_eta * min(eint_loc_L, eint_loc_R) * &
+                   block%ds(ix1, 1) / max(qdt, smalldouble)
+      qf_half(ix1) = sign(min(dabs(qf_half(ix1)), q_face_max), qf_half(ix1))
+    end do
+
+    ! Conservative energy update + cell-centred q refresh
+    do ix1 = ixOmin1, ixOmax1
+      w(ix1, e_) = w(ix1, e_) &
+                 - qdt * (qf_half(ix1) - qf_half(ix1 - 1)) / block%ds(ix1, 1)
+      w(ix1, q_) = 0.5d0 * (qf_full(ix1 - 1) + qf_full(ix1))
+    end do
+    }
+
+  end subroutine add_hypertc_source
+
+  subroutine hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
+    use mod_constants
+    use mod_global_parameters
+    use mod_usr_methods
+    use mod_fld
+
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
+    double precision, intent(in)    :: wCT(ixI^S,1:nw),wCTprim(ixI^S,1:nw)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+    logical, intent(in) :: qsourcesplit
+    logical, intent(inout) :: active
+
+    ! add radiation force and work done by it, changes momentum and gas energy
+    ! handle photon tiring, heating and cooling exchange between gas and radiation field
+    call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active,fld_fl)
+
+  end subroutine hd_add_radiation_source
+
+  subroutine hd_get_dt(wprim, ixI^L, ixO^L, dtnew, dx^D, x)
     use mod_global_parameters
     use mod_dust, only: dust_get_dt
-    use mod_radiative_cooling, only: cooling_get_dt
     use mod_viscosity, only: viscosity_get_dt
     use mod_gravity, only: gravity_get_dt
     use mod_cak_force, only: cak_get_dt
+    use mod_fld, only: fld_radforce_get_dt
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: dx^D, x(ixI^S, 1:^ND)
-    double precision, intent(in)    :: w(ixI^S, 1:nw)
+    double precision, intent(in)    :: wprim(ixI^S, 1:nw)
     double precision, intent(inout) :: dtnew
 
     dtnew = bigdouble
 
     if(hd_dust) then
-      call dust_get_dt(w, ixI^L, ixO^L, dtnew, dx^D, x)
-    end if
-
-    if(hd_radiative_cooling) then
-      call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl)
+      call dust_get_dt(wprim, ixI^L, ixO^L, dtnew, dx^D, x)
     end if
 
     if(hd_viscosity) then
-      call viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call viscosity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
 
     if(hd_gravity) then
-      call gravity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call gravity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
    end if
 
    if (hd_cak_force) then
-     call cak_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+     call cak_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
    end if
 
+   if(hd_radiation_fld) then
+     call fld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x,fld_fl)
+   endif
+
   end subroutine hd_get_dt
+
+  !> Wrappers for the FLD implicit (MG diffusion) hooks: phys_implicit_update /
+  !> phys_evaluate_implicit have fixed interfaces with no fluid argument, so
+  !> these inject the module's fld_fl object into the threaded fld routines.
+  subroutine hd_fld_implicit_update(dtfactor,qdt,qtC,psa,psb)
+    use mod_global_parameters
+    use mod_fld, only: fld_implicit_update
+    type(state), target          :: psa(max_blocks)
+    type(state), target          :: psb(max_blocks)
+    double precision, intent(in) :: qdt
+    double precision, intent(in) :: qtC
+    double precision, intent(in) :: dtfactor
+
+    call fld_implicit_update(dtfactor,qdt,qtC,psa,psb,fld_fl)
+  end subroutine hd_fld_implicit_update
+
+  subroutine hd_fld_evaluate_implicit(qtC,psa)
+    use mod_global_parameters
+    use mod_fld, only: fld_evaluate_implicit
+    type(state), target          :: psa(max_blocks)
+    double precision, intent(in) :: qtC
+
+    call fld_evaluate_implicit(qtC,psa,fld_fl)
+  end subroutine hd_fld_evaluate_implicit
 
   function hd_kin_en(w, ixI^L, ixO^L, inv_rho) result(ke)
     use mod_global_parameters, only: nw, ndim
@@ -1774,6 +2490,11 @@ contains
             where(flag(ixO^S,rho_)) w(ixO^S, mom(idir)) = 0.0d0
           end if
         end do
+        if(hd_radiation_fld)then
+          if (small_values_fix_iw(r_e)) then
+            where(flag(ixO^S,r_e)) w(ixO^S,r_e) = small_r_e
+          end if
+        end if
         if(hd_energy)then
           if(small_values_fix_iw(e_)) then
             if(primitive) then
@@ -1816,10 +2537,20 @@ contains
             !   -0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_))
              call eos%get_thermal_pressure(w, x, ixI^L, ixO^L, w(ixO^S,p_))
              call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
+             do idir = 1, ndir
+               w(ixO^S,mom(idir)) = w(ixO^S,mom(idir))/w(ixO^S,rho_) !> Convert to velocity to be compliant with p_to_e
+             end do
              call eos%p_to_e(ixI^L, ixO^L, w, x)
+             do idir = 1, ndir
+               w(ixO^S,mom(idir)) = w(ixO^S,mom(idir))*w(ixO^S,rho_) !> Restore momentum (conserved-form invariant)
+             end do
               ! w(ixI^S,e_)=w(ixI^S,p_)/(hd_gamma-1.d0) &
               !  +0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_)
            end if
+           if(hd_radiation_fld) then
+              ! do averaging of radiative energy density
+              call small_values_average(ixI^L, ixO^L, w, x, flag, r_e)
+           endif
            if(hd_dust)then
               do n=1,dust_n_species
                  where(flag(ixO^S,dust_rho(n))) w(ixO^S,dust_rho(n)) = 0.0d0
@@ -1846,6 +2577,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
+    if (hd_fip) call hd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine hd_handle_small_values
 
   !> Well-balanced transform: (T, v, q) variable change.

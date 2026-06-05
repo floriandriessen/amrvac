@@ -1,0 +1,7 @@
+ &filelist
+        base_filename  = '_stsmethod1'
+ /
+
+ &sts_list
+        sts_method =1
+ /

@@ -2,9 +2,8 @@
 ! Project : 2.5D MHD circularly polarised Alfven wave propagation
 ! Aim     : multi-D non-linear code test, e.g. to investigate convergence
 ! Results :
-! Update  : 08/03/2017
 ! configuration :
-! $AMRVAC_DIR/setup.pl -d=2
+! $AMRVAC_DIR/setup.pl -d=2 -v=3
 !=====================================================
 
  &filelist

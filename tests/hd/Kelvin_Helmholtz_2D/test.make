@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=2
+SETUP_FLAGS := -d=2 -v=2
 SCHEME_DIR := ../../schemes
 SCHEMES := 3step_hll_cada 4step_hll_mc 4step_hllc_ko rk4_tvdlf_cada	\
 ssprk54_hll_mp5

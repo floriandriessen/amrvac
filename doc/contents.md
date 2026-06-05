@@ -26,6 +26,7 @@ financial support.
 * [Command line](commandline.md) Help on command-line parameters.
 * [Examples](examples.md) Description of various example simulations for which
   parameter files and user modules have been provided.
+* [Units](amrvac_units.md) The way units are set for various physics modules.
 
 # Discretization methods and AMR strategy {#discretization}
 
@@ -73,5 +74,7 @@ visualization.
 * [Line of sight views](collapsed.md) How to output collapsed views for
 visualisation and analysis (e.g. column densities).
 * [Analysis routine](analysis.md) Using the run-time analysis routine.
+* [Dumping arbitrary fields for debugging](debug_field_dump.md) How to write any
+intermediate field (fluxes, electric field, sources) to a .dat file.
 * [3D Printing](print3D.md) A note on how to generate 3D printed results.
 * [Yt visualization](yt_usage.md) The recommended yt usage for visualization.

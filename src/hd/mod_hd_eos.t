@@ -46,8 +46,6 @@ module mod_hd_eos
                 eos%get_csound2 => hd_get_csound2_LTE
                 phys_get_gamma1 => hd_get_gamma1_LTE
                 ! EoS-aware prolongation: interpolate in (rho, v, T) space
-                eos%to_prolong    => hd_to_prolong_LTE
-                eos%from_prolong  => hd_from_prolong_LTE
                 phys_to_prolong   => hd_to_prolong_LTE
                 phys_from_prolong => hd_from_prolong_LTE
             else
@@ -82,6 +80,10 @@ module mod_hd_eos
                 tc_fl%get_rho => eos%get_rho
                 tc_fl%get_ne_nH => eos%get_ne_nH
                 tc_fl%get_var_Rfactor => eos%get_Rfactor
+                tc_fl%inv_gamma_minus_1 =  eos%inv_gamma_minus_1
+                tc_fl%nH2rhoFactor      =  eos%nH2rhoFactor
+                tc_fl%log_T_floor       =  eos_get_log_T_floor()
+                tc_fl%eint_from_T       => eint_nH_from_T
             end if
 
             if (allocated(rc_fl)) then
@@ -90,11 +92,33 @@ module mod_hd_eos
                 rc_fl%get_var_Rfactor => eos%get_Rfactor
                 rc_fl%get_Te => eos%get_Te
                 rc_fl%get_ne_nH => eos%get_ne_nH
+                rc_fl%ionE              =  eos%ionE
+                rc_fl%method            =  eos%method
+                rc_fl%inv_gamma_minus_1 =  eos%inv_gamma_minus_1
+                rc_fl%nH2rhoFactor      =  eos%nH2rhoFactor
+                rc_fl%eion_per_nH       =  eos%eion_per_nH
+                rc_fl%eint_from_T       => eint_nH_from_T
+                rc_fl%p2eint            => p2eint_from_nH_p
+                rc_fl%T_from_eint       => T_from_nH_eint
+                rc_fl%y_from_eint       => y_from_nH_eint
                 !> Build the variable-c_V Townsend Y_mod table now that all
                 !> EoS tables (eint_from_T, T, neOnH) are in code units.
                 !> build_Y_mod_table checks coolmethod=='exact' and .not.isPPL
-                !> internally and early-returns otherwise.
-                if (eos%ionE) call build_Y_mod_table(rc_fl)
+                !> internally and early-returns otherwise. Feed it the inverse-
+                !> table nH grid via the port so it never touches eos% directly.
+                if (eos%ionE) then
+                   call eos_get_eintT_grid(rc_fl%Y_mod_n_nH, &
+                        rc_fl%Y_mod_lg_nH_min, rc_fl%Y_mod_lg_nH_max)
+                   call build_Y_mod_table(rc_fl)
+                end if
+            end if
+
+            if (allocated(fld_fl)) then
+                !> Radiation (FLD) fluid: gas-EoS callbacks. get_temperature_from_pressure
+                !> is the FI T=p/(R*rho) routine (the LTE variant is a later pass).
+                fld_fl%gamma       =  eos%gamma
+                fld_fl%get_tgas    => eos%get_temperature_from_pressure
+                fld_fl%get_Rfactor => eos%get_Rfactor
             end if
         end subroutine bind_eos_to_source
 
@@ -280,7 +304,7 @@ module mod_hd_eos
             use mod_global_parameters
             use mod_dust, only: dust_to_primitive
             use mod_eos, only: T_from_nH_eint, y_from_nH_eint, &
-                saha_T_from_nH_eint, saha_y_from_nH_T, p_nH_from_eint
+                saha_T_from_nH_eint, p_nH_from_eint
             integer, intent(in)             :: ixI^L, ixO^L
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -585,12 +609,23 @@ module mod_hd_eos
         double precision, intent(inout) :: w(ixI^S, nw)
         double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-        double precision :: T_val, eint_val, T_FI, nH_val, log_nH
+        double precision :: T_val, eint_val, T_FI, nH_val, log_nH, log_T_min
         integer :: ix^D
 
         T_FI = (eos%eint_rho_FI_threshold &
             * eos%nH2rhoFactor - eos%eion_per_nH) &
             * eos%gamma_minus_1 / eos%n_per_nH_FI
+
+        ! Floor for log_T when calling the (rho, T) inverse table.
+        ! Legacy 'tables' method populates eos%eint_from_T; entropy method
+        ! populates eos%eintT. Picking the wrong container leaves var2_min = 0
+        ! (uninitialised), which floors T at 10^0 = 1 code unit (= 10^6 K) —
+        ! that clobbers any cold cell going through AMR prolongation.
+        if (eos%method == 'entropy') then
+            log_T_min = eos%eintT%var2_min
+        else
+            log_T_min = eos%eint_from_T%var2_min
+        end if
 
         {do ix^DB=ixOmin^DB,ixOmax^DB\}
             T_val = w(ix^D, e_)  ! T stored in e_ slot
@@ -608,7 +643,7 @@ module mod_hd_eos
             else
                 ! Ionisation zone: eint/nH from T table
                 eint_val = eint_nH_from_T(log_nH, &
-                    dlog10(max(T_val, 10.0d0**eos%eint_from_T%var2_min))) &
+                    dlog10(max(T_val, 10.0d0**log_T_min))) &
                     * nH_val
             end if
 

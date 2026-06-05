@@ -2,7 +2,8 @@
 module mod_usr
 
   ! Include a physics module
-  use mod_rmhd
+  use mod_mhd
+  use mod_eos, only: eos
   use mod_fld
 
   implicit none
@@ -49,7 +50,7 @@ contains
     usr_init_vector_potential=>initvecpot_usr
 
     ! Active the physics module
-    call rmhd_activate()
+    call mhd_activate()
   end subroutine usr_init
 
 
@@ -62,14 +63,14 @@ contains
     p1 = const_kB*T1*rho1/(const_mp*fld_mu)
     p2 = const_kB*T2*rho2/(const_mp*fld_mu)
 
-    eg1 = p1/(rmhd_gamma-1.d0) + half*rho1*(v1*v1 + vy1*vy1 + vz1*vz1) + half*(B1*B1 + By1*By1 + Bz1*Bz1)/(4.0*dpi)
-    eg2 = p2/(rmhd_gamma-1.d0) + half*rho2*(v2*v2 + vy2*vy2 + vz2*vz2) + half*(B2*B2 + By2*By2 + Bz2*Bz2)/(4.0*dpi)
+    eg1 = p1/(eos%gamma-1.d0) + half*rho1*(v1*v1 + vy1*vy1 + vz1*vz1) + half*(B1*B1 + By1*By1 + Bz1*Bz1)/(4.0*dpi)
+    eg2 = p2/(eos%gamma-1.d0) + half*rho2*(v2*v2 + vy2*vy2 + vz2*vz2) + half*(B2*B2 + By2*By2 + Bz2*Bz2)/(4.0*dpi)
 
     Er1 = const_rad_a*T1**4.d0
     Er2 = const_rad_a*T2**4.d0
 
-    print*, 'M_1: ', v1/dsqrt(rmhd_gamma*p1/rho1) 
-    print*, 'M_2: ', v2/dsqrt(rmhd_gamma*p2/rho2) 
+    print*, 'M_1: ', v1/dsqrt(eos%gamma*p1/rho1) 
+    print*, 'M_2: ', v2/dsqrt(eos%gamma*p2/rho2) 
 
     print*, 'RHD-quantity: ', 'Left', ' | ', 'Right'
     print*, 'density', rho1, ' | ', rho2
@@ -207,13 +208,13 @@ contains
   end subroutine initial_conditions
 
 
-  subroutine boundary_conditions(qt,ixI^L,ixB^L,iB,w,x)
+  subroutine boundary_conditions(qdt,qt,ixI^L,ixB^L,iB,w,x)
     use mod_global_parameters
     use mod_fld
 
 
     integer, intent(in)             :: ixI^L, ixB^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in) :: qdt, qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     integer :: ii

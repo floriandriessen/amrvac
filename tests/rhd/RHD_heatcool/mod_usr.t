@@ -2,7 +2,8 @@
 module mod_usr
 
   ! Include a physics module
-  use mod_rhd
+  use mod_hd
+  use mod_eos, only: eos
   use mod_fld
 
   implicit none
@@ -30,7 +31,7 @@ contains
     usr_init_one_grid => initial_conditions
 
     ! Active the physics module
-    call rhd_activate()
+    call hd_activate()
 
   end subroutine usr_init
 
@@ -55,7 +56,7 @@ subroutine initglobaldata_usr
   call usr_params_read(par_files)
 
   e_eq = (E_r0/(const_rad_a))**(1.d0/4.d0) &
-        *one/(rhd_gamma-one)*const_kB*rho0 &
+        *one/(eos%gamma-one)*const_kB*rho0 &
         /(fld_mu*const_mp)
 
 end subroutine initglobaldata_usr
@@ -85,7 +86,6 @@ end subroutine usr_params_read
   subroutine initial_conditions(ixI^L, ixO^L, w, x)
     use mod_global_parameters
     use mod_constants
-    use mod_rhd_phys, only: rhd_get_pthermal
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: x(ixI^S, ndim)

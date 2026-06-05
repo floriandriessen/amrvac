@@ -1,6 +1,7 @@
 !> This is a template for a new user problem
 module mod_usr
-  use mod_rmhd
+  use mod_mhd
+  use mod_eos, only: eos
 
   implicit none
 
@@ -45,7 +46,7 @@ contains
     usr_init_vector_potential=>initvecpot_usr
 
     ! Active the physics module
-    call rmhd_activate() 
+    call mhd_activate() 
 
   end subroutine usr_init
 
@@ -57,8 +58,8 @@ contains
     call params_read(par_files)
 
 
-    eg0 = p0/(rmhd_gamma - one) + half*(B0x*B0x + B0y*B0y + B0z*B0z)/(4.0*dpi) 
-    ca = dsqrt(rmhd_gamma*p0/rho0) 
+    eg0 = p0/(eos%gamma - one) + half*(B0x*B0x + B0y*B0y + B0z*B0z)/(4.0*dpi) 
+    ca = dsqrt(eos%gamma*p0/rho0) 
     a0 = dsqrt(p0/rho0)
     ca = a0 !isothermal
 
@@ -79,8 +80,8 @@ contains
     omega = 2.d0*dpi*cfast/wvl
     wavenumber = 2.d0*dpi/wvl
 
-    Bo = 4*rmhd_gamma*ca*eg0/(const_c*Er0)
-    r_Bo = Er0/(4*rmhd_gamma*eg0)
+    Bo = 4*eos%gamma*ca*eg0/(const_c*Er0)
+    r_Bo = Er0/(4*eos%gamma*eg0)
 
     !-------------------
     tau_c = const_c*fld_kappa0*rho0/omega
@@ -203,7 +204,7 @@ contains
       A_vz = (B0z/B0x)*(omega/wavenumber)*(ampl/rho0)/(1.0d0 - (omega**2)/((vax**2)*(wavenumber**2)))
     endif
     A_Er = 0.0d0 !4.0d0*Er0*(A_p/p0 - A_rho/rho0)
-    A_e = A_p/(rmhd_gamma-one) + B0y*A_By + B0z*A_Bz
+    A_e = A_p/(eos%gamma-one) + B0y*A_By + B0z*A_Bz
 
     if (mype .eq. 0) then
       print*, 'A_rho', A_rho
@@ -271,11 +272,11 @@ contains
   end subroutine initial_conditions
 
 
-  subroutine Initialize_Wave(level,qt,ixI^L,ixO^L,w,x)
+  subroutine Initialize_Wave(level,qt,qdt,ixI^L,ixO^L,w,x)
     use mod_global_parameters
     use mod_fld
     integer, intent(in)             :: ixI^L,ixO^L,level
-    double precision, intent(in)    :: qt
+    double precision, intent(in)    :: qt, qdt
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
@@ -316,7 +317,7 @@ contains
     select case (iB)
     case(2)
       !> Convert energy to pressure
-      call rmhd_to_primitive(ixI^L,ixB^L,w,x)
+      call eos%to_primitive(ixI^L,ixB^L,w,x)
       !w(ixBmin1,rho_) = w(ixBmin1-1,rho_)
       !w(ixBmin1,mom(1)) = w(ixBmin1-1,mom(1))
       !w(ixBmin1,mom(2)) = w(ixBmin1-1,mom(2))
@@ -327,7 +328,7 @@ contains
       !w(ixBmin1,mag(3)) = w(ixBmin1-1,mag(3))
       w(ixBmin1,r_e) = Er0 !w(ixBmin1-1,r_e)
       !> Convert pressure to energy
-      call rmhd_to_conserved(ixI^L,ixB^L,w,x)
+      call eos%to_conserved(ixI^L,ixB^L,w,x)
     case default
       call mpistop('boundary not known')
       end select

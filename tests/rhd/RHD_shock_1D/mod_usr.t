@@ -2,7 +2,8 @@
 module mod_usr
 
   ! Include a physics module
-  use mod_rhd
+  use mod_hd
+  use mod_eos, only: eos
   use mod_fld
 
   implicit none
@@ -41,7 +42,7 @@ contains
     usr_special_mg_bc => mg_boundary_conditions
 
     ! Active the physics module
-    call rhd_activate()
+    call hd_activate()
 
   end subroutine usr_init
 
@@ -55,14 +56,14 @@ contains
     p1 = const_kB*T1*rho1/(const_mp*fld_mu)
     p2 = const_kB*T2*rho2/(const_mp*fld_mu)
 
-    eg1 = p1/(rhd_gamma-1.d0) + half*v1*v1*rho1
-    eg2 = p2/(rhd_gamma-1.d0) + half*v2*v2*rho2
+    eg1 = p1/(eos%gamma-1.d0) + half*v1*v1*rho1
+    eg2 = p2/(eos%gamma-1.d0) + half*v2*v2*rho2
 
     Er1 = const_rad_a*T1**4.d0
     Er2 = const_rad_a*T2**4.d0
 
-    print*, 'M_1: ', v1/dsqrt(rhd_gamma*p1/rho1)
-    print*, 'M_2: ', v2/dsqrt(rhd_gamma*p2/rho2)
+    print*, 'M_1: ', v1/dsqrt(eos%gamma*p1/rho1)
+    print*, 'M_2: ', v2/dsqrt(eos%gamma*p2/rho2)
 
     print*, 'RHD-quantity: ', 'Left', ' | ', 'Right'
     print*, 'density', rho1, ' | ', rho2
@@ -73,13 +74,13 @@ contains
     print*, 'radiation energy', Er1, ' | ', Er2
 
     unit_velocity = v1 !r_arr(nghostcells) ! cm
-    unit_numberdensity = rho1/((1.d0+4.d0*He_abundance)*const_mp)
+    unit_numberdensity = rho1/((1.d0+4.d0*eos%He_abundance)*const_mp)
     unit_length = 1.d5
 
     !> Remaining units
-    unit_density=(1.d0+4.d0*He_abundance)*const_mp*unit_numberdensity
+    unit_density=(1.d0+4.d0*eos%He_abundance)*const_mp*unit_numberdensity
     unit_pressure=unit_density*unit_velocity**2
-    unit_temperature=unit_pressure/((2.d0+3.d0*He_abundance)*unit_numberdensity*const_kB)
+    unit_temperature=unit_pressure/((2.d0+3.d0*eos%He_abundance)*unit_numberdensity*const_kB)
     unit_time=unit_length/unit_velocity
 
     unit_radflux = unit_velocity*unit_pressure
@@ -153,25 +154,25 @@ contains
     w(ixI^S,mom(:)) = 0.d0
     w(ixI^S,mom(1)) = rho1*v1
     w(ixI^S,e_) = eg1
-    w(ixI^S,r_e) = Er1
+    w(ixI^S,iw_r_e) = Er1
 
     where (x(ixI^S,1) .gt. 0.d0)
       w(ixI^S,rho_) = rho2
       w(ixI^S,mom(1)) = rho2*v2
       w(ixI^S,e_) = eg2
-      w(ixI^S,r_e) = Er2
+      w(ixI^S,iw_r_e) = Er2
     end where
 
   end subroutine initial_conditions
 
 
-  subroutine boundary_conditions(qt,ixI^L,ixB^L,iB,w,x)
+  subroutine boundary_conditions(qdt,qt,ixI^L,ixB^L,iB,w,x)
     use mod_global_parameters
     use mod_fld
 
 
     integer, intent(in)             :: ixI^L, ixB^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in) :: qdt, qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     integer :: ii
@@ -183,10 +184,10 @@ contains
       w(ixB^S,mom(:)) = 0.d0
       w(ixB^S,mom(1)) = rho1*v1
       w(ixB^S,e_) = eg1
-      w(ixB^S,r_e) = Er1
+      w(ixB^S,iw_r_e) = Er1
 
     case(2)
-      w(ixB^S,r_e) = Er2
+      w(ixB^S,iw_r_e) = Er2
 
     case default
       call mpistop('boundary not known')
@@ -210,7 +211,7 @@ contains
         mg%bc(iB, mg_iphi)%bc_value = Er2
 
       case default
-        print *, "Not a standard: ", typeboundary(r_e, iB)
+        print *, "Not a standard: ", typeboundary(iw_r_e, iB)
         error stop "Set special bound for this Boundary "
     end select
   end subroutine mg_boundary_conditions

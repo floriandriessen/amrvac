@@ -53,7 +53,7 @@ module mod_usr_methods
   procedure(phys_dust_get_3d_dragforce), pointer :: usr_get_3d_dragforce => null()
 
   ! Usr defined space varying viscosity
-  procedure(phys_visco), pointer      :: usr_setvisco         => null()
+  procedure(set_viscosity), pointer   :: usr_set_viscosity    => null()
 
   ! Usr defined thermal pressure for hydro & energy=.False.
   procedure(hd_pthermal), pointer     :: usr_set_pthermal     => null()
@@ -82,8 +82,6 @@ module mod_usr_methods
 
   ! Radiation quantity related
   procedure(special_opacity), pointer   :: usr_special_opacity => null()
-  procedure(special_aniso_opacity), pointer   :: usr_special_aniso_opacity => null()
-  procedure(special_opacity_qdot), pointer   :: usr_special_opacity_qdot => null()
   procedure(special_fluxlimiter), pointer   :: usr_special_fluxlimiter => null()
   procedure(special_diffcoef), pointer   :: usr_special_diffcoef => null()
 
@@ -110,6 +108,10 @@ module mod_usr_methods
 
   ! allow user to specify R factor in ideal gas law with partial ionization
   procedure(Rfactor), pointer :: usr_Rfactor => null()
+
+  ! allow user to specify adiabatic index and gamma dependent on space
+  procedure(set_adiab), pointer :: usr_set_adiab => null()
+  procedure(set_adiab), pointer :: usr_set_gamma => null()
 
   abstract interface
 
@@ -280,13 +282,13 @@ module mod_usr_methods
     end subroutine phys_dust_get_dt
 
     !>Calculation anormal viscosity depending on space
-    subroutine phys_visco(ixI^L,ixO^L,x,w,mu)
+    subroutine set_viscosity(ixI^L,ixO^L,x,wp,mu)
       use mod_global_parameters
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(in)    :: x(ixI^S,1:ndim)
-      double precision, intent(in)    :: w(ixI^S,1:nw)
+      double precision, intent(in)    :: wp(ixI^S,1:nw) ! primitive w
       double precision, intent(out)   :: mu(ixI^S)
-    end subroutine phys_visco
+    end subroutine set_viscosity
 
     !>Calculation anormal pressure for hd & energy=.False.
     subroutine hd_pthermal(w,x,ixI^L,ixO^L,pth)
@@ -306,6 +308,15 @@ module mod_usr_methods
       double precision, intent(out)   :: pth(ixI^S)
     end subroutine Rfactor
 
+    !>set adiabatic index
+    subroutine set_adiab(w,x,ixI^L,ixO^L,adiab)
+      use mod_global_parameters
+      integer, intent(in)             :: ixI^L, ixO^L
+      double precision, intent(in)    :: x(ixI^S,1:ndim)
+      double precision, intent(in)    :: w(ixI^S,1:nw)
+      double precision, intent(out)   :: adiab(ixI^S)
+    end subroutine set_adiab
+
     !> Set the "eta" array for resistive MHD based on w or the
     !> "current" variable which has components between idirmin and 3.
     subroutine special_resistivity(w,ixI^L,ixO^L,idirmin,x,current,eta)
@@ -322,24 +333,8 @@ module mod_usr_methods
       use mod_global_parameters
       integer, intent(in)          :: ixI^L, ixO^L
       double precision, intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
-      double precision, intent(out):: kappa(ixO^S)
+      double precision, intent(out):: kappa(ixI^S)
     end subroutine special_opacity
-
-    !> Set user defined, anisotropic opacity for use in diffusion coeff, heating and cooling, and radiation force
-    subroutine special_aniso_opacity(ixI^L,ixO^L,w,x,kappa,idir)
-      use mod_global_parameters
-      integer, intent(in)          :: ixI^L, ixO^L, idir
-      double precision, intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
-      double precision, intent(out):: kappa(ixO^S)
-    end subroutine special_aniso_opacity
-
-    !> Set user defined opacity for use in diffusion coeff, heating and cooling, and radiation force. Overwrites special_opacity
-    subroutine special_opacity_qdot(ixI^L,ixO^L,w,x,kappa)
-      use mod_global_parameters
-      integer, intent(in)          :: ixI^L, ixO^L
-      double precision, intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
-      double precision, intent(out):: kappa(ixO^S)
-    end subroutine special_opacity_qdot
 
     !> Set user defined FLD flux limiter, lambda
     subroutine special_fluxlimiter(ixI^L,ixO^L,w,x,fld_lambda,fld_R)
@@ -350,11 +345,11 @@ module mod_usr_methods
     end subroutine special_fluxlimiter
 
     !> Set user defined FLD diffusion coefficient
-    subroutine special_diffcoef(w, wCT, x, ixI^L, ixO^L)
+    subroutine special_diffcoef(w, wprim, x, ixI^L, ixO^L)
       use mod_global_parameters
       integer, intent(in)          :: ixI^L, ixO^L
       double precision, intent(inout) :: w(ixI^S, 1:nw)
-      double precision, intent(in) :: wCT(ixI^S, 1:nw)
+      double precision, intent(in) :: wprim(ixI^S, 1:nw)
       double precision, intent(in) :: x(ixI^S, 1:ndim)
     end subroutine special_diffcoef
 

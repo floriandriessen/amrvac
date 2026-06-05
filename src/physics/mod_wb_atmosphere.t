@@ -156,17 +156,19 @@ contains
 
   !> Set w to the equilibrium state (rho, v=0, p) at each cell position.
   !>
+  !> Point-value sample of the trap-rule-built grid table at cell centres.
+  !> Consistent with the legacy_trap WB transform which expects point-value
+  !> IC matching its own trap-rule recurrence at L_max.
+  !>
   !> On exit: w(rho_) = rho_eq, w(mom(:)) = 0, w(p_) = p_eq.
   !> The caller must call phys_to_conserved afterwards.
-  !>
-  !> Works in any dimensionality: uses x(ix^D, wb_grav_dir) as the lookup key.
   subroutine wb_atmos_set_w(ixI^L, ixO^L, w, x)
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(inout) :: w(ixI^S, 1:nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
     double precision :: s
-    integer :: ig, iw
+    integer :: ig
     integer :: ix^D
 
     if (.not. wb_initialised) &

@@ -7,6 +7,7 @@ module mod_mhd_phys
   use mod_thermal_conduction, only: tc_fluid
   use mod_radiative_cooling, only: rc_fluid
   use mod_thermal_emission, only: te_fluid
+  use mod_fld, only: fld_fluid
   use mod_physics
   use mod_eos
   use mod_comm_lib, only: mpistop
@@ -25,8 +26,6 @@ module mod_mhd_phys
   double precision, public                :: mhd_etah = 0.0d0
   !> The MHD ambipolar coefficient
   double precision, public                :: mhd_eta_ambi = 0.0d0
-  !> The small_est allowed energy
-  double precision, protected             :: small_e
   !> Height of the mask used in the TRAC method
   double precision, public, protected     :: mhd_trac_mask = 0.d0
   !> GLM-MHD parameter: ratio of the diffusive and advective time scales for div b
@@ -35,9 +34,10 @@ module mod_mhd_phys
   !> Reduced speed of light for semirelativistic MHD: 2% of light speed
   double precision, public, protected     :: mhd_reduced_c = 0.02d0*const_c
   !> The thermal conductivity kappa in hyperbolic thermal conduction
-  double precision, public                :: hypertc_kappa
+  double precision, public                :: mhd_hyperbolic_tc_kappa = 0.d0
+  logical, public                         :: mhd_hyperbolic_tc_constant = .false.
   !> Coefficient of diffusive divB cleaning
-  double precision                        :: divbdiff     = 0.8d0
+  double precision, public                :: divbdiff     = 0.8d0
   !> Ionization fraction of H
   !> H_ion_fr = H+/(H+ + H)
   double precision, public, protected  :: H_ion_fr=1d0
@@ -52,7 +52,7 @@ module mod_mhd_phys
   ! and it is p = RR * rho * T
   double precision, public, protected  :: RR=1d0
   !> inverse of squared speed of light c0 and reduced speed of light c
-  double precision :: inv_squared_c0, inv_squared_c
+  double precision :: inv_squared_c0=0.d0, inv_squared_c=0.d0
   !> equi vars indices in the state%equi_vars array
   integer, public :: equi_rho0_ = -1
   integer, public :: equi_pe0_ = -1
@@ -72,12 +72,20 @@ module mod_mhd_phys
   integer, public, protected              :: p_
   !> Index of the electron number density for LTE module
   integer, public, protected :: Ne_
-  !> Index of the heat flux q
-  integer, public, protected :: q_
+  !> Index of the field-aligned heat flux q_parallel
+  integer, public, protected :: qpar_
+  !> Index of the perpendicular heat flux q_perp
+  integer, public, protected :: qperp_
   !> Indices of the GLM psi
   integer, public, protected :: psi_
+  !> Index of the radiation energy
+  integer, public, protected :: r_e
   !> Indices of temperature
   integer, public, protected :: Te_
+  !> Index of the FIP passive scalar rho*fip in conserved form, fip in primitive form
+  integer, public, protected :: fip_ = -1
+  !> Whether FIP passive scalar is enabled
+  logical, public, protected :: mhd_fip = .false.
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
   integer, public, protected              :: Tweight_
@@ -107,9 +115,20 @@ module mod_mhd_phys
   !> Whether radiative cooling is added
   logical, public, protected              :: mhd_radiative_cooling = .false.
   !> Whether thermal conduction is used
-  logical, public, protected              :: mhd_hyperbolic_thermal_conduction = .false.
+  logical, public, protected              :: mhd_hyperbolic_tc = .false.
   !> Whether saturation is considered for hyperbolic TC
-  logical, public, protected              :: mhd_htc_sat = .false.
+  logical, public, protected              :: mhd_hyperbolic_tc_sat = .false.
+  !> Whether the perpendicular hyperbolic-TC channel is enabled
+  logical, public, protected              :: mhd_hyperbolic_tc_use_perp = .false.
+  !> Perpendicular hyperbolic-TC closure mode:
+  !> 0 = off, 1 = fixed anisotropy, 2 = field-strength-dependent isotropization
+  !> 3 = magnetization-based closure kappa_perp = kappa_parallel/(1+chi^2)
+  integer, public, protected              :: mhd_hyperbolic_tc_perp_mode = 0
+  !> Relative perpendicular hyperbolic-TC coefficient in fixed/strong-field limit:
+  !> kappa_perp0 = mhd_hyperbolic_tc_kappa_perp_factor * kappa_parallel
+  double precision, public, protected     :: mhd_hyperbolic_tc_kappa_perp_factor = 0.d0
+  !> Field-strength transition scale for perpendicular closure
+  double precision, public, protected     :: mhd_hyperbolic_tc_Bmin = 0.d0
   !> Whether viscosity is added
   logical, public, protected              :: mhd_viscosity = .false.
   !> Whether gravity is added
@@ -117,7 +136,7 @@ module mod_mhd_phys
   !> Whether rotating frame is activated
   logical, public, protected              :: mhd_rotating_frame = .false.
   !> Whether Hall-MHD is used
-  logical, public, protected              :: mhd_Hall = .false.
+  logical, public, protected              :: mhd_hall = .false.
   !> Whether Ambipolar term is used
   logical, public, protected              :: mhd_ambipolar = .false.
   !> Whether Ambipolar term is implemented using supertimestepping
@@ -140,31 +159,27 @@ module mod_mhd_phys
   integer, public, protected              :: mhd_trac_finegrid=4
   !> Whether internal energy is solved instead of total energy
   logical, public, protected              :: mhd_internal_e = .false.
-  !TODO this does not work with the splitting: check mhd_check_w_hde and mhd_handle_small_values_hde
   !> Whether hydrodynamic energy is solved instead of total energy
   logical, public, protected              :: mhd_hydrodynamic_e = .false.
   !> Whether divB cleaning sources are added splitting from fluid solver
   logical, public, protected              :: source_split_divb = .false.
-  !TODO this does not work with the splitting: check mhd_check_w_semirelati and mhd_handle_small_values_semirelati
   !> Whether semirelativistic MHD equations (Gombosi 2002 JCP) are solved
   logical, public, protected              :: mhd_semirelativistic = .false.
   !> Whether plasma is partially ionized
   logical, public, protected              :: mhd_partial_ionization = .false.
   !> Whether CAK radiation line force is activated
   logical, public, protected              :: mhd_cak_force = .false.
-  !> MHD fourth order
-  logical, public, protected              :: mhd_4th_order = .false.
-  !> whether split off equilibrium density
-  logical, public :: has_equi_rho0 = .false.
-  !> whether split off equilibrium thermal pressure
-  logical, public :: has_equi_pe0 = .false.
+  !> Whether radiation-gas interaction is handled using flux limited diffusion
+  logical, public, protected              :: mhd_radiation_fld = .false.
+  !> Radiation fluid object (gas-EoS callbacks for FLD), wired in mhd_link_eos
+  type(fld_fluid), allocatable, public    :: fld_fl
+  !> whether split off equilibrium density and pressure
+  logical, public :: has_equi_rho_and_p = .false.
   logical, public :: mhd_equi_thermal = .false.
   !> whether dump full variables (when splitting is used) in a separate dat file
   logical, public, protected              :: mhd_dump_full_vars = .false.
   !> Whether divB is computed with a fourth order approximation
   integer, public, protected :: mhd_divb_nth = 1
-  !> Use a compact way to add resistivity
-  logical :: compactres   = .false.
   !> Add divB wave in Roe solver
   logical, public :: divbwave     = .true.
   !> clean initial divB
@@ -179,12 +194,10 @@ module mod_mhd_phys
   logical, public, protected :: B0field_forcefree=.true.
   !> Whether an total energy equation is used
   logical :: total_energy = .true.
-  !> Whether an internal or hydrodynamic energy equation is used
-  logical, public :: partial_energy = .false.
+  !> Whether numerical resistive heating is included when solving partial energy equation
+  logical, public :: numerical_resistive_heating = .false.
   !> Whether gravity work is included in energy equation
   logical :: gravity_energy
-  !> gravity work is calculated use density times velocity or conservative momentum
-  logical :: gravity_rhov = .false.
   !> Method type to clean divergence of B
   character(len=std_len), public, protected :: typedivbfix  = 'linde'
   !> Method type of constrained transport
@@ -235,6 +248,21 @@ module mod_mhd_phys
   {^NOONED
   public :: mhd_clean_divb_multigrid
   }
+  ! Begin: following relevant for radiative MHD using FLD
+  ! first four are local and only of interest for mod_usr applications
+  ! where they can be used in diagnostics
+  ! NOTE those with _prim expect primitives on entry
+  public :: mhd_get_pthermal_plus_pradiation
+  public :: mhd_get_csrad2
+  public :: mhd_get_trad
+  public :: mhd_get_pradiation_from_prim
+  !    as pointer phys_get_csrad2
+  public :: mhd_get_csrad2_prim
+  ! End: following relevant for radiative MHD using FLD
+  ! Removed orphan public declarations: mhd_get_Rfactor, mhd_get_temperature_from_prim,
+  ! mhd_get_temperature_from_etot. These functions live in mod_mhd_eos.t and are
+  ! reached via the eos% / phys_get_Rfactor / phys_get_tgas / phys_get_temperature
+  ! procedure pointers bound by mod_mhd_eos:bind_eos_to_source.
 
 contains
 
@@ -247,16 +275,19 @@ contains
 
     namelist /mhd_list/ mhd_energy, mhd_n_tracer, mhd_adiab,&
       mhd_eta, mhd_eta_hyper, mhd_etah, mhd_eta_ambi, mhd_glm_alpha, mhd_glm_extended, mhd_magnetofriction,&
-      mhd_thermal_conduction, mhd_radiative_cooling, mhd_Hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
-      mhd_rotating_frame,mhd_viscosity, mhd_4th_order, typedivbfix, source_split_divb, divbdiff,&
-      typedivbdiff, type_ct, compactres, divbwave, &
+      mhd_thermal_conduction, mhd_radiative_cooling, mhd_hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
+      mhd_rotating_frame,mhd_viscosity, typedivbfix, source_split_divb, divbdiff,&
+      typedivbdiff, type_ct, divbwave, &
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
-      particles_eta, particles_etah,has_equi_rho0, has_equi_pe0,mhd_equi_thermal,&
+      particles_eta, particles_etah,has_equi_rho_and_p,mhd_equi_thermal,&
       boundary_divbfix, boundary_divbfix_skip, mhd_divb_nth, mhd_semirelativistic,&
-      mhd_reduced_c, clean_initial_divb, mhd_internal_e, &
+      mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
       mhd_hydrodynamic_e, mhd_trac, mhd_trac_type, mhd_trac_mask, mhd_trac_finegrid, mhd_cak_force, &
-      mhd_hyperbolic_thermal_conduction, mhd_htc_sat
+      mhd_hyperbolic_tc, mhd_hyperbolic_tc_sat, mhd_hyperbolic_tc_kappa, &
+      mhd_hyperbolic_tc_use_perp, mhd_hyperbolic_tc_perp_mode, &
+      mhd_hyperbolic_tc_kappa_perp_factor, mhd_hyperbolic_tc_Bmin, &
+      mhd_radiation_fld, mhd_fip
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -293,17 +324,18 @@ contains
     use mod_radiative_cooling
     use mod_viscosity, only: viscosity_init
     use mod_gravity, only: gravity_init
-    use mod_particles, only: particles_init, particles_eta, particles_etah
     use mod_magnetofriction, only: magnetofriction_init
     use mod_rotating_frame, only: rotating_frame_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_cak_force, only: cak_init
     use mod_ionization_degree
+    use mod_geometry
     use mod_usr_methods, only: usr_Rfactor
     {^NOONED
     use mod_multigrid_coupling
     }
+    use mod_fld
 
     integer :: itr, idir
 
@@ -314,10 +346,40 @@ contains
         mhd_hydrodynamic_e=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_hydrodynamic_e=F when mhd_internal_e=T'
       end if
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_internal_e=T'
+      end if
+    end if
+
+    if(mhd_hydrodynamic_e) then
+      if(mhd_internal_e) then
+        mhd_internal_e=.false.
+        if(mype==0) write(*,*) 'WARNING: set mhd_internal_e=F when mhd_hydrodynamic_e=T'
+      end if
+      if(B0field) then
+        B0field=.false.
+        if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_hydrodynamic_e=T'
+      end if
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_hydrodynamic_e=T'
+      end if
     end if
 
     if(mhd_semirelativistic) then
-      if(B0field) B0fieldAllocCoarse=.true.
+      if(B0field) then
+        B0field=.false.
+        if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_semirelativistic=T'
+      endif
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_semirelativistic=T'
+      end if
+      if(mhd_hydrodynamic_e) then
+        mhd_hydrodynamic_e=.false.
+        if(mype==0) write(*,*) 'WARNING: set mhd_hydrodynamic_e=F when mhd_semirelativistic=T'
+      end if
     end if
 
     if(.not. mhd_energy) then
@@ -333,9 +395,9 @@ contains
         mhd_thermal_conduction=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_thermal_conduction=F when mhd_energy=F'
       end if
-      if(mhd_thermal_conduction) then
-        mhd_hyperbolic_thermal_conduction=.false.
-        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_thermal_conduction=F'
+      if(mhd_hyperbolic_tc) then
+        mhd_hyperbolic_tc=.false.
+        if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_tc=F when mhd_energy=F'
       end if
       if(mhd_radiative_cooling) then
         mhd_radiative_cooling=.false.
@@ -353,13 +415,9 @@ contains
         B0field=.false.
         if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_energy=F'
       end if
-      if(has_equi_rho0) then
-        has_equi_rho0=.false.
-        if(mype==0) write(*,*) 'WARNING: set has_equi_rho0=F when mhd_energy=F'
-      end if
-      if(has_equi_pe0) then
-        has_equi_pe0=.false.
-        if(mype==0) write(*,*) 'WARNING: set has_equi_pe0=F when mhd_energy=F'
+      if(has_equi_rho_and_p) then
+        has_equi_rho_and_p=.false.
+        if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_energy=F'
       end if
     end if
     if(.not.eq_state_units) then
@@ -369,11 +427,16 @@ contains
       end if
     end if
 
-    if(mhd_hyperbolic_thermal_conduction) then
+    if(mhd_thermal_conduction .and. mhd_hyperbolic_tc) then
       mhd_thermal_conduction=.false.
-      if(mype==0) write(*,*) 'WARNING: turn off parabolic TC when using hyperbolic TC'
+      if(mype==0) write(*,*) 'WARNING: set either parabolic TC or hyperbolic TC to F'
+      if(mype==0) write(*,*) 'WARNING: defaulting to only mhd_hyperbolic_tc=T'
     end if
-
+    {^IFONED
+    if (mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp) then
+      call mpistop("mhd_hyperbolic_tc_use_perp is not supported in 1D")
+    end if
+    }
 
     physics_type = "mhd"
     phys_energy=mhd_energy
@@ -387,10 +450,9 @@ contains
 
     if(mhd_energy) then
       if(mhd_internal_e.or.mhd_hydrodynamic_e) then
-        partial_energy=.true.
         total_energy=.false.
       else
-        partial_energy=.false.
+        numerical_resistive_heating=.false.
         total_energy=.true.
       end if
     else
@@ -402,12 +464,6 @@ contains
         gravity_energy=.false.
       else
         gravity_energy=.true.
-      end if
-      if(has_equi_rho0) then
-        gravity_rhov=.true.
-      end if
-      if(mhd_semirelativistic.and..not.mhd_hydrodynamic_e) then
-        gravity_rhov=.true.
       end if
     else
       gravity_energy=.false.
@@ -425,7 +481,6 @@ contains
     end if
     phys_trac_mask=mhd_trac_mask
 
-    ! set default gamma for polytropic/isothermal process
     use_particles=mhd_particles
     if(ndim==1) typedivbfix='none'
     select case (typedivbfix)
@@ -433,6 +488,7 @@ contains
        type_divb = divb_none
     {^NOONED
     case ('multigrid')
+       if(mhd_radiation_fld) call mpistop('To verify whether mg usage for FLD versus divB can be combined')
        type_divb = divb_multigrid
        use_multigrid = .true.
        mg%operator_type = mg_laplacian
@@ -494,13 +550,23 @@ contains
       psi_ = -1
     end if
 
-    if(mhd_hyperbolic_thermal_conduction) then
-      ! hyperbolic thermal conduction flux q
-      ! Must be registered before non-flux vars (Ne_, Te_) to avoid index collision
-      q_ = var_set_q()
+    if(mhd_hyperbolic_tc) then
+      qpar_ = var_set_fluxvar('q', 'q', need_bc=.false.)
+      if(mhd_hyperbolic_tc_use_perp) then
+        qperp_ = var_set_fluxvar('qperp', 'qperp', need_bc=.false.)
+      else
+        qperp_ = -1
+      end if
       need_global_cmax=.true.
     else
-      q_=-1
+      qpar_ = -1
+      qperp_ = -1
+    end if
+
+    if (mhd_fip) then
+      fip_ = var_set_fluxvar('rho_fip', 'fip', need_bc=.false.)
+    else
+      fip_ = -1
     end if
 
     if (eos%eos_type == 'LTE') then
@@ -519,6 +585,48 @@ contains
     do itr = 1, mhd_n_tracer
       tracer(itr) = var_set_fluxvar("trc", "trp", itr, need_bc=.false.)
     end do
+ 
+    if(mhd_radiation_fld)then
+       if(mhd_cak_force)then
+          if(mype==0) then
+            write(*,*)'Warning: CAK force addition together with FLD radiation'
+          endif
+       endif
+       if(mhd_radiative_cooling)then
+          if(mype==0) then
+            write(*,*)'Warning: Optically thin cooling together with FLD radiation'
+          endif
+       endif
+       if(.not.mhd_energy)then
+          call mpistop('using FLD implies the use of an energy equation, set mhd_energy=T')
+       else
+          if(mhd_semirelativistic)then
+            call mpistop('using FLD not yet with semirelativistic energy formalism')
+          endif
+          if(mhd_hydrodynamic_e.or.mhd_internal_e)then
+            call mpistop('using FLD not yet with hydrodynamic or internal energy formalism')
+          endif
+          if(has_equi_rho_and_p)then
+            call mpistop('using FLD not yet with split off rho and p')
+          endif
+          ! Note: so far ok with total energy equation but allow both split or unsplit B0
+          !> set added variable and equation for radiation energy
+          r_e = var_set_radiation_energy()
+          phys_get_csrad2          => mhd_get_csrad2_prim
+          !> Radiation fluid object: its EoS callbacks are wired in mhd_link_eos
+          allocate(fld_fl)
+          !> Initiate radiation-closure module
+          call fld_init()
+          !> The implicit (MG diffusion) hooks need the fld_fl object, so they
+          !> are wired here to physics-module wrappers that inject it.
+          if(use_multigrid)then
+             phys_implicit_update   => mhd_fld_implicit_update
+             phys_evaluate_implicit => mhd_fld_evaluate_implicit
+          endif
+       endif
+    else
+      r_e=-1
+    endif
 
     ! set number of variables which need update ghostcells
     nwgc=nwflux+nwaux
@@ -540,24 +648,21 @@ contains
 
     ! set indices of equi vars and update number_equi_vars
     number_equi_vars = 0
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       number_equi_vars = number_equi_vars + 1
       equi_rho0_ = number_equi_vars
       iw_equi_rho = equi_rho0_
-    endif
-    if(has_equi_pe0) then
       number_equi_vars = number_equi_vars + 1
       equi_pe0_ = number_equi_vars
       iw_equi_p = equi_pe0_
-      phys_equi_pe=.true.
     endif
     ! determine number of stagger variables
     nws=ndim
 
     nvector      = 2 ! No. vector vars
     allocate(iw_vector(nvector))
-    iw_vector(1) = mom(1) - 1   ! TODO: why like this?
-    iw_vector(2) = mag(1) - 1   ! TODO: why like this?
+    iw_vector(1) = mom(1) - 1
+    iw_vector(2) = mag(1) - 1
 
     ! Check whether custom flux types have been defined
     if (.not. allocated(flux_type)) then
@@ -600,10 +705,9 @@ contains
         phys_get_cmax            => mhd_get_cmax_origin_noe
       end if
     end if
-    phys_get_a2max           => mhd_get_a2max
     phys_get_tcutoff         => mhd_get_tcutoff
     phys_get_H_speed         => mhd_get_H_speed
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       phys_get_cbounds         => mhd_get_cbounds_split_rho
     else if(mhd_semirelativistic) then
       phys_get_cbounds         => mhd_get_cbounds_semirelati
@@ -611,44 +715,12 @@ contains
       phys_get_cbounds         => mhd_get_cbounds
     end if
 
-    !> EOS module
-    eos%inv_squared_c0 = inv_squared_c0
-    eos%inv_squared_c  = inv_squared_c
-    ! dict%physics_type = physics_type
-    ! call set_dict_flag(dict, 'mhd_hydrodynamic_e', mhd_hydrodynamic_e)
-    ! call set_dict_flag(dict, 'mhd_semirelativistic', mhd_semirelativistic)
-    ! call set_dict_flag(dict, 'mhd_internal_e', mhd_internal_e)
-    ! call set_dict_flag(dict, 'has_equi_rho0', has_equi_rho0)
-    ! call set_dict_flag(dict, 'mhd_energy ', mhd_energy)
-    ! eos%phys_dict = dict
-
-    ! if(mhd_hydrodynamic_e) then
-    !   eos%to_primitive        => mhd_to_primitive_hde
-    !   eos%to_conserved        => mhd_to_conserved_hde
-    ! else if(mhd_semirelativistic) then
-    !   if(mhd_energy) then
-    !     eos%to_primitive        => mhd_to_primitive_semirelati
-    !     eos%to_conserved        => mhd_to_conserved_semirelati
-    !   else
-    !     eos%to_primitive        => mhd_to_primitive_semirelati_noe
-    !     eos%to_conserved        => mhd_to_conserved_semirelati_noe
-    !   end if
-    ! else
-    !   if(has_equi_rho0) then
-    !     eos%to_primitive        => mhd_to_primitive_split_rho
-    !     eos%to_conserved        => mhd_to_conserved_split_rho
-    !   else if(mhd_internal_e) then
-    !     eos%to_primitive        => mhd_to_primitive_inte
-    !     eos%to_conserved        => mhd_to_conserved_inte
-    !   else if(mhd_energy) then
-    !     eos%to_primitive         => mhd_to_primitive_origin
-    !     eos%to_conserved         => mhd_to_conserved_origin
-    !   else
-    !     eos%to_primitive         => mhd_to_primitive_origin_noe
-    !     eos%to_conserved         => mhd_to_conserved_origin_noe
-    !   end if
-    ! end if
-
+    !> EOS module: phys_to_primitive / phys_to_conserved are bound by
+    !> mod_mhd_eos:bind_eos_to_source to route through the EoS layer;
+    !> mhd_to_primitive / mhd_to_conserved pointers are NOT used - every
+    !> call to convert state goes through eos%to_primitive / eos%to_conserved.
+    !> eos%inv_squared_c{0,} are set in mhd_physical_units (called below)
+    !> after inv_squared_c{0,} are computed.
     if(mhd_hydrodynamic_e) then
       phys_get_flux            => mhd_get_flux_hde
     else if(mhd_semirelativistic) then
@@ -658,7 +730,7 @@ contains
         phys_get_flux            => mhd_get_flux_semirelati_noe
       end if
     else
-      if(B0field.or.has_equi_rho0.or.has_equi_pe0) then
+      if(B0field.or.has_equi_rho_and_p) then
         phys_get_flux            => mhd_get_flux_split
       else if(mhd_energy) then
         phys_get_flux            => mhd_get_flux
@@ -669,7 +741,7 @@ contains
     phys_get_v                 => mhd_get_v
     if(mhd_semirelativistic) then
       phys_add_source_geom     => mhd_add_source_geom_semirelati
-    else if(B0field.or.has_equi_rho0) then
+    else if(B0field.or.has_equi_rho_and_p) then
       phys_add_source_geom     => mhd_add_source_geom_split
     else
       phys_add_source_geom     => mhd_add_source_geom
@@ -690,7 +762,7 @@ contains
       phys_handle_small_values => mhd_handle_small_values_semirelati
       mhd_handle_small_values  => mhd_handle_small_values_semirelati
       phys_check_w             => mhd_check_w_semirelati
-    else if(has_equi_rho0) then
+    else if(has_equi_rho_and_p) then
       phys_handle_small_values => mhd_handle_small_values_split
       mhd_handle_small_values  => mhd_handle_small_values_split
       phys_check_w             => mhd_check_w_split
@@ -714,8 +786,9 @@ contains
       phys_modify_wLR => mhd_modify_wLR
     end if
 
-    ! mhd_get_temperature and eos%get_Rfactor pointers are set by
-    ! mhd_link_eos (mod_mhd_eos.t), called immediately after mhd_phys_init.
+    ! Rfactor / temperature / pthermal pointers are bound by
+    ! mod_mhd_eos:bind_eos_to_source (called by mhd_link_eos immediately
+    ! after mhd_phys_init). No EoS machinery in mod_mhd_phys.t.
 
     ! if using ct stagger grid, boundary divb=0 is not done here
     if(stagger_grid) then
@@ -743,19 +816,48 @@ contains
 
     {^NOONED
     ! clean initial divb
+    if(clean_initial_divb.and.mhd_radiation_fld) &
+       call mpistop('To verify whether mg usage for FLD versus divB can be combined')
     if(clean_initial_divb) phys_clean_divb => mhd_clean_divb_multigrid
     }
 
     ! derive units from basic units
     call mhd_physical_units()
 
-    if(mhd_hyperbolic_thermal_conduction) then
-      hypertc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+    if(mhd_hyperbolic_tc) then
+      if(mhd_hyperbolic_tc_kappa==0.d0) then
+        if(SI_unit) then
+          mhd_hyperbolic_tc_kappa=8.d-12*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+        else
+          mhd_hyperbolic_tc_kappa=8.d-7*unit_temperature**3.5d0/unit_length/unit_density/unit_velocity**3
+        end if
+      else
+        mhd_hyperbolic_tc_constant=.true.
+      end if
+    
+      if(mhd_hyperbolic_tc_use_perp) then
+        select case(mhd_hyperbolic_tc_perp_mode)
+        case(1)
+          if(mhd_hyperbolic_tc_kappa_perp_factor==0.d0) then
+            if(SI_unit) then
+              mhd_hyperbolic_tc_kappa_perp_factor = 4.d-30 * &
+                unit_numberdensity**2 / unit_magneticfield**2 / unit_temperature**3
+            else
+              mhd_hyperbolic_tc_kappa_perp_factor = 4.d-10 * &
+                unit_numberdensity**2 / unit_magneticfield**2 / unit_temperature**3
+            end if
+          end if
+        case(2)
+          if(mhd_hyperbolic_tc_Bmin==0.d0) then
+            mhd_hyperbolic_tc_Bmin=0.1d0/unit_magneticfield
+          end if
+        end select
+      end if
     end if
     if(.not. mhd_energy .and. mhd_thermal_conduction) then
       call mpistop("thermal conduction needs mhd_energy=T")
     end if
-    if(.not. mhd_energy .and. mhd_hyperbolic_thermal_conduction) then
+    if(.not. mhd_energy .and. mhd_hyperbolic_tc) then
       call mpistop("hyperbolic thermal conduction needs mhd_energy=T")
     end if
     if(.not. mhd_energy .and. mhd_radiative_cooling) then
@@ -767,6 +869,20 @@ contains
         iw_log_nH = var_set_wextra()
     end if
 
+    if(mhd_equi_thermal)then
+       if((.not.has_equi_rho_and_p).or.(.not.total_energy))then
+          mhd_equi_thermal=.false.
+          if(mype==0) write(*,*) 'WARNING: turning mhd_equi_thermal=F as no splitting or total e in use'
+       else
+          if(mhd_thermal_conduction.or.mhd_radiative_cooling)then
+            if(mype==0) write(*,*) 'Will subtract thermal balance in TC or RC with mhd_equi_thermal=T'
+          else
+            mhd_equi_thermal=.false.
+            if(mype==0) write(*,*) 'WARNING: turning mhd_equi_thermal=F as no TC or RC in use'
+          endif
+       endif
+    endif
+
     ! initialize thermal conduction module
     if (mhd_thermal_conduction) then
       call sts_init()
@@ -774,10 +890,15 @@ contains
 
       allocate(tc_fl)
       call tc_get_mhd_params(tc_fl,tc_params_read_mhd)
-      call add_sts_method(mhd_get_tc_dt_mhd,mhd_sts_set_source_tc_mhd,e_,1,e_,1,.false.)
-      ! TC function pointers (get_temperature_from_eint, get_rho, etc.)
-      ! are set by bind_eos_to_source (called from eos_finalise) to ensure
-      ! they point to the correct EoS-aware implementations.
+      if(ndim==1) then
+        call add_sts_method(mhd_get_tc_dt_hd,mhd_sts_set_source_tc_hd,e_,1,e_,1,.false.)
+      else
+        call add_sts_method(mhd_get_tc_dt_mhd,mhd_sts_set_source_tc_mhd,e_,1,e_,1,.false.)
+      endif
+      ! TC function pointers (get_temperature_from_conserved/eint, get_rho,
+      ! get_temperature_equi, get_rho_equi, subtract_equi) are bound by
+      ! bind_eos_to_source in mod_mhd_eos.t to the correct EoS-aware
+      ! implementations. No EoS machinery in mod_mhd_phys.t.
       if(.not.mhd_internal_e) then
         if(mhd_hydrodynamic_e) then
           call set_conversion_methods_to_head(mhd_e_to_ei_hde, mhd_ei_to_e_hde)
@@ -820,19 +941,39 @@ contains
     if (mhd_radiative_cooling) then
       call radiative_cooling_init_params(eos%gamma,eos%He_abundance)
       allocate(rc_fl)
+      rc_fl%fip_ = fip_
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
+      rc_fl%subtract_equi = has_equi_rho_and_p
       ! rc_fl EoS pointers (get_rho, get_pthermal, get_var_Rfactor,
-      ! equi accessors) are set by bind_eos_to_source in mod_mhd_eos.t
+      ! equi accessors, subtract_equi) are bound by bind_eos_to_source
+      ! in mod_mhd_eos.t. No EoS machinery in mod_mhd_phys.t.
     end if
     allocate(te_fl_mhd)
-    ! te_fl_mhd EoS pointers are set by bind_eos_to_source in mod_mhd_eos.t
+    ! te_fl_mhd EoS pointers are bound by bind_eos_to_source in mod_mhd_eos.t
 {^IFTHREED
     phys_te_images => mhd_te_images
 }
+
+    ! consistency check for hyperresistivity implementation
+    if (mhd_eta_hyper>0.0d0) then
+      if(mype==0) then
+         write(*,*) '*****Using hyperresistivity:  with mhd_eta_hyper :', mhd_eta_hyper
+      endif
+       if(B0field) then
+        ! hyperresistivity not ok yet with splitting
+        call mpistop("Must have B0field=F when using hyperresistivity")
+      end if
+    endif
+    if (mhd_eta_hyper<0.0d0) then
+        call mpistop("Must have mhd_eta_hyper positive when using hyperresistivity")
+    endif
+
     ! Initialize viscosity module
-    if (mhd_viscosity) call viscosity_init(phys_wider_stencil)
+    if (mhd_viscosity) then
+       call viscosity_init(phys_wider_stencil)
+    end if
 
     ! Initialize gravity module
     if(mhd_gravity) then
@@ -840,55 +981,50 @@ contains
     end if
 
     ! Initialize rotating frame module
-    if(mhd_rotating_frame) call rotating_frame_init()
-
-    ! Initialize particles module
-    if(mhd_particles) then
-      call particles_init()
-      if (particles_eta  < zero) particles_eta = mhd_eta
-      if (particles_etah < zero) particles_eta = mhd_etah
-      if(mype==0) then
-         write(*,*) '*****Using particles:        with mhd_eta, mhd_etah :', mhd_eta, mhd_etah
-         write(*,*) '*****Using particles: particles_eta, particles_etah :', particles_eta, particles_etah
+    if(mhd_rotating_frame) then
+      if(has_equi_rho_and_p) then
+        ! mod_rotating_frame does not handle splitting of density
+        call mpistop("Must have has_equi_rho_and_p=F when mhd_rotating_frame=T")
       end if
-    end if
+      call rotating_frame_init()
+    endif
+
 
     ! initialize magnetofriction module
     if(mhd_magnetofriction) then
       call magnetofriction_init()
     end if
 
-    ! For Hall, we need one more reconstructed layer since currents are computed
-    ! in mhd_get_flux: assuming one additional ghost layer (two for FOURTHORDER) was
-    ! added in nghostcells.
     if(mhd_hall) then
-      if(mhd_4th_order) then
-        phys_wider_stencil = 2
-      else
-        phys_wider_stencil = 1
+      if(mhd_semirelativistic) then
+        ! semirelativistic does not incorporate hall terms
+        call mpistop("Must have mhd_hall=F when mhd_semirelativistic=T")
       end if
+      if(coordinate>1)then
+        ! normal unsplit case or split cases do not have geometric sources for Hall included
+        call mpistop("Must have Cartesian coordinates for Hall")
+      endif
+      ! For Hall, we need one more reconstructed layer since currents are computed
+      ! in mhd_get_flux: assuming one additional ghost layer added in nghostcells.
+      phys_wider_stencil = 1
     end if
 
     if(mhd_ambipolar) then
       if(mhd_ambipolar_sts) then
         call sts_init()
-        if(mhd_internal_e) then
+        if(mhd_internal_e.or.mhd_hydrodynamic_e) then
           call add_sts_method(get_ambipolar_dt,sts_set_source_ambipolar,mag(1),&
                ndir,mag(1),ndir,.true.)
         else
+          ! any total energy or no energy at all case is handled here
           call add_sts_method(get_ambipolar_dt,sts_set_source_ambipolar,mom(ndir)+1,&
                mag(ndir)-mom(ndir),mag(1),ndir,.true.)
         end if
       else
         mhd_ambipolar_exp=.true.
         ! For flux ambipolar term, we need one more reconstructed layer since currents are computed
-        ! in mhd_get_flux: assuming one additional ghost layer (two for FOURTHORDER) was
-        ! added in nghostcells.
-        if(mhd_4th_order) then
-          phys_wider_stencil = 2
-        else
-          phys_wider_stencil = 1
-        end if
+        ! in mhd_get_flux: assuming one additional ghost layer added in nghostcells.
+        phys_wider_stencil = 1
       end if
     end if
 
@@ -896,7 +1032,15 @@ contains
     if(mhd_partial_ionization) call ionization_degree_init()
 
     ! Initialize CAK radiation force module
-    if (mhd_cak_force) call cak_init(eos%gamma)
+    if (mhd_cak_force) then
+       if(mhd_internal_e.or.mhd_semirelativistic) then
+          call mpistop("CAK implementation not available in internal or semirelativistic variants")
+       endif
+       if(has_equi_rho_and_p) then
+          call mpistop("CAK force implementation not available for split off pressure and density")
+       endif
+       call cak_init(eos%gamma)
+    endif
 
   end subroutine mhd_phys_init
 
@@ -935,6 +1079,18 @@ contains
     call sts_set_source_tc_mhd(ixI^L,ixO^L,w,x,wres,fix_conserve_at_step,my_dt,igrid,nflux,tc_fl)
   end subroutine mhd_sts_set_source_tc_mhd
 
+  subroutine  mhd_sts_set_source_tc_hd(ixI^L,ixO^L,w,x,wres,fix_conserve_at_step,my_dt,igrid,nflux)
+    use mod_global_parameters
+    use mod_fix_conserve
+    use mod_thermal_conduction, only: sts_set_source_tc_hd
+    integer, intent(in) :: ixI^L, ixO^L, igrid, nflux
+    double precision, intent(in) ::  x(ixI^S,1:ndim)
+    double precision, intent(inout) ::  wres(ixI^S,1:nw), w(ixI^S,1:nw)
+    double precision, intent(in) :: my_dt
+    logical, intent(in) :: fix_conserve_at_step
+    call sts_set_source_tc_hd(ixI^L,ixO^L,w,x,wres,fix_conserve_at_step,my_dt,igrid,nflux,tc_fl)
+  end subroutine mhd_sts_set_source_tc_hd
+
   function mhd_get_tc_dt_mhd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
     !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
     !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
@@ -950,6 +1106,21 @@ contains
     dtnew=get_tc_dt_mhd(w,ixI^L,ixO^L,dx^D,x,tc_fl)
   end function mhd_get_tc_dt_mhd
 
+  function mhd_get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
+    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
+    !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
+    !and                        T=p/rho
+    use mod_global_parameters
+    use mod_thermal_conduction, only: get_tc_dt_hd
+ 
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: dx^D, x(ixI^S,1:ndim)
+    double precision, intent(in) :: w(ixI^S,1:nw)
+    double precision :: dtnew
+
+    dtnew=get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x,tc_fl)
+  end function mhd_get_tc_dt_hd
+
   subroutine mhd_tc_handle_small_e(w, x, ixI^L, ixO^L, step)
     use mod_global_parameters
 
@@ -959,21 +1130,17 @@ contains
     integer, intent(in)    :: step
     character(len=140) :: error_msg
 
-    ! When tc_patch_eint is active the temperature patch prevents NaN in
-    ! the source term, but the Chebyshev polynomial can still leave
-    ! negative e_int in the updated state.  Tolerate this — the
-    ! polynomial self-corrects over subsequent substeps.
-    if (allocated(tc_fl)) then
-      if (tc_fl%tc_patch_eint) return
-    end if
-
+    ! tc_patch_eint repairs w(:, e_) in place during the source-term call,
+    ! but the Chebyshev recurrence can still produce residual negative
+    ! e_int in the updated state.  Run mhd_handle_small_ei every substep
+    ! (patch on or off) so STS does not propagate negative e through.
     write(error_msg,"(a,i3)") "Thermal conduction step ", step
     call mhd_handle_small_ei(w,x,ixI^L,ixO^L,e_,error_msg)
   end subroutine mhd_tc_handle_small_e
 
   ! fill in tc_fluid fields from namelist
   subroutine tc_params_read_mhd(fl)
-    use mod_global_parameters, only: unitpar,par_files
+    use mod_global_parameters, only: unitpar,par_files,unit_temperature
     type(tc_fluid), intent(inout) :: fl
 
     double precision :: tc_k_para=0d0
@@ -983,9 +1150,10 @@ contains
     logical :: tc_perpendicular=.false.
     logical :: tc_saturate=.false.
     logical :: tc_patch_eint=.false.
+    double precision :: trac_T_floor=0.d0
     character(len=std_len)  :: tc_slope_limiter="MC"
 
-    namelist /tc_list/ tc_perpendicular, tc_saturate, tc_slope_limiter, tc_k_para, tc_k_perp, tc_patch_eint
+    namelist /tc_list/ tc_perpendicular, tc_saturate, tc_slope_limiter, tc_k_para, tc_k_perp, tc_patch_eint, trac_T_floor
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -998,11 +1166,12 @@ contains
     fl%tc_patch_eint = tc_patch_eint
     fl%tc_k_para = tc_k_para
     fl%tc_k_perp = tc_k_perp
+    fl%trac_T_floor = trac_T_floor / unit_temperature
     select case(tc_slope_limiter)
      case ('no','none')
        fl%tc_slope_limiter = 0
      case ('MC')
-       ! montonized central limiter Woodward and Collela limiter (eq.3.51h), a factor of 2 is pulled out
+       ! monotonized central limiter Woodward and Collela limiter (eq.3.51h)
        fl%tc_slope_limiter = 1
      case('minmod')
        ! minmod limiter
@@ -1013,8 +1182,11 @@ contains
      case ('koren')
        ! Barry Koren Right variant
        fl%tc_slope_limiter = 4
+     case ('vanleer')
+       ! van Leer limiter
+       fl%tc_slope_limiter = 5
      case default
-       call mpistop("Unknown tc_slope_limiter, choose MC, minmod")
+       call mpistop("Unknown tc_slope_limiter, choose MC, minmod, superbee, koren, vanleer")
     end select
   end subroutine tc_params_read_mhd
 !!end th cond
@@ -1025,28 +1197,37 @@ contains
     use mod_constants, only: bigdouble
     type(rc_fluid), intent(inout) :: fl
 
-    double precision :: cfrac=0.1d0
     !> Lower limit of temperature
-    double precision   :: tlow=bigdouble
-    double precision :: rad_cut_hgt=0.5d0
-    double precision :: rad_cut_dey=0.15d0
-    integer                      :: n
+    double precision :: tlow=bigdouble
+    double precision :: rad_damp_height=0.5d0
+    double precision :: rad_damp_scale=0.15d0
+    integer :: n
     ! list parameters
     integer :: ncool = 4000
     !> Fixed temperature not lower than tlow
-    logical    :: Tfix=.false.
+    logical :: Tfix=.false.
     !> Add cooling source in a split way (.true.) or un-split way (.false.)
-    logical    :: rc_split=.false.
+    logical :: rc_split=.false.
+    logical :: rad_damp=.false.
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
-    !> Name of cooling method
-    character(len=std_len)  :: coolmethod='exact'
+    logical :: rad_newton = .false.
+    double precision :: rad_newton_trad = 0.006d0
+    double precision :: rad_newton_rhosurf = 1.d4
+    double precision :: rad_newton_pthick = 25.d0
+    !> HEAD-side cooling parameters (missing from common content after merge)
+    double precision :: cfrac=0.1d0
+    double precision :: rad_cut_hgt=0.5d0
+    double precision :: rad_cut_dey=0.15d0
     !> Variable-c_V Townsend extension (Y_mod): quadrature and sub-intervals
     character(len=8) :: rc_Y_mod_quadrature='boole'
     integer :: rc_Y_mod_N_sub=16
 
-    namelist /rc_list/ coolcurve, coolmethod, ncool, cfrac, tlow, Tfix, rc_split,rad_cut_hgt,rad_cut_dey, &
-        rc_Y_mod_quadrature, rc_Y_mod_N_sub
+    namelist /rc_list/ coolcurve, ncool, cfrac, tlow, Tfix, rc_split, &
+                       rad_cut_hgt, rad_cut_dey, &
+                       rc_Y_mod_quadrature, rc_Y_mod_N_sub, &
+                       rad_newton, rad_newton_trad, rad_newton_rhosurf, &
+                       rad_newton_pthick, rad_damp, rad_damp_height, rad_damp_scale
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -1056,7 +1237,6 @@ contains
 
     fl%ncool=ncool
     fl%coolcurve=coolcurve
-    fl%coolmethod=coolmethod
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
@@ -1065,8 +1245,14 @@ contains
     fl%rad_cut_dey=rad_cut_dey
     fl%Y_mod_quadrature=rc_Y_mod_quadrature
     fl%Y_mod_N_sub=rc_Y_mod_N_sub
+    fl%rad_damp=rad_damp
+    fl%rad_damp_height=rad_damp_height
+    fl%rad_damp_scale=rad_damp_scale
+    fl%rad_newton=rad_newton
+    fl%rad_newton_trad=rad_newton_trad
+    fl%rad_newton_rhosurf=rad_newton_rhosurf
+    fl%rad_newton_pthick=rad_newton_pthick
   end subroutine rc_params_read
-!! end rad cool
 
   !> sets the equilibrium variables
   subroutine set_equi_vars_grid_faces(igrid,x,ixI^L,ixO^L)
@@ -1109,7 +1295,6 @@ contains
       end do
       call usr_set_equi_vars(ixI^L,ixC^L,xC,ps(igrid)%equi_vars(ixI^S,1:number_equi_vars,idims))
     end do
-
   end subroutine set_equi_vars_grid_faces
 
   !> sets the equilibrium variables
@@ -1135,7 +1320,7 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision   :: wnew(ixO^S, 1:nwc)
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       wnew(ixO^S,rho_)=w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,0)
     else
       wnew(ixO^S,rho_)=w(ixO^S,rho_)
@@ -1151,7 +1336,7 @@ contains
 
     if(mhd_energy) then
       wnew(ixO^S,e_)=w(ixO^S,e_)
-      if(has_equi_pe0) then
+      if(has_equi_rho_and_p) then
         wnew(ixO^S,e_)=wnew(ixO^S,e_)+block%equi_vars(ixO^S,equi_pe0_,0)*eos%inv_gamma_minus_1
       end if
       if(B0field .and. total_energy) then
@@ -1165,7 +1350,21 @@ contains
   subroutine mhd_check_params
     use mod_global_parameters
     use mod_usr_methods
+    use mod_geometry, only: coordinate 
     use mod_convert, only: add_convert_method
+    use mod_particles, only: particles_init, particles_eta, particles_etah
+    use mod_particles, only: npayload,nusrpayload, &
+                ngridvars,num_particles,physics_type_particles
+    use mod_fld
+
+    double precision :: a,b,Xfrac,Yfrac
+
+    ! Initialize particles module here, so all extra and user vars are sample
+    if(mhd_particles) then
+      call particles_init()
+      if (particles_eta  < zero) particles_eta = mhd_eta
+      if (particles_etah < zero) particles_eta = mhd_etah
+    end if
 
     ! gamma, gamma_minus_1, inv_gamma_minus_1 are set by eos_init
     if (.not. mhd_energy) then
@@ -1176,6 +1375,7 @@ contains
        if (eos%gamma <= 0.0d0 .or. eos%gamma == 1.0d0) &
             call mpistop ("Error: gamma <= 0 or gamma == 1")
        small_e = small_pressure * eos%inv_gamma_minus_1
+       small_r_e = small_pressure * eos%inv_gamma_minus_1
     end if
 
     if (number_equi_vars > 0 .and. .not. associated(usr_set_equi_vars)) then
@@ -1189,23 +1389,169 @@ contains
         endif
       endif
     endif
+
+    if(mhd_radiation_fld) then 
+        if(.not.use_imex_scheme)then
+           call mpistop('select IMEX scheme for FLD radiation use')
+        endif
+        if(use_multigrid)then
+           call phys_set_mg_bounds()
+        else
+           if(.not.fld_no_mg)call mpistop('multigrid must have BCs for IMEX and FLD radiation use')
+        endif
+        if(mype==0)then
+           write(*,*)'==FLD SETUP======================'
+           write(*,*)'Using FLD with settings:'
+           write(*,*)'Using FLD with settings: mhd_radiation_fld=',mhd_radiation_fld
+           write(*,*)'Using FLD with settings: fld_fluxlimiter=',fld_fluxlimiter
+           write(*,*)'Using FLD with settings: fld_interaction_method=',fld_interaction_method
+           write(*,*)'Using FLD with settings: fld_opacity_law=',fld_opacity_law
+           write(*,*)'Using FLD with settings: fld_kappa0=',fld_kappa0
+           write(*,*)'Using FLD with settings: fld_opal_table=',fld_opal_table
+           write(*,*)'Using FLD with settings: fld_Radforce_split=',fld_Radforce_split
+           write(*,*)'Using FLD with settings: fld_bisect_tol=',fld_bisect_tol
+           write(*,*)'Using FLD with settings: fld_diff_tol=',fld_diff_tol
+           write(*,*)'Using FLD with settings: nth_for_diff_mg=',nth_for_diff_mg
+           write(*,*)'      FLD has use_imex_scheme and use_multigrid=',use_imex_scheme,use_multigrid
+           print *,'const_rad_a   =',const_rad_a
+           print *,'NORMALIZED arad_norm=',arad_norm
+           print *,'NORMALIZED c_norm=',c_norm
+           print *,'const_kappae  =',const_kappae 
+           if(trim(fld_opacity_law).eq.'const_norm')then
+               print *,'NORMALIZED fld_kappa0          =',fld_kappa0
+               print *,'physical value (in cgs or SI)  =',fld_kappa0*unit_opacity
+           endif
+           if(trim(fld_opacity_law).eq.'const')then
+               print *,'physical fld_kappa (in cgs or SI) =',fld_kappa0
+               print *,'NORMALIZED value                  =',fld_kappa0/unit_opacity
+           endif
+           write(*,*)'===FLD SETUP====================='
+        endif
+    endif
+
+    if(mype==0)then
+           write(*,*)'====MHD run with settings===================='
+           write(*,*)'Using mod_mhd_phys with settings:'
+           write(*,*)'SI_unit=',SI_unit
+           write(*,*)'Dimensionality   :',ndim
+           write(*,*)'vector components:',ndir
+           write(*,*)'coordinate set to type,slab:',coordinate,slab
+           write(*,*)'number of variables          nw=',nw
+           write(*,*)'    start index         iwstart=',iwstart
+           write(*,*)'number of      vector variables=',nvector
+           write(*,*)'number of stagger variables nws=',nws
+           write(*,*)'number of    variables with BCs=',nwgc
+           write(*,*)'number of      vars with fluxes=',nwflux
+           write(*,*)'number of   vars with flux + BC=',nwfluxbc
+           write(*,*)'number of   auxiliary variables=',nwaux
+           write(*,*)'number of extra vars without flux=',nwextra
+           write(*,*)'number of extra vars   for wextra=',nw_extra
+           write(*,*)'number of auxiliary I/O variables=',nwauxio
+           write(*,*)'number of            mhd_n_tracer=',mhd_n_tracer
+           write(*,*)'    mhd_energy=',mhd_energy,' with total_energy=',total_energy
+           write(*,*)'    mhd_semirelativistic=',mhd_semirelativistic
+           write(*,*)'    mhd_internal_e=',mhd_internal_e
+           write(*,*)'    mhd_hydrodynamic_e=',mhd_hydrodynamic_e
+           write(*,*)'    mhd_gravity=',mhd_gravity
+           write(*,*)'    mhd_eta=',mhd_eta,' nonzero implies resistivity'
+           write(*,*)'    mhd_viscosity=',mhd_viscosity
+           write(*,*)'    mhd_radiative_cooling=',mhd_radiative_cooling
+           write(*,*)'    mhd_cak_force=',mhd_cak_force
+           write(*,*)'    mhd_radiation_fld=',mhd_radiation_fld
+           write(*,*)'    mhd_thermal_conduction=',mhd_thermal_conduction
+           write(*,*)'    mhd_hyperbolic_tc=',mhd_hyperbolic_tc
+           write(*,*)'    mhd_trac=',mhd_trac
+           write(*,*)'    mhd_hall=',mhd_hall
+           write(*,*)'    mhd_ambipolar=',mhd_ambipolar
+           write(*,*)'    mhd_eta_hyper=',mhd_eta_hyper
+           write(*,*)'    mhd_rotating_frame=',mhd_rotating_frame
+           write(*,*)'    mhd_particles=',mhd_particles
+           if(mhd_particles) then
+              write(*,*) '*****Using particles:        with mhd_eta, mhd_etah :', mhd_eta, mhd_etah
+              write(*,*) '*****Using particles: particles_eta, particles_etah :', particles_eta, particles_etah
+              write(*,*) '*****Using particles: npayload,ngridvars :', npayload,ngridvars
+              write(*,*) '*****Using particles:        nusrpayload :', nusrpayload
+              write(*,*) '*****Using particles:      num_particles :', num_particles
+              write(*,*) '*****Using particles: physics_type_particles=',physics_type_particles
+           end if
+           write(*,*)'number of             ghostcells=',nghostcells
+           write(*,*)'number due to phys_wider_stencil=',phys_wider_stencil
+           write(*,*)'==========================================='
+           print *,'========EOS and UNITS==========='
+           print *,'SI_unit       =',SI_unit
+           print *,'gamma=',eos%gamma
+           print *,'eq_state_units=',eq_state_units
+           print *,'He_abundance  =',eos%He_abundance
+           print *,'RR            =',RR
+           print *,'========EOS and UNITS==========='
+           print *,'unit_time          =',unit_time
+           print *,'unit_length        =',unit_length
+           print *,'unit_velocity      =',unit_velocity
+           print *,'unit_pressure      =',unit_pressure
+           print *,'unit_numberdensity =',unit_numberdensity
+           print *,'unit_density       =',unit_density
+           print *,'unit_temperature   =',unit_temperature
+           print *,'unit_mass          =',unit_mass
+           print *,'unit_Erad          =',unit_Erad
+           print *,'unit_radflux       =',unit_radflux
+           print *,'unit_magneticfield =',unit_magneticfield
+           if(SI_unit)then
+              print *,'CHECK that p_u',unit_pressure,' equals ',unit_magneticfield**2/miu0_SI
+           else
+              print *,'CHECK that p_u',unit_pressure,' equals ',unit_magneticfield**2/(4.0d0*dpi)
+           endif
+           print *, 'CHECK that p_u ',unit_pressure,' equals ',unit_density*unit_velocity**2
+           print *, 'CHECK that L_u ',unit_length,' equals ',unit_velocity*unit_time
+           print *, 'CHECK that M_u',unit_mass,' equals ',unit_density*unit_length**3
+           print *, 'density to numberdensity has factor   ',unit_density/unit_numberdensity
+           if(SI_unit)then
+                print *, '                     compare  this to ',mp_SI*(1.d0+4.d0*eos%He_abundance)
+           else
+                print *, '                     compare  this to ',mp_cgs*(1.d0+4.d0*eos%He_abundance)
+           endif
+           print *, 'pressure to n T has factor            ',unit_pressure/(unit_numberdensity*unit_temperature)
+           if(SI_unit)then
+                print *, '                     compare  this to ',kB_SI*(2.d0+3.d0*eos%He_abundance)
+                a=unit_density/unit_numberdensity/mp_SI
+                b=unit_pressure/(unit_numberdensity*unit_temperature*kB_SI)
+           else
+                print *, '                     compare  this to ',kB_cgs*(2.d0+3.d0*eos%He_abundance)
+                a=unit_density/unit_numberdensity/mp_cgs
+                b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
+           endif
+           if(eq_state_units)then
+              print *, 'mean molecular weight mu is =',a/b,' = ', (1.d0+4.d0*eos%He_abundance)/(2.d0+3.d0*eos%He_abundance)
+              Xfrac=1.d0/a
+              Yfrac=4.d0*eos%He_abundance/(1.d0+4.d0*eos%He_abundance)
+              print *, 'mass fraction hydrogen X is =',1/a,' and this equals ', 1.d0/(1.d0+4.d0*eos%He_abundance)
+              print *, 'mass fraction helium   Y is =',Yfrac
+              print *, ' check that 1/mu', b/a,' is equal to 2X+3Y/4=',2.d0*Xfrac+3.d0*Yfrac/4.d0
+              print *, ' ratio n_e/n_p=',1.d0+2.0d0*eos%He_abundance
+           endif
+           print *,'========UNITS==========='
+    endif
+
   end subroutine mhd_check_params
 
   subroutine mhd_physical_units()
     use mod_global_parameters
-    double precision :: mp,kB,miu0,c_lightspeed
+    double precision :: mp,kB,miu0,c_lightspeed,Xfrac,sigma_Telectron
     double precision :: a,b
     ! Derive scaling units
     if(SI_unit) then
       mp=mp_SI
       kB=kB_SI
       miu0=miu0_SI
+      const_sigmaSB=sigma_SB_SI
       c_lightspeed=c_SI
+      sigma_Telectron=sigma_Te_SI
     else
       mp=mp_cgs
       kB=kB_cgs
       miu0=4.d0*dpi ! G^2 cm^2 dyne^-1
+      const_sigmaSB=sigma_SB_cgs
       c_lightspeed=const_c
+      sigma_Telectron=sigma_Te_cgs
     end if
     if(eq_state_units) then
       a=1d0+4d0*eos%He_abundance
@@ -1215,16 +1561,19 @@ contains
         b=2d0+3d0*eos%He_abundance
       end if
       RR=1d0
+      Xfrac=1.d0/a
     else if (eos%eos_type == 'LTE') then
       !> Remove the assumed FI normalisation from the units and handle in EoS
       a=1d0
       b=1d0
       eos%nH2rhoFactor = 1d0+4d0*eos%He_abundance
       RR=(2d0+3d0*eos%He_abundance) / (1d0+4d0*eos%He_abundance)
+      Xfrac=1.d0/(1.d0+4.d0*eos%He_abundance)
     else
       a=1d0
       b=1d0
       RR=(1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*eos%He_abundance)
+      Xfrac=1.d0/(1.d0+4.d0*eos%He_abundance)
     end if
     if(unit_density/=1.d0 .or. unit_numberdensity/=1.d0) then
       if(unit_density/=1.d0) then
@@ -1350,7 +1699,29 @@ contains
         inv_squared_c0=(unit_velocity/c_lightspeed)**2
         inv_squared_c=(unit_velocity/mhd_reduced_c)**2
       end if
+      ! Propagate to the EoS container. Must happen AFTER inv_squared_c{0,}
+      ! are set above; the assignment earlier in mhd_phys_init runs before
+      ! mhd_physical_units and would store uninitialised values.
+      eos%inv_squared_c0 = inv_squared_c0
+      eos%inv_squared_c  = inv_squared_c
     end if
+
+    !> Units for radiative flux and opacity as used in FLD
+    ! this is the radiation constant in either cgs or SI units
+    const_rad_a=4.d0*const_sigmaSB/c_lightspeed
+    ! this is the dimensionless conversion factor for Erad to Trad
+    arad_norm=const_rad_a*unit_temperature**4/unit_pressure
+    ! This is the Thomson scattering opacity in the correct units
+    ! note that the hydrogen mass fraction X=1/a in eq_state_units
+    if(eq_state_units) then
+       const_kappae=sigma_Telectron*(1.d0+Xfrac)/(2.0d0*mp)
+    else
+       const_kappae=0.34d0 ! specific value in cm^2/g for He=0.1 in cgs
+    endif
+    ! these are the units
+    unit_Erad = unit_pressure
+    unit_radflux = unit_velocity*unit_Erad
+    unit_opacity = one/(unit_density*unit_length)
 
   end subroutine mhd_physical_units
 
@@ -1362,8 +1733,7 @@ contains
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,nw)
 
-    double precision :: tmp,b2,b(ixO^S,1:ndir)
-    double precision :: v(ixO^S,1:ndir),gamma2,inv_rho
+    double precision :: tmp,b(1:ndir),v(1:ndir),factor
     integer :: ix^D
 
     flag=.false.
@@ -1379,38 +1749,27 @@ contains
          {end do\}
         else
          {do ix^DB=ixOmin^DB,ixOmax^DB \}
-            b2=(^C&w(ix^D,b^C_)**2+)
-            if(b2>smalldouble) then
-              tmp=1.d0/sqrt(b2)
-            else 
-              tmp=0.d0
-            end if
-            ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-            tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-            inv_rho = 1d0/w(ix^D,rho_)
-            ! Va^2/c^2
-            b2=b2*inv_rho*inv_squared_c
-            ! equation (15)
-            gamma2=1.d0/(1.d0+b2)
             ! Convert momentum to velocity
-            ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp*inv_rho)\
+            tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
+            factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
+            ^C&v(^C)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
             ! E=Bxv
             {^IFTHREEC
-            b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
-            b(ix^D,2)=w(ix^D,b3_)*v(ix^D,1)-w(ix^D,b1_)*v(ix^D,3)
-            b(ix^D,3)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+            b(1)=w(ix^D,b2_)*v(3)-w(ix^D,b3_)*v(2)
+            b(2)=w(ix^D,b3_)*v(1)-w(ix^D,b1_)*v(3)
+            b(3)=w(ix^D,b1_)*v(2)-w(ix^D,b2_)*v(1)
             }
             {^IFTWOC
-            b(ix^D,1)=zero
+            b(1)=zero
             ! switch 3 with 2 to allow ^C from 1 to 2
-            b(ix^D,2)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+            b(2)=w(ix^D,b1_)*v(2)-w(ix^D,b2_)*v(1)
             }
             {^IFONEC
-            b(ix^D,1)=zero
+            b(1)=zero
             }
             ! Calculate internal e = e-eK-eB-eE
-            tmp=w(ix^D,e_)-half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-               +(^C&w(ix^D,b^C_)**2+)+(^C&b(ix^D,^C)**2+)*inv_squared_c)
+            tmp=w(ix^D,e_)-half*((^C&v(^C)**2+)*w(ix^D,rho_)&
+               +(^C&w(ix^D,b^C_)**2+)+(^C&b(^C)**2+)*inv_squared_c)
             if(tmp<small_e) flag(ix^D,e_)=.true.
          {end do\}
         end if
@@ -1438,6 +1797,9 @@ contains
         if(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+&
           (^C&w(ix^D,b^C_)**2+))<small_e) flag(ix^D,e_) = .true.
       end if
+      if(mhd_radiation_fld)then
+         if(w(ix^D,r_e)<small_r_e) flag(ix^D,r_e) = .true.
+      endif
    {end do\}
 
   end subroutine mhd_check_w_origin
@@ -1528,6 +1890,30 @@ contains
 
   end subroutine mhd_check_w_hde
 
+  subroutine mhd_bound_fip(primitive, ixI^L, ixO^L, w)
+    use mod_global_parameters
+    logical, intent(in)             :: primitive
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+
+    double precision :: rho_safe(ixI^S), fip_prim(ixI^S)
+
+    if (.not. mhd_fip) return
+
+    if (primitive) then
+      w(ixO^S,fip_) = min(maxfip, max(minfip, w(ixO^S,fip_)))
+    else
+      if (has_equi_rho_and_p) then
+        rho_safe(ixO^S) = max(w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i), small_density)
+      else
+        rho_safe(ixO^S) = max(w(ixO^S,rho_), small_density)
+      end if
+      fip_prim(ixO^S) = w(ixO^S,fip_) / rho_safe(ixO^S)
+      fip_prim(ixO^S) = min(maxfip, max(minfip, fip_prim(ixO^S)))
+      w(ixO^S,fip_) = rho_safe(ixO^S) * fip_prim(ixO^S)
+    end if
+  end subroutine mhd_bound_fip
+
   !> Transform internal energy to total energy
   subroutine mhd_ei_to_e(ixI^L,ixO^L,w,x)
     use mod_global_parameters
@@ -1537,7 +1923,7 @@ contains
 
     integer :: ix^D
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! Calculate e = ei + ek + eb
         w(ix^D,e_)=w(ix^D,e_)&
@@ -1553,7 +1939,6 @@ contains
                         +(^C&w(ix^D,b^C_)**2+))
      {end do\}
     end if
-
   end subroutine mhd_ei_to_e
 
   !> Transform internal energy to hydrodynamic energy
@@ -1595,7 +1980,7 @@ contains
 
     integer :: ix^D
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! Calculate ei = e - ek - eb
         w(ix^D,e_)=w(ix^D,e_)&
@@ -1613,7 +1998,7 @@ contains
     end if
 
     if(fix_small_values) then
-      call mhd_handle_small_ei(w,x,ixI^L,ixO^L,e_,'mhd_e_to_ei')
+      call mhd_handle_small_ei(w,x,ixI^L,ixI^L,e_,'mhd_e_to_ei')
     end if
 
   end subroutine mhd_e_to_ei
@@ -1673,8 +2058,8 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     character(len=*), intent(in)    :: subname
 
-    double precision :: b(ixI^S,1:ndir), pressure(ixI^S), v(ixI^S,1:ndir)
-    double precision :: tmp, b2, gamma2, inv_rho
+    double precision :: e(ixI^S,1:ndir), pressure(ixI^S), v(ixI^S,1:ndir)
+    double precision :: tmp, factor
     integer :: ix^D
     logical :: flag(ixI^S,1:nw)
 
@@ -1686,39 +2071,27 @@ contains
         where(w(ixO^S,p_) < small_pressure) flag(ixO^S,e_) = .true.
       else
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
-          b2=(^C&w(ix^D,b^C_)**2+)
-          if(b2>smalldouble) then
-            tmp=1.d0/sqrt(b2)
-          else
-            tmp=0.d0
-          end if
-          ^C&b(ix^D,^C)=w(ix^D,b^C_)*tmp\
-          tmp=(^C&b(ix^D,^C)*w(ix^D,m^C_)+)
-          inv_rho=1.d0/w(ix^D,rho_)
-          ! Va^2/c^2
-          b2=b2*inv_rho*inv_squared_c
-          ! equation (15)
-          gamma2=1.d0/(1.d0+b2)
           ! Convert momentum to velocity
-          ^C&v(ix^D,^C)=gamma2*(w(ix^D,m^C_)+b2*b(ix^D,^C)*tmp)*inv_rho\
+          tmp=(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)*inv_squared_c
+          factor=1.0d0/(w(ix^D,rho_)*(w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+)*inv_squared_c))
+          ^C&v(ix^D,^C)=factor*(w(ix^D,m^C_)*w(ix^D,rho_)+w(ix^D,b^C_)*tmp)\
           ! E=Bxv
           {^IFTHREEC
-          b(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
-          b(ix^D,2)=w(ix^D,b3_)*v(ix^D,1)-w(ix^D,b1_)*v(ix^D,3)
-          b(ix^D,3)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+          e(ix^D,1)=w(ix^D,b2_)*v(ix^D,3)-w(ix^D,b3_)*v(ix^D,2)
+          e(ix^D,2)=w(ix^D,b3_)*v(ix^D,1)-w(ix^D,b1_)*v(ix^D,3)
+          e(ix^D,3)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
           }
           {^IFTWOC
-          b(ix^D,1)=zero
-          b(ix^D,2)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
+          e(ix^D,1)=zero
+          e(ix^D,2)=w(ix^D,b1_)*v(ix^D,2)-w(ix^D,b2_)*v(ix^D,1)
           }
           {^IFONEC
-          b(ix^D,1)=zero
+          e(ix^D,1)=zero
           }
           ! Calculate pressure = (gamma-1) * (e-eK-eB-eE)
           pressure(ix^D)=eos%gamma_minus_1*(w(ix^D,e_)&
                      -half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-                     +(^C&w(ix^D,b^C_)**2+)&
-                     +(^C&b(ix^D,^C)**2+)*inv_squared_c))
+                     +(^C&w(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c))
           if(pressure(ix^D) < small_pressure) flag(ix^D,p_) = .true.
        {end do\}
       end if
@@ -1738,7 +2111,7 @@ contains
             else
               if(flag(ix^D,e_)) then
                 w(ix^D,e_)=small_pressure*eos%inv_gamma_minus_1+half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-                           +(^C&w(ix^D,b^C_)**2+)+(^C&b(ix^D,^C)**2+)*inv_squared_c)
+                           +(^C&w(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
               end if
             end if
           end if
@@ -1754,7 +2127,7 @@ contains
             call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
             {do ix^DB=ixOmin^DB,ixOmax^DB\}
                w(ix^D,e_)=w(ix^D,p_)*eos%inv_gamma_minus_1+half*((^C&v(ix^D,^C)**2+)*w(ix^D,rho_)&
-                          +(^C&w(ix^D,b^C_)**2+)+(^C&b(ix^D,^C)**2+)*inv_squared_c)
+                          +(^C&w(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
             {end do\}
           end if
         end if
@@ -1762,12 +2135,12 @@ contains
         if(.not.primitive) then
           ! change to primitive variables
           w(ixO^S,mom(1:ndir))=v(ixO^S,1:ndir)
-          w(ixO^S,e_)=pressure(ixO^S)
+          if(mhd_energy) w(ixO^S,e_)=pressure(ixO^S)
         end if
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_semirelati
 
   subroutine mhd_handle_small_values_origin(primitive, w, x, ixI^L, ixO^L, subname)
@@ -1800,6 +2173,11 @@ contains
             if(flag(ix^D,e_)) &
               w(ix^D,e_)=small_e+half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+))
           end if
+          if(mhd_radiation_fld)then
+            if(small_values_fix_iw(r_e)) then
+             if(flag(ix^D,r_e)) w(ix^D,r_e)=small_r_e
+            endif
+          endif
        {end do\}
       case ("average")
         ! do averaging of density
@@ -1819,6 +2197,9 @@ contains
                 +half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+))
          {end do\}
         end if
+        if(mhd_radiation_fld) then
+           call small_values_average(ixI^L, ixO^L, w, x, flag, r_e)
+        endif
       case default
         if(.not.primitive) then
           !convert w to primitive
@@ -1831,7 +2212,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_origin
 
   subroutine mhd_handle_small_values_split(primitive, w, x, ixI^L, ixO^L, subname)
@@ -1901,7 +2282,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_split
 
   subroutine mhd_handle_small_values_inte(primitive, w, x, ixI^L, ixO^L, subname)
@@ -1948,7 +2329,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_inte
 
   subroutine mhd_handle_small_values_noe(primitive, w, x, ixI^L, ixO^L, subname)
@@ -1989,7 +2370,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_noe
 
   subroutine mhd_handle_small_values_hde(primitive, w, x, ixI^L, ixO^L, subname)
@@ -2036,7 +2417,7 @@ contains
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
-
+    if (mhd_fip) call mhd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine mhd_handle_small_values_hde
 
   !> Calculate v vector
@@ -2060,6 +2441,31 @@ contains
 
   end subroutine mhd_get_v
 
+  !> Calculate csound**2 within ixO^L
+  subroutine mhd_get_csound2(w,x,ixI^L,ixO^L,cs2)
+    use mod_global_parameters
+
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
+    double precision, intent(inout) :: cs2(ixI^S)
+
+    double precision :: rho, inv_rho, ploc
+    integer :: ix^D
+
+    {do ix^DB=ixOmin^DB,ixOmax^DB \}
+        if(has_equi_rho_and_p) then
+          rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))
+          ploc=(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,0))
+        else
+          rho=w(ix^D,rho_)
+          ploc=w(ix^D,p_)
+        end if
+        inv_rho=1.d0/rho
+        ! sound speed**2 
+        cs2(ix^D)=eos%gamma*ploc*inv_rho
+   {end do\}
+  end subroutine mhd_get_csound2
+
   !> Calculate cmax_idim=csound+abs(v_idim) within ixO^L
   subroutine mhd_get_cmax_origin(w,x,ixI^L,ixO^L,idim,cmax)
     use mod_global_parameters
@@ -2068,23 +2474,23 @@ contains
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: cmax(ixI^S)
 
-    double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
+    double precision :: rho, inv_rho, ploc, cfast2, AvMinCs2, b2, kmax
     double precision :: cs2(ixI^S)
     double precision, allocatable :: w_eos(:^D&,:)
     integer :: ix^D
     logical :: need_aug
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     ! Sound speed squared via EoS dispatch (LTE+ionE -> Gamma_1 table; FI -> const gamma).
     ! If equi_rho0 / equi_pe0 are active, csound^2 is based on the total state.
-    need_aug = has_equi_rho0 .or. has_equi_pe0
+    need_aug = has_equi_rho_and_p .or. has_equi_rho_and_p
     if (need_aug) then
       allocate(w_eos(ixI^S,nw))
       w_eos(ixO^S,:) = w(ixO^S,:)
-      if (has_equi_rho0) w_eos(ixO^S, rho_) = &
+      if (has_equi_rho_and_p) w_eos(ixO^S, rho_) = &
           w(ixO^S, rho_) + block%equi_vars(ixO^S, equi_rho0_, b0i)
-      if (has_equi_pe0)  w_eos(ixO^S, p_)   = &
+      if (has_equi_rho_and_p)  w_eos(ixO^S, p_)   = &
           w(ixO^S, p_)   + block%equi_vars(ixO^S, equi_pe0_, b0i)
       call eos%get_csound2(w_eos, x, ixI^L, ixO^L, cs2)
       deallocate(w_eos)
@@ -2094,10 +2500,12 @@ contains
 
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
+          ploc=(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))
         else
           rho=w(ix^D,rho_)
+          ploc=w(ix^D,p_)
         end if
         inv_rho=1.d0/rho
         cmax(ix^D)=cs2(ix^D)
@@ -2107,7 +2515,7 @@ contains
         AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*(w(ix^D,mag(idim))+block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           ! take the Hall velocity into account: most simple estimate, high k limit:
           ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
           cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
@@ -2116,10 +2524,12 @@ contains
      {end do\}
     else
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
+          ploc=(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))
         else
           rho=w(ix^D,rho_)
+          ploc=w(ix^D,p_)
         end if
         inv_rho=1.d0/rho
         cmax(ix^D)=cs2(ix^D)
@@ -2129,7 +2539,7 @@ contains
         AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           ! take the Hall velocity into account: most simple estimate, high k limit:
           ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
           cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
@@ -2143,63 +2553,46 @@ contains
   !> Calculate cmax_idim=csound+abs(v_idim) within ixO^L
   subroutine mhd_get_cmax_origin_noe(w,x,ixI^L,ixO^L,idim,cmax)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: cmax(ixI^S)
 
     double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
+    double precision :: adiabs(ixI^S), gammas(ixI^S)
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
-    if(B0field) then
-     {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
-          rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
-        else
-          rho=w(ix^D,rho_)
-        end if
-        inv_rho=1.d0/rho
-        ! sound speed**2 
-        cmax(ix^D)=eos%gamma*mhd_adiab*rho**eos%gamma_minus_1
-        ! store |B|^2 in v
-        b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
-        cfast2=b2*inv_rho+cmax(ix^D)
-        AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*(w(ix^D,mag(idim))+block%B0(ix^D,idim,b0i))**2*inv_rho
-        if(AvMinCs2<zero) AvMinCs2=zero
-        cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
-          ! take the Hall velocity into account: most simple estimate, high k limit:
-          ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
-          cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
-        end if
-        cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
-     {end do\}
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
     else
-     {do ix^DB=ixOmin^DB,ixOmax^DB \}
-        if(has_equi_rho0) then
-          rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
-        else
-          rho=w(ix^D,rho_)
-        end if
-        inv_rho=1.d0/rho
-        ! sound speed**2 
-        cmax(ix^D)=eos%gamma*mhd_adiab*rho**eos%gamma_minus_1
-        ! store |B|^2 in v
-        b2=(^C&w(ix^D,b^C_)**2+)
-        cfast2=b2*inv_rho+cmax(ix^D)
-        AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
-        if(AvMinCs2<zero) AvMinCs2=zero
-        cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
-          ! take the Hall velocity into account: most simple estimate, high k limit:
-          ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
-          cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
-        end if
-        cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
-     {end do\}
+       adiabs=mhd_adiab
     end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=eos%gamma
+    end if
+   {do ix^DB=ixOmin^DB,ixOmax^DB \}
+       rho=w(ix^D,rho_)
+       inv_rho=1.d0/rho
+       ! sound speed**2 
+       cmax(ix^D)=gammas(ix^D)*adiabs(ix^D)*rho**(gammas(ix^D)-1.d0)
+       ! store |B|^2 in v
+       b2=(^C&w(ix^D,b^C_)**2+)
+       cfast2=b2*inv_rho+cmax(ix^D)
+       AvMinCs2=cfast2**2-4.0d0*cmax(ix^D)*w(ix^D,mag(idim))**2*inv_rho
+       if(AvMinCs2<zero) AvMinCs2=zero
+       cmax(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
+       if(mhd_hall) then
+         ! take the Hall velocity into account: most simple estimate, high k limit:
+         ! largest wavenumber supported by grid: Nyquist (in practise can reduce by some factor)
+         cmax(ix^D)=max(cmax(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
+       end if
+       cmax(ix^D)=abs(w(ix^D,mom(idim)))+cmax(ix^D)
+   {end do\}
 
   end subroutine mhd_get_cmax_origin_noe
 
@@ -2238,21 +2631,34 @@ contains
   !> Calculate cmax_idim for semirelativistic MHD
   subroutine mhd_get_cmax_semirelati_noe(w,x,ixI^L,ixO^L,idim,cmax)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(inout):: cmax(ixI^S)
 
+    double precision :: adiabs(ixI^S), gammas(ixI^S)
     double precision :: csound, AvMinCs2, idim_Alfven_speed2
     double precision :: inv_rho, Alfven_speed2, gamma2
     integer :: ix^D
+
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=eos%gamma
+    end if
 
    {do ix^DB=ixOmin^DB,ixOmax^DB \}
       inv_rho=1.d0/w(ix^D,rho_)
       Alfven_speed2=(^C&w(ix^D,b^C_)**2+)*inv_rho
       gamma2=1.0d0/(1.d0+Alfven_speed2*inv_squared_c)
       cmax(ix^D)=1.d0-gamma2*w(ix^D,mom(idim))**2*inv_squared_c
-      csound=eos%gamma*mhd_adiab*w(ix^D,rho_)**eos%gamma_minus_1
+      csound=gammas(ix^D)*adiabs(ix^D)*w(ix^D,rho_)**(gammas(ix^D)-1.d0)
       idim_Alfven_speed2=w(ix^D,mag(idim))**2*inv_rho
       ! Va_hat^2+a_hat^2 equation (57)
       ! equation (69)
@@ -2265,28 +2671,6 @@ contains
    {end do\}
 
   end subroutine mhd_get_cmax_semirelati_noe
-
-  subroutine mhd_get_a2max(w,x,ixI^L,ixO^L,a2max)
-    use mod_global_parameters
-
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: a2max(ndim)
-    double precision :: a2(ixI^S,ndim,nw)
-    integer :: gxO^L,hxO^L,jxO^L,kxO^L,i,j
-
-    a2=zero
-    do i = 1,ndim
-      !> 4th order
-      hxO^L=ixO^L-kr(i,^D);
-      gxO^L=hxO^L-kr(i,^D);
-      jxO^L=ixO^L+kr(i,^D);
-      kxO^L=jxO^L+kr(i,^D);
-      a2(ixO^S,i,1:nw)=abs(-w(kxO^S,1:nw)+16.d0*w(jxO^S,1:nw)&
-         -30.d0*w(ixO^S,1:nw)+16.d0*w(hxO^S,1:nw)-w(gxO^S,1:nw))
-      a2max(i)=maxval(a2(ixO^S,i,1:nw))/12.d0/dxlevel(i)**2
-    end do
-  end subroutine mhd_get_a2max
 
   !> get adaptive cutoff temperature for TRAC (Johnston 2019 ApJL, 873, L22)
   subroutine mhd_get_tcutoff(ixI^L,ixO^L,w,x,Tco_local,Tmax_local)
@@ -2592,7 +2976,11 @@ contains
     ixA^L=ixO^L^LADD1;
     allocate(tmp(ixA^S))
     do id=1,ndim
-      call mhd_get_csound_prim(wprim,x,ixI^L,ixA^L,id,tmp)
+      if(has_equi_rho_and_p) then
+         call mhd_get_csound_prim_split(wprim,x,ixI^L,ixA^L,id,tmp)
+      else
+         call mhd_get_csound_prim(wprim,x,ixI^L,ixA^L,id,tmp)
+      endif
       csound(ixA^S,id)=tmp(ixA^S)
     end do
     ixCmax^D=ixOmax^D;
@@ -2916,19 +3304,94 @@ contains
 
   end subroutine mhd_get_ct_velocity_hll
 
+  !> Calculate modified squared sound speed for FLD
+  !> NOTE: only for diagnostic purposes, unused subroutine
+  subroutine mhd_get_csrad2(w,x,ixI^L,ixO^L,csound)
+    use mod_global_parameters
+    
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
+    double precision, intent(out):: csound(ixI^S)
+        
+    double precision :: wprim(ixI^S, nw)
+
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call eos%to_primitive(ixI^L,ixO^L,wprim,x)
+    call mhd_get_csrad2_prim(wprim,x,ixI^L,ixO^L,csound)
+
+  end subroutine mhd_get_csrad2
+
+
+  !> Calculate modified squared fast wave speed for FLD
+  !> NOTE: w is primitive on entry here!
+  !> NOTE: used in FLD module as phys_get_csrad2
+  subroutine mhd_get_csrad2_prim(w,x,ixI^L,ixO^L,csound)
+    use mod_global_parameters
+
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
+    double precision, intent(out):: csound(ixI^S)
+
+    double precision :: inv_rho, b2
+    double precision :: prad_tensor(ixI^S, 1:ndim, 1:ndim)
+    double precision :: prad_max(ixI^S)
+    integer :: ix^D
+
+    call mhd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad_tensor)
+
+    if(B0field) then
+     {do ix^DB=ixOmin^DB,ixOmax^DB \}
+        inv_rho=1.d0/w(ix^D,rho_)
+        prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
+        b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
+        csound(ix^D)=(eos%gamma*w(ix^D,p_)+b2+prad_max(ix^D))*inv_rho
+     {end do\}
+    else
+     {do ix^DB=ixOmin^DB,ixOmax^DB \}
+        inv_rho=1.d0/w(ix^D,rho_)
+        prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
+        b2=(^C&w(ix^D,b^C_)**2+)
+        csound(ix^D)=(eos%gamma*w(ix^D,p_)+b2+prad_max(ix^D))*inv_rho
+     {end do\}
+    end if
+
+   if(minval(csound(ixO^S))<smalldouble)then
+     print *,'issue with squared speed and rad pressure'
+     print *,minval(csound(ixO^S))
+     print *,minval(prad_max(ixO^S))
+     call mpistop("negative squared speed in get_csrad2 for dt")
+   endif
+    
+  end subroutine mhd_get_csrad2_prim
+
   !> Calculate fast magnetosonic wave speed
   subroutine mhd_get_csound_prim(w,x,ixI^L,ixO^L,idim,csound)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(out):: csound(ixO^S)
 
+    double precision :: adiabs(ixI^S), gammas(ixI^S)
     double precision :: inv_rho, cfast2, AvMinCs2, b2, kmax
     double precision :: cs2(ixI^S)
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+
+    if(.not.mhd_energy) then
+      if(associated(usr_set_adiab)) then
+         call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+      else
+         adiabs=mhd_adiab
+      end if
+      if(associated(usr_set_gamma)) then
+         call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+      else
+         gammas=eos%gamma
+      end if
+    end if
 
     ! Sound speed squared via EoS dispatch (honours LTE+ionE Gamma_1 table).
     if(mhd_energy) then
@@ -2942,7 +3405,7 @@ contains
         if(mhd_energy) then
           csound(ix^D)=cs2(ix^D)
         else
-          csound(ix^D)=eos%gamma*mhd_adiab*w(ix^D,rho_)**eos%gamma_minus_1
+          csound(ix^D)=gammas(ix^D)*adiabs(ix^D)*w(ix^D,rho_)**(gammas(ix^D)-1.d0)
         end if
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+csound(ix^D)
@@ -2950,7 +3413,7 @@ contains
          block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -2960,14 +3423,14 @@ contains
         if(mhd_energy) then
           csound(ix^D)=cs2(ix^D)
         else
-          csound(ix^D)=eos%gamma*mhd_adiab*w(ix^D,rho_)**eos%gamma_minus_1
+          csound(ix^D)=gammas(ix^D)*adiabs(ix^D)*w(ix^D,rho_)**(gammas(ix^D)-1.d0)
         end if
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+csound(ix^D)
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -2975,7 +3438,8 @@ contains
 
   end subroutine mhd_get_csound_prim
 
-  !> Calculate fast magnetosonic wave speed
+  !> Calculate fast magnetosonic wave speed when rho and p are split
+  !> hence has_equi_rho_and_p=T
   subroutine mhd_get_csound_prim_split(w,x,ixI^L,ixO^L,idim,csound)
     use mod_global_parameters
 
@@ -2986,23 +3450,21 @@ contains
     double precision :: rho, inv_rho, cfast2, AvMinCs2, b2, kmax
     integer :: ix^D
 
-    if(MHD_Hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
+    if(mhd_hall) kmax = dpi/min({dxlevel(^D)},bigdouble)*half
 
     ! store |B|^2 in v
     if(B0field) then
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
-        if(has_equi_pe0) then
-          csound(ix^D)=eos%gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        end if
+        csound(ix^D)=eos%gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         b2=(^C&(w(ix^D,b^C_)+block%B0(ix^D,^C,b0i))**2+)
         cfast2=b2*inv_rho+csound(ix^D)
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*(w(ix^D,mag(idim))+&
          block%B0(ix^D,idim,b0i))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3010,15 +3472,13 @@ contains
      {do ix^DB=ixOmin^DB,ixOmax^DB \}
         rho=(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
         inv_rho=1.d0/rho
-        if(has_equi_pe0) then
-          csound(ix^D)=eos%gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
-        end if
+        csound(ix^D)=eos%gamma*(w(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,b0i))*inv_rho
         b2=(^C&w(ix^D,b^C_)**2+)
         cfast2=b2*inv_rho+csound(ix^D)
         AvMinCs2=cfast2**2-4.0d0*csound(ix^D)*w(ix^D,mag(idim))**2*inv_rho
         if(AvMinCs2<zero) AvMinCs2=zero
         csound(ix^D)=sqrt(half*(cfast2+sqrt(AvMinCs2)))
-        if(MHD_Hall) then
+        if(mhd_hall) then
           csound(ix^D)=max(csound(ix^D),mhd_etah*sqrt(b2)*inv_rho*kmax)
         end if
      {end do\}
@@ -3060,19 +3520,31 @@ contains
   !> Calculate cmax_idim for semirelativistic MHD
   subroutine mhd_get_csound_semirelati_noe(w,x,ixI^L,ixO^L,idim,csound,gamma2)
     use mod_global_parameters
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     ! here w is primitive variables
     double precision, intent(in) :: w(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(out):: csound(ixO^S), gamma2(ixO^S)
 
+    double precision :: adiabs(ixI^S), gammas(ixI^S)
     double precision :: AvMinCs2, inv_rho, Alfven_speed2, idim_Alfven_speed2
     integer :: ix^D
 
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=eos%gamma
+    end if
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       inv_rho = 1.d0/w(ix^D,rho_)
       ! squared sound speed
-      csound(ix^D)=eos%gamma*mhd_adiab*w(ix^D,rho_)**eos%gamma_minus_1
+      csound(ix^D)=gammas(ix^D)*adiabs(ix^D)*w(ix^D,rho_)**(gammas(ix^D)-1.d0)
       Alfven_speed2=(^C&w(ix^D,b^C_)**2+)*inv_rho
       gamma2(ix^D) = 1.0d0/(1.d0+Alfven_speed2*inv_squared_c)
       AvMinCs2=1.d0-gamma2(ix^D)*w(ix^D,mom(idim))**2*inv_squared_c
@@ -3088,15 +3560,61 @@ contains
 
   end subroutine mhd_get_csound_semirelati_noe
 
-  ! Thermal pressure subroutines (mhd_get_pthermal_noe, _inte, _origin,
-  ! _semirelati, _hde, _LTE) are defined in mod_mhd_eos.t.
-  ! The mhd_get_pthermal pointer is set by mhd_link_eos.
+  ! Thermal pressure and temperature subroutines (mhd_get_pthermal_noe,
+  ! _inte, _origin, _semirelati, _hde, _LTE, mhd_get_temperature_from_eint,
+  ! _from_etot, _from_etot_LTE, _with_equi, _equi, mhd_get_rho_equi,
+  ! mhd_get_pe_equi) are defined in mod_mhd_eos.t. eos%get_temperature_from_{etot,eint}
+  ! and tc_fl / rc_fl / te_fl_mhd hooks are bound by bind_eos_to_source.
 
 
-  ! Temperature subroutines (mhd_get_temperature_from_Te, _from_eint,
-  ! _from_etot, _with_equi, _equi) are defined in mod_mhd_eos.t.
-  ! The mhd_get_temperature pointer is set by mhd_link_eos.
+  !> Calculate radiation pressure within ixO^L
+  subroutine mhd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad)
+    use mod_global_parameters
+    use mod_fld
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: prad(ixI^S, 1:ndim, 1:ndim)
+       
+    call fld_get_radpress(w, x, ixI^L, ixO^L, prad, fld_fl)
 
+  end subroutine mhd_get_pradiation_from_prim
+
+  !> Calculates the sum of the gas pressure and the max Prad tensor element
+  subroutine mhd_get_pthermal_plus_pradiation(w, x, ixI^L, ixO^L, pth_plus_prad)
+    use mod_global_parameters
+    integer, intent(in)           :: ixI^L, ixO^L
+    double precision, intent(in)  :: w(ixI^S, 1:nw)
+    double precision, intent(in)  :: x(ixI^S, 1:ndim)
+    double precision, intent(out) :: pth_plus_prad(ixI^S)
+
+    double precision              :: wprim(ixI^S, 1:nw)
+    double precision              :: prad_tensor(ixI^S, 1:ndim, 1:ndim)
+    double precision              :: prad_max(ixI^S)
+    integer :: ix^D
+        
+    wprim(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call eos%to_primitive(ixI^L,ixO^L,wprim,x)
+    call mhd_get_pradiation_from_prim(wprim, x, ixI^L, ixO^L, prad_tensor)
+    {do ix^D = ixOmin^D,ixOmax^D\}
+      prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
+    {enddo\}
+    pth_plus_prad(ixO^S) = wprim(ixO^S,p_) + prad_max(ixO^S)
+  end subroutine mhd_get_pthermal_plus_pradiation
+
+  !> Calculates radiation temperature 
+  subroutine mhd_get_trad(w, x, ixI^L, ixO^L, trad)
+    use mod_global_parameters
+    use mod_constants
+
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: trad(ixI^S)
+          
+    trad(ixI^S) = (w(ixI^S,r_e)/arad_norm)**(1.d0/4.d0)
+
+  end subroutine mhd_get_trad
 
   !> Calculate fluxes within ixO^L without any splitting
   subroutine mhd_get_flux(wC,w,x,ixI^L,ixO^L,idim,f)
@@ -3113,7 +3631,12 @@ contains
 
     double precision             :: vHall(ixI^S,1:ndir)
     double precision             :: ptotal
-    integer                      :: iw, ix^D
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: Bvec(ixI^S,1:ndir)
+    double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision             :: nperp(ixI^S,1:ndir)
+    logical                      :: use_perp_flux
+    integer                      :: iw, ix^D, idir
 
     if(mhd_internal_e) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -3145,7 +3668,7 @@ contains
         ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
      {end do\}
     end if
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         if(total_energy) then
@@ -3157,12 +3680,23 @@ contains
         ^C&f(ix^D,b^C_)=f(ix^D,b^C_)+vHall(ix^D,idim)*w(ix^D,b^C_)-vHall(ix^D,^C)*w(ix^D,mag(idim))\
      {end do\}
     end if
+
     if(mhd_glm) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,mag(idim))=w(ix^D,psi_)
         !f_i[psi]=Ch^2*b_{i} Eq. 24e and Eq. 38c Dedner et al 2002 JCP, 175, 645
         f(ix^D,psi_) = cmax_global**2*w(ix^D,mag(idim))
      {end do\}
+    end if
+
+    if(mhd_radiation_fld) then
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        f(ix^D,r_e)=w(ix^D,mom(idim))*wC(ix^D,r_e)
+      {end do\}
+    endif
+
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
     end if
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
@@ -3171,19 +3705,37 @@ contains
      {end do\}
     end do
 
-    if(mhd_hyperbolic_thermal_conduction) then
-     {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
-        f(ix^D,q_)=zero
-     {end do\}
+    use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(use_perp_flux) then
+      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
+      call eos%get_Rfactor(w,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=w(ix^D,mag(idir))
+        end do
+      {end do\}
+      call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
     end if
 
+    if(mhd_hyperbolic_tc) then
+     {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qpar_)*w(ix^D,mag(idim))/(dsqrt(^C&w(ix^D,b^C_)**2+)+smalldouble)
+        f(ix^D,qpar_)=zero
+        if(use_perp_flux) then
+          f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qperp_)*nperp(ix^D,idim)
+          f(ix^D,qperp_)=zero
+        end if
+     {end do\}
+    end if
   end subroutine mhd_get_flux
 
-  !> Calculate fluxes within ixO^L without any splitting
+  !> Calculate fluxes within ixO^L for case without energy equation, hence without splitting
+  !> and assuming polytropic closure
   subroutine mhd_get_flux_noe(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     ! conservative w
@@ -3194,19 +3746,30 @@ contains
     double precision,intent(out) :: f(ixI^S,nwflux)
 
     double precision             :: vHall(ixI^S,1:ndir)
+    double precision             :: adiabs(ixI^S), gammas(ixI^S)
     integer                      :: iw, ix^D
 
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=eos%gamma
+    end if
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
       f(ix^D,rho_)=w(ix^D,mom(idim))*w(ix^D,rho_)
       ! f_i[m_k]=v_i*m_k-b_k*b_i
       ^C&f(ix^D,m^C_)=wC(ix^D,mom(idim))*w(ix^D,m^C_)-w(ix^D,mag(idim))*w(ix^D,b^C_)\
       ! normal one includes total pressure
-      f(ix^D,mom(idim))=f(ix^D,mom(idim))+mhd_adiab*w(ix^D,rho_)**eos%gamma+half*(^C&w(ix^D,b^C_)**2+)
+      f(ix^D,mom(idim))=f(ix^D,mom(idim))+adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)+half*(^C&w(ix^D,b^C_)**2+)
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
    {end do\}
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
@@ -3220,13 +3783,15 @@ contains
         f(ix^D,psi_) = cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-
   end subroutine mhd_get_flux_noe
 
   !> Calculate fluxes with hydrodynamic energy equation
@@ -3243,7 +3808,12 @@ contains
     double precision,intent(out) :: f(ixI^S,nwflux)
 
     double precision             :: vHall(ixI^S,1:ndir)
-    integer                      :: iw, ix^D
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: Bvec(ixI^S,1:ndir)
+    double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision             :: nperp(ixI^S,1:ndir)
+    logical                      :: use_perp_flux
+    integer                      :: iw, ix^D, idir
 
     {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
@@ -3257,7 +3827,7 @@ contains
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
    {end do\}
-    if(mhd_Hall) then
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
@@ -3271,23 +3841,44 @@ contains
         f(ix^D,psi_) = cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-
-    if(mhd_hyperbolic_thermal_conduction) then
+    use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(use_perp_flux) then
+      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
+      call eos%get_Rfactor(w,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=w(ix^D,mag(idir))
+        end do
+      {end do\}
+      call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
+    end if
+    if(mhd_hyperbolic_tc) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
-        f(ix^D,q_)=zero
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qpar_)*w(ix^D,mag(idim))/(dsqrt(^C&w(ix^D,b^C_)**2+)+smalldouble)
+        f(ix^D,qpar_)=zero
+        if(use_perp_flux) then
+          f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qperp_)*nperp(ix^D,idim)
+          f(ix^D,qperp_)=zero
+        end if
      {end do\}
     end if
-
   end subroutine mhd_get_flux_hde
 
   !> Calculate fluxes within ixO^L with possible splitting
+  !> this covers four cases: B0field=T and mhd_internal_e=T (where has_equi_rho_and_p=F)
+  !>                         B0field=T and has_equi_rho_and_p=F for total_energy=T
+  !>                         B0field=F and has_equi_rho_and_p=T for total_energy=T
+  !>                         B0field=T and has_equi_rho_and_p=T for total_energy=T
   subroutine mhd_get_flux_split(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
@@ -3302,11 +3893,16 @@ contains
 
     double precision             :: vHall(ixI^S,1:ndir)
     double precision             :: ptotal, Btotal(ixO^S,1:ndir)
-    integer                      :: iw, ix^D
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: Bvec(ixI^S,1:ndir)
+    double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision             :: nperp(ixI^S,1:ndir)
+    logical                      :: use_perp_flux
+    integer                      :: iw, ix^D, idir
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         f(ix^D,rho_)=w(ix^D,mom(idim))*(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,b0i))
       else
         f(ix^D,rho_)=w(ix^D,mom(idim))*w(ix^D,rho_)
@@ -3320,7 +3916,7 @@ contains
         ! Get flux of momentum and magnetic field
         ! f_i[m_k]=v_i*m_k-b_k*b_i
         ^C&f(ix^D,m^C_)=wC(ix^D,mom(idim))*w(ix^D,m^C_)-&
-                          Btotal(ix^D,idim)*w(ix^D,b^C_)-w(ix^D,mag(idim))*block%B0(ix^D,^C,idim)\
+                          btotal(ix^D,idim)*w(ix^D,b^C_)-w(ix^D,mag(idim))*block%B0(ix^D,^C,idim)\
         f(ix^D,mom(idim))=f(ix^D,mom(idim))+ptotal
       else
         ^C&btotal(ix^D,^C)=w(ix^D,b^C_)\
@@ -3330,7 +3926,7 @@ contains
         f(ix^D,mom(idim))=f(ix^D,mom(idim))+ptotal
       end if
       ! f_i[b_k]=v_i*b_k-v_k*b_i
-      ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*Btotal(ix^D,^C)-Btotal(ix^D,idim)*w(ix^D,m^C_)\
+      ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*btotal(ix^D,^C)-btotal(ix^D,idim)*w(ix^D,m^C_)\
 
       ! Get flux of energy
       ! f_i[e]=v_i*e+v_i*ptotal-b_i*(b_k*v_k)
@@ -3338,7 +3934,7 @@ contains
         f(ix^D,e_)=w(ix^D,mom(idim))*wC(ix^D,e_)
       else
         f(ix^D,e_)=w(ix^D,mom(idim))*(wC(ix^D,e_)+ptotal)&
-           -Btotal(ix^D,idim)*(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)
+           -btotal(ix^D,idim)*(^C&w(ix^D,b^C_)*w(ix^D,m^C_)+)
       end if
    {end do\}
 
@@ -3350,17 +3946,26 @@ contains
      {end do\}
     end if
 
-    if(mhd_Hall) then
+    if(mhd_radiation_fld) then
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        f(ix^D,r_e)=w(ix^D,mom(idim))*wC(ix^D,r_e)
+      {end do\}
+    endif
+
+    if(mhd_hall) then
       call mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         ! f_i[b_k] = f_i[b_k] + vHall_i*b_k - vHall_k*b_i
-        ^C&f(ix^D,b^C_)=f(ix^D,b^C_)+vHall(ix^D,idim)*w(ix^D,b^C_)-vHall(ix^D,^C)*w(ix^D,mag(idim))\
+        ^C&f(ix^D,b^C_)=f(ix^D,b^C_)+vHall(ix^D,idim)*btotal(ix^D,^C)-btotal(ix^D,idim)*vHall(ix^D,^C)\
         if(total_energy) then
           ! f_i[e]= f_i[e] + vHall_i*(b_k*b_k) - b_i*(vHall_k*b_k)
           f(ix^D,e_)=f(ix^D,e_)+vHall(ix^D,idim)*(^C&w(ix^D,b^C_)*btotal(ix^D,^C)+)&
-                    -Btotal(ix^D,idim)*(^C&vHall(ix^D,^C)*w(ix^D,b^C_)+)
+                    -btotal(ix^D,idim)*(^C&vHall(ix^D,^C)*w(ix^D,b^C_)+)
         end if
      {end do\}
+    end if
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
     end if
     ! Get flux of tracer
     do iw=1,mhd_n_tracer
@@ -3368,13 +3973,28 @@ contains
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-    if(mhd_hyperbolic_thermal_conduction) then
+    use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(use_perp_flux) then
+      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
+      call eos%get_Rfactor(w,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=Btotal(ix^D,idir)
+        end do
+      {end do\}
+      call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
+    end if
+    if(mhd_hyperbolic_tc) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*Btotal(ix^D,idim)/(dsqrt(^C&btotal(ix^D,^C)**2+)+smalldouble)
-        f(ix^D,q_)=zero
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qpar_)*Btotal(ix^D,idim)/(dsqrt(^C&btotal(ix^D,^C)**2+)+smalldouble)
+        f(ix^D,qpar_)=zero
+        if(use_perp_flux) then
+          f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qperp_)*nperp(ix^D,idim)
+          f(ix^D,qperp_)=zero
+        end if
      {end do\}
     end if
-
   end subroutine mhd_get_flux_split
 
   !> Calculate semirelativistic fluxes within ixO^L without any splitting
@@ -3389,9 +4009,13 @@ contains
     double precision, intent(in) :: w(ixI^S,nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision,intent(out) :: f(ixI^S,nwflux)
-
     double precision             :: SA(ixO^S,1:ndir),E(ixO^S,1:ndir),e2
-    integer                      :: iw, ix^D
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: Bvec(ixI^S,1:ndir)
+    double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision             :: nperp(ixI^S,1:ndir)
+    logical                      :: use_perp_flux
+    integer                      :: iw, ix^D, idir
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
@@ -3451,24 +4075,43 @@ contains
         f(ix^D,psi_)=cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
-      ! Get flux of tracer
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
+    ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-    if(mhd_hyperbolic_thermal_conduction) then
+    use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(use_perp_flux) then
+      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
+      call eos%get_Rfactor(w,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=w(ix^D,mag(idir))
+        end do
+      {end do\}
+      call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
+    end if
+    if(mhd_hyperbolic_tc) then
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,q_)*w(ix^D,mag(idim))/(dsqrt(^C&w({ix^D},b^C_)**2+)+smalldouble)
-        f(ix^D,q_)=zero
+        f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qpar_)*w(ix^D,mag(idim))/(dsqrt(^C&w(ix^D,b^C_)**2+)+smalldouble)
+        f(ix^D,qpar_)=zero
+        if(use_perp_flux) then
+          f(ix^D,e_)=f(ix^D,e_)+w(ix^D,qperp_)*nperp(ix^D,idim)
+          f(ix^D,qperp_)=zero
+        end if
      {end do\}
     end if
-
   end subroutine mhd_get_flux_semirelati
 
   subroutine mhd_get_flux_semirelati_noe(wC,w,x,ixI^L,ixO^L,idim,f)
     use mod_global_parameters
     use mod_geometry
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)          :: ixI^L, ixO^L, idim
     ! conservative w
@@ -3478,9 +4121,20 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision,intent(out) :: f(ixI^S,nwflux)
 
+    double precision             :: adiabs(ixI^S), gammas(ixI^S)
     double precision             :: E(ixO^S,1:ndir),e2
     integer                      :: iw, ix^D
 
+    if(associated(usr_set_adiab)) then
+       call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+    else
+       adiabs=mhd_adiab
+    end if
+    if(associated(usr_set_gamma)) then
+       call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+    else
+       gammas=eos%gamma
+    end if
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Get flux of density
       f(ix^D,rho_)=w(ix^D,mom(idim))*w(ix^D,rho_)
@@ -3500,12 +4154,13 @@ contains
       }
       {^IFONEC
       E(ix^D,1)=zero
+      e2=zero
       }
       ! Get flux of momentum
       ^C&f(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,mom(idim))*w(ix^D,m^C_)&
        -w(ix^D,mag(idim))*w(ix^D,b^C_)-E(ix^D,idim)*E(ix^D,^C)*inv_squared_c\
       ! gas pressure + magnetic pressure + electric pressure
-      f(ix^D,mom(idim))=f(ix^D,mom(idim))+mhd_adiab*w(ix^D,rho_)**eos%gamma+half*((^C&w(ix^D,b^C_)**2+)+e2*inv_squared_c)
+      f(ix^D,mom(idim))=f(ix^D,mom(idim))+adiabs(ix^D)*w(ix^D,rho_)**gammas(ix^D)+half*((^C&w(ix^D,b^C_)**2+)+e2*inv_squared_c)
       ! compute flux of magnetic field
       ! f_i[b_k]=v_i*b_k-v_k*b_i
       ^C&f(ix^D,b^C_)=w(ix^D,mom(idim))*w(ix^D,b^C_)-w(ix^D,mag(idim))*w(ix^D,m^C_)\
@@ -3518,62 +4173,79 @@ contains
         f(ix^D,psi_)=cmax_global**2*w(ix^D,mag(idim))
      {end do\}
     end if
-      ! Get flux of tracer
+    if (mhd_fip) then
+      f(ixO^S,fip_) = w(ixO^S,mom(idim)) * wC(ixO^S,fip_)
+    end if
+    ! Get flux of tracer
     do iw=1,mhd_n_tracer
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
         f(ix^D,tracer(iw))=w(ix^D,mom(idim))*w(ix^D,tracer(iw))
      {end do\}
     end do
-
   end subroutine mhd_get_flux_semirelati_noe
 
-  !> Source terms J.E in internal energy.
-  !> For the ambipolar term E = ambiCoef * JxBxB=ambiCoef * B^2(-J_perpB)
-  !=> the source term J.E = ambiCoef * B^2 * J_perpB^2 = ambiCoef * JxBxB^2/B^2
-  !> ambiCoef is calculated as mhd_ambi_coef/rho^2,  see also the subroutine mhd_get_Jambi
-  subroutine add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x,ie)
+  !> Source term J.E_ambi in internal energy
+  !> For the ambipolar electric field we have E_ambi = -eta_A * JxBxB= eta_A * B^2 (J_perpB)
+  !> and eta_A is mhd_ambi_coef/rho^2 or is user-defined
+  !> the source term J.E_ambi = eta_A * B^2 * J_perpB^2 = eta_A * [(JxB)xB]^2/B^2
+  !> note that J_perpB= - (JxB)xB/B^2
+  !> multiplyAmbiCoef is actually doing multiplication with -mhd_ambi_coef/rho^2
+  subroutine add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x)
     use mod_global_parameters
-    integer, intent(in)             :: ixI^L, ixO^L,ie
+    integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt
     double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
-    double precision :: tmp(ixI^S)
+
+    double precision :: tmp(ixI^S),btot2(ixI^S)
     double precision :: jxbxb(ixI^S,1:3)
 
     call mhd_get_jxbxb(wCT,x,ixI^L,ixO^L,jxbxb)
-    tmp(ixO^S) = sum(jxbxb(ixO^S,1:3)**2,dim=ndim+1) / mhd_mag_en_all(wCT, ixI^L, ixO^L)
+    ! avoiding nulls here
+    btot2(ixO^S)=mhd_mag_en_all(wCT,ixI^L,ixO^L)
+    where (btot2(ixO^S)>smalldouble )
+       tmp(ixO^S) = sum(jxbxb(ixO^S,1:3)**2,dim=ndim+1) / btot2(ixO^S)
+    elsewhere
+       tmp(ixO^S) = zero
+    endwhere
     call multiplyAmbiCoef(ixI^L,ixO^L,tmp,wCT,x)
-    w(ixO^S,ie)=w(ixO^S,ie)+qdt * tmp
+    ! multiplyAmbiCoef is actually doing multiplication with -mhd_ambi_coef/rho^2
+    ! hence minus sign here
+    w(ixO^S,e_)=w(ixO^S,e_)- qdt*tmp(ixO^S)
 
   end subroutine add_source_ambipolar_internal_energy
 
+  !> this subroutine computes -J_perpB= (J x B) x B= B(J.B) - J B^2
   subroutine mhd_get_jxbxb(w,x,ixI^L,ixO^L,res)
     use mod_global_parameters
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
-    double precision, intent(out)   :: res(:^D&,:)
+    double precision, intent(out)   :: res(ixI^S,1:3)
 
-    double precision  :: btot(ixI^S,1:3)
+    double precision :: btot(ixI^S,1:3)
     double precision :: current(ixI^S,7-2*ndir:3)
     double precision :: tmp(ixI^S),b2(ixI^S)
     integer          :: idir, idirmin
 
     res=0.d0
     ! Calculate current density and idirmin
+    ! current has nonzero values only for components in the range idirmin, 3
     call get_current(w,ixI^L,ixO^L,idirmin,current)
-    !!!here we know that current has nonzero values only for components in the range idirmin, 3
  
+    btot=0.d0
     if(B0field) then
-      do idir=1,3
+      do idir=1,ndir
         btot(ixO^S, idir) = w(ixO^S,mag(idir)) + block%B0(ixO^S,idir,b0i)
       enddo
     else
-      btot(ixO^S,1:3) = w(ixO^S,mag(1:3))
+      do idir=1,ndir
+        btot(ixO^S, idir) = w(ixO^S,mag(idir)) 
+      enddo
     endif
 
-    tmp(ixO^S) = sum(current(ixO^S,idirmin:3)*btot(ixO^S,idirmin:3),dim=ndim+1) !J.B
+    tmp(ixO^S)= sum(current(ixO^S,idirmin:3)*btot(ixO^S,idirmin:3),dim=ndim+1) !J.B
     b2(ixO^S) = sum(btot(ixO^S,1:3)**2,dim=ndim+1) !B^2
     do idir=1,idirmin-1
       res(ixO^S,idir) = btot(ixO^S,idir) * tmp(ixO^S)
@@ -3581,18 +4253,24 @@ contains
     do idir=idirmin,3
       res(ixO^S,idir) = btot(ixO^S,idir) * tmp(ixO^S) - current(ixO^S,idir) * b2(ixO^S)
     enddo
+
+    ! avoid possible issues at nulls
+    do idir=1,3
+      where (b2(ixO^S)<smalldouble )
+       res(ixO^S,idir) = zero
+      endwhere
+    enddo
   end subroutine mhd_get_jxbxb
 
-  !> Sets the sources for the ambipolar
-  !> this is used for the STS method
-  ! The sources are added directly (instead of fluxes as in the explicit)
+  !> Sets the sources for the ambipolar terms for the STS method
+  !> The sources are added directly (instead of fluxes as in the explicit)
   !> at the corresponding indices
-  !>  store_flux_var is explicitly called for each of the fluxes one by one
+  !> store_flux_var is explicitly called for each of the fluxes one by one
   subroutine sts_set_source_ambipolar(ixI^L,ixO^L,w,x,wres,fix_conserve_at_step,my_dt,igrid,nflux)
     use mod_global_parameters
     use mod_fix_conserve
 
-    integer, intent(in) :: ixI^L, ixO^L,igrid,nflux
+    integer, intent(in) :: ixI^L,ixO^L,igrid,nflux
     double precision, intent(in) ::  x(ixI^S,1:ndim)
     double precision, intent(inout) ::  wres(ixI^S,1:nw), w(ixI^S,1:nw)
     double precision, intent(in) :: my_dt
@@ -3601,39 +4279,45 @@ contains
     double precision, dimension(ixI^S,1:3) :: tmp,ff
     double precision :: fluxall(ixI^S,1:nflux,1:ndim)
     double precision :: fE(ixI^S,sdim:3)
-    double precision  :: btot(ixI^S,1:3),tmp2(ixI^S)
+    double precision :: btot(ixI^S,1:3),tmp2(ixI^S)
     integer :: i, ixA^L, ie_
 
     ixA^L=ixO^L^LADD1;
 
     fluxall=zero
 
+    ! here we compute (JxB)xB= - B^2 J_perpB
     call mhd_get_jxbxb(w,x,ixI^L,ixA^L,tmp)
 
-    !set electric field in tmp: E=nuA * jxbxb, where nuA=-etaA/rho^2
+    ! set ambipolar electric field in tmp: E_ambi = -eta_A * JxBxB= eta_A * B^2 (J_perpB)
+    ! and eta_A is mhd_ambi_coef/rho^2 or is user-defined
+    ! multiplyAmbiCoef is actually doing multiplication with -mhd_ambi_coef/rho^2
     do i=1,3
-      !tmp(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * tmp(ixA^S,i)
       call multiplyAmbiCoef(ixI^L,ixA^L,tmp(ixI^S,i),w,x)
     enddo
 
-    if(mhd_energy .and. .not.mhd_internal_e) then
-      !btot should be only mag. pert.
-      btot(ixA^S,1:3)=0.d0
-      !if(B0field) then
-      !  do i=1,ndir
-      !    btot(ixA^S, i) = w(ixA^S,mag(i)) + block%B0(ixA^S,i,0)
-      !  enddo
-      !else
-        btot(ixA^S,1:ndir) = w(ixA^S,mag(1:ndir))
-      !endif
+    ! Note: internal     energy case is handled through add_source_internal_e
+    ! Note: hydrodynamic energy case is handled through add_source_hydrodynamic_e
+    !       both of the above use     add_source_ambipolar_internal_energy
+    ! 
+    ! Note: total energy case without B0field split is ok here and adds div(BxE_ambi)
+    ! Note: total energy case in semirelativistic variant (hence no B0field split) is ok here
+    ! Note: total energy with B0field=T here adds div(B_1xE_ambi) which needs correction in add_source_B0split
+    if(mhd_energy .and. .not.(mhd_internal_e.or.mhd_hydrodynamic_e))  then
+      btot(ixA^S,1:3)    = 0.d0
+      ! HERE: only uses B_1 if split, otherwise this is B
+      btot(ixA^S,1:ndir) = w(ixA^S,mag(1:ndir))
+      ! compute ff= E_ambi x B (where B can be B_1 if B0field=T)
       call cross_product(ixI^L,ixA^L,tmp,btot,ff)
+      ! compute actual cell face fluxes in ff and their divergence in tmp2
       call get_flux_on_cell_face(ixI^L,ixO^L,ff,tmp2)
       if(fix_conserve_at_step) fluxall(ixI^S,1,1:ndim)=ff(ixI^S,1:ndim)
-      !- sign comes from the fact that the flux divergence is a source now
+      ! - sign as the source is actually div(BxE_ambi) and we have div(E_ambi x B) in tmp2
       wres(ixO^S,e_)=-tmp2(ixO^S)
     endif
 
     if(stagger_grid) then
+      ! always 2D or more (2.5/3D)
       if(ndir>ndim) then
         !!!Bz
         ff(ixA^S,1) = tmp(ixA^S,2)
@@ -3654,6 +4338,26 @@ contains
       !m2={-ele[[3]],0,ele[[1]]}
       !m3={ele[[2]],-ele[[1]],0}
 
+      {^IFONED
+      !!!Bx
+      ff(ixA^S,1) = 0.d0
+      ff(ixA^S,2) = tmp(ixA^S,3)
+      ff(ixA^S,3) = -tmp(ixA^S,2)
+      call get_flux_on_cell_face(ixI^L,ixO^L,ff,tmp2)
+      if(fix_conserve_at_step) fluxall(ixI^S,2,1:ndim)=ff(ixI^S,1:ndim)
+      !flux divergence is a source now
+      wres(ixO^S,mag(1))=-tmp2(ixO^S)
+      if(ndir==2.or.ndir==3)then
+        !!!By
+        ff(ixA^S,1) = -tmp(ixA^S,3)
+        ff(ixA^S,2) = 0.d0
+        ff(ixA^S,3) = tmp(ixA^S,1)
+        call get_flux_on_cell_face(ixI^L,ixO^L,ff,tmp2)
+        if(fix_conserve_at_step) fluxall(ixI^S,3,1:ndim)=ff(ixI^S,1:ndim)
+        wres(ixO^S,mag(2))=-tmp2(ixO^S)
+      endif
+      }
+      {^NOONED
       !!!Bx
       ff(ixA^S,1) = 0.d0
       ff(ixA^S,2) = tmp(ixA^S,3)
@@ -3669,6 +4373,7 @@ contains
       call get_flux_on_cell_face(ixI^L,ixO^L,ff,tmp2)
       if(fix_conserve_at_step) fluxall(ixI^S,3,1:ndim)=ff(ixI^S,1:ndim)
       wres(ixO^S,mag(2))=-tmp2(ixO^S)
+      }
 
       if(ndir==3) then
         !!!Bz
@@ -3708,7 +4413,7 @@ contains
     integer                            :: idim1,idim2,idir,ix^D
 
     fE=zero
-    ! calcuate ambipolar electric field on cell edges from cell centers
+    ! calculate ambipolar electric field on cell edges from cell centers
     do idir=sdim,3
       ixCmax^D=ixOmax^D;
       ixCmin^D=ixOmin^D+kr(idir,^D)-1;
@@ -3727,7 +4432,6 @@ contains
     ixCmin^D=ixOmin^D-1;
 
     circ=zero
-
     do idim1=1,ndim ! Coordinate perpendicular to face
       do idim2=1,ndim
         do idir=sdim,3 ! Direction of line integral
@@ -3745,13 +4449,15 @@ contains
 
   end subroutine update_faces_ambipolar
 
-  !> use cell-center flux to get cell-face flux
-  !> and get the source term as the divergence of the flux
+  !> use cell-center flux vector to get cell-face flux vector
+  !> which will be used to add the source term as the divergence of the flux
+  !> we return fluxes at all faces as well as the divergence of the flux
+  !> Note that for ndir>ndim, we do not modify the input cell center flux
   subroutine get_flux_on_cell_face(ixI^L,ixO^L,ff,src)
     use mod_global_parameters
 
     integer, intent(in) :: ixI^L, ixO^L
-    double precision, dimension(:^D&,:), intent(inout) :: ff
+    double precision, dimension(ixI^S,1:3), intent(inout) :: ff
     double precision, intent(out) :: src(ixI^S)
 
     double precision :: ffc(ixI^S,1:ndim)
@@ -3761,15 +4467,20 @@ contains
     ixA^L=ixO^L^LADD1;
     dxinv=1.d0/dxlevel
     ! cell corner flux in ffc
-    ffc=0.d0
-    ixCmax^D=ixOmax^D; ixCmin^D=ixOmin^D-1;
-    {do ix^DB=0,1\}
-      ixBmin^D=ixCmin^D+ix^D;
-      ixBmax^D=ixCmax^D+ix^D;
-      ffc(ixC^S,1:ndim)=ffc(ixC^S,1:ndim)+ff(ixB^S,1:ndim)
-    {end do\}
-    ffc(ixC^S,1:ndim)=0.5d0**ndim*ffc(ixC^S,1:ndim)
-    ! flux at cell face
+    ! TO BE GENERALIZED FOR NON-UNIFORM NON-CARTESIAN MESH
+    if (slab_uniform)then
+      ffc=0.d0
+      ixCmax^D=ixOmax^D; ixCmin^D=ixOmin^D-1;
+      {do ix^DB=0,1\}
+        ixBmin^D=ixCmin^D+ix^D;
+        ixBmax^D=ixCmax^D+ix^D;
+        ffc(ixC^S,1:ndim)=ffc(ixC^S,1:ndim)+ff(ixB^S,1:ndim)
+      {end do\}
+      ffc(ixC^S,1:ndim)=0.5d0**ndim*ffc(ixC^S,1:ndim)
+    else
+      call mpistop("to generalize using volume averaging")
+    endif
+    ! now get flux at cell face from corner fluxes in fcc
     ff(ixI^S,1:ndim)=0.d0
     do idims=1,ndim
       ixB^L=ixO^L-kr(idims,^D);
@@ -3817,7 +4528,8 @@ contains
     ^D&dxarr(^D)=dx^D;
     tmp(ixO^S) = mhd_mag_en_all(w, ixI^L, ixO^L)
     call multiplyAmbiCoef(ixI^L,ixO^L,tmp,w,x)
-    coef = maxval(abs(tmp(ixO^S)))
+    ! now we have -mhd_eta_ambi B^2 /rho^2 in tmp
+    coef = maxval(dabs(tmp(ixO^S)))
     if(coef/=0.d0) then
       coef=1.d0/coef
     else
@@ -3834,7 +4546,7 @@ contains
   !> multiply res by the ambipolar coefficient
   !> The ambipolar coefficient is calculated as -mhd_eta_ambi/rho^2
   !> The user may mask its value in the user file
-  !> by implemneting usr_mask_ambipolar subroutine
+  !> by implementing usr_mask_ambipolar subroutine
   subroutine multiplyAmbiCoef(ixI^L,ixO^L,res,w,x)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
@@ -3843,14 +4555,13 @@ contains
     double precision :: tmp(ixI^S)
     double precision :: rho(ixI^S)
 
-    call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    tmp=0.d0
-    tmp(ixO^S)=-mhd_eta_ambi/rho(ixO^S)**2
+    call mhd_get_rho(w,x,ixI^L,ixI^L,rho)
+    tmp(ixI^S)=-mhd_eta_ambi/rho(ixI^S)**2
     if (associated(usr_mask_ambipolar)) then
       call usr_mask_ambipolar(ixI^L,ixO^L,w,x,tmp)
     end if
-
     res(ixO^S) = tmp(ixO^S) * res(ixO^S)
+
   end subroutine multiplyAmbiCoef
 
   !> w[iws]=w[iws]+qdt*S[iws,wCT] where S is the source based on wCT within ixO
@@ -3880,29 +4591,35 @@ contains
         active = .true.
         call add_source_internal_e(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       else
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           active = .true.
-          call add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCTprim,w,x)
+          call add_equi_terms(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
         end if
       end if
 
-      if(mhd_hyperbolic_thermal_conduction) then
+      if(mhd_hyperbolic_tc) then
         active = .true.
-        time_htc0 = MPI_WTIME()
-        call add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
-        time_htc_total = time_htc_total + (MPI_WTIME() - time_htc0)
+        call add_hyperbolic_tc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
 
       ! Source for B0 splitting
       if (B0field) then
         active = .true.
-        call add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCTprim,w,x)
+        ! this adds source to momentum of type J0 x B0 and to energy equation
+        ! latter always + J0 * E (electric field being E_ideal, E_hall, E_ambi)
+        ! used for total energy variants
+        call add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
       end if
 
       ! Sources for resistivity in eqs. for e, B1, B2 and B3
       if (abs(mhd_eta)>smalldouble)then
         active = .true.
-        call add_source_res2(qdt,ixI^L,ixO^L,wCT,w,x)
+        call add_source_res_exp(qdt,ixI^L,ixO^L,wCT,w,x)
+      end if
+
+      if (mhd_ambipolar_exp)then
+        active = .true.
+        call add_source_ambi_exp(qdt,ixI^L,ixO^L,wCT,w,x)
       end if
 
       if (mhd_eta_hyper>0.d0)then
@@ -3967,18 +4684,23 @@ contains
     end if
 
     if(mhd_viscosity) then
-      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,&
+      call viscosity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
            w,x,mhd_energy,qsourcesplit,active)
     end if
 
     if(mhd_gravity) then
       call gravity_add_source(qdt,ixI^L,ixO^L,wCT,wCTprim,&
-           w,x,gravity_energy,gravity_rhov,qsourcesplit,active)
+           w,x,gravity_energy,qsourcesplit,active)
     end if
 
     if (mhd_cak_force) then
       call cak_add_source(qdt,ixI^L,ixO^L,wCT,w,x,mhd_energy,qsourcesplit,active)
     end if
+
+    ! This is where the radiation force and heating/cooling are added
+    if (mhd_radiation_fld) then
+       call mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
+    endif
 
     ! update temperature from new pressure, density, and old ionization degree
     if(mhd_partial_ionization) then
@@ -3990,191 +4712,464 @@ contains
 
   end subroutine mhd_add_source
 
-  subroutine add_pe0_divv(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x)
+  subroutine mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
+    use mod_constants
+    use mod_global_parameters
+    use mod_usr_methods
+    use mod_fld
+
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
+    double precision, intent(in)    :: wCT(ixI^S,1:nw),wCTprim(ixI^S,1:nw)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+    logical, intent(in) :: qsourcesplit
+    logical, intent(inout) :: active
+
+    ! add radiation force and work done by it, changes momentum and gas energy
+    ! handle photon tiring, heating and cooling exchange between gas and radiation field
+    call add_fld_rad_force(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active,fld_fl)
+
+  end subroutine mhd_add_radiation_source
+
+  !> add some source terms to total energy related to has_equi_rho_and_p=T
+  subroutine add_equi_terms(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
     use mod_geometry
+    use mod_usr_methods
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt,dtfactor
     double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
+    double precision, intent(in)    :: wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
+
     double precision                :: divv(ixI^S)
+    double precision :: a(ixI^S,3), b(ixI^S,3), axb(ixI^S,3)
+    double precision :: gravity_field(ixI^S,1:ndim)
+    integer :: idir
 
     if(slab_uniform) then
       if(nghostcells .gt. 2) then
-        call divvector(wCT(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,3)
+        call divvector(wCTprim(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,3)
       else
-        call divvector(wCT(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,2)
+        call divvector(wCTprim(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv,2)
       end if
     else
-     call divvector(wCT(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv)
+     call divvector(wCTprim(ixI^S,mom(1:ndir)),ixI^L,ixO^L,divv)
     end if
+    divv(ixO^S)=divv(ixO^S)*eos%gamma*eos%inv_gamma_minus_1
     if(local_timestep) then
       w(ixO^S,e_)=w(ixO^S,e_)-dtfactor*block%dt(ixO^S)*block%equi_vars(ixO^S,equi_pe0_,0)*divv(ixO^S)
     else
       w(ixO^S,e_)=w(ixO^S,e_)-qdt*block%equi_vars(ixO^S,equi_pe0_,0)*divv(ixO^S)
     end if
-  end subroutine add_pe0_divv
+    if(B0field)then
+      if(B0field_forcefree.and.mhd_gravity)then
+        ! add -v dot(rho_0 g)/(gamma-1)
+        call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
+        do idir=1,ndim
+           w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*eos%inv_gamma_minus_1
+        enddo
+      else
+        a=0.d0
+        b=0.d0
+        ! store B0 magnetic field in b
+        b(ixO^S,1:ndir)=block%B0(ixO^S,1:ndir,0)
+        ! store J0 current in a
+        do idir=7-2*ndir,3
+          a(ixO^S,idir)=block%J0(ixO^S,idir)
+        end do
+        call cross_product(ixI^L,ixO^L,a,b,axb)
+        ! add -v dot(rho_0 g + J0 x B_0)/(gamma-1)
+        do idir=1,ndir
+           w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*axb(ixO^S,idir)*eos%inv_gamma_minus_1
+        enddo
+        if(mhd_gravity)then
+          ! add -v dot(rho_0 g)/(gamma-1)
+          call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
+          do idir=1,ndim
+           w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*eos%inv_gamma_minus_1
+          enddo
+        endif
+      endif
+    else
+      if(mhd_gravity)then
+        ! add -v dot(rho_0 g)/(gamma-1)
+        call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field)
+        do idir=1,ndim
+         w(ixO^S,e_)=w(ixO^S,e_)-qdt*wCTprim(ixO^S,mom(idir))*block%equi_vars(ixO^S,equi_rho0_,0)*gravity_field(ixO^S,idir)*eos%inv_gamma_minus_1
+        enddo
+      endif
+    endif
+  end subroutine add_equi_terms
 
-  subroutine add_hypertc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+  subroutine mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
     use mod_global_parameters
+    use mod_geometry, only: gradient
+    integer, intent(in) :: ixI^L,ixO^L
+    double precision, intent(in) :: Te(ixI^S)
+    double precision, intent(in) :: Bvec(ixI^S,1:ndir)
+    double precision, intent(out) :: bgradT(ixI^S), gradTperp_mag(ixI^S)
+    double precision, intent(out) :: nperp(ixI^S,1:ndir)
+
+    double precision :: Bmag, bunitvec(ndir), gradT(ndir), gradT_perp(ndir)
+    double precision :: gradT_cell(ixI^S,1:ndir)
+    integer :: ix^D, idir
+
+    gradT_cell=zero
+    if(.not. slab_uniform) then
+      do idir=1,ndim
+        call gradient(Te,ixI^L,ixO^L,idir,gradT_cell(ixI^S,idir))
+      end do
+    end if
+
+   {^IFTWOD
+    do ix2=ixOmin2,ixOmax2
+      do ix1=ixOmin1,ixOmax1
+        Bmag=zero
+        do idir=1,ndir
+          Bmag=Bmag+Bvec(ix^D,idir)**2
+        end do
+        Bmag=dsqrt(Bmag)
+
+        if(Bmag>smalldouble) then
+          do idir=1,ndir
+            bunitvec(idir)=Bvec(ix^D,idir)/Bmag
+          end do
+        else
+          do idir=1,ndir
+            bunitvec(idir)=zero
+          end do
+        end if
+        if(slab_uniform) then
+          gradT(1)=((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)
+          gradT(2)=((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2)
+          if(ndir>2) gradT(3)=zero
+        else
+          do idir=1,ndir
+            gradT(idir)=gradT_cell(ix^D,idir)
+          end do
+        end if
+
+        bgradT(ix^D)=zero
+        do idir=1,ndir
+          bgradT(ix^D)=bgradT(ix^D)+bunitvec(idir)*gradT(idir)
+        end do
+
+        do idir=1,ndir
+          gradT_perp(idir)=gradT(idir)-bgradT(ix^D)*bunitvec(idir)
+        end do
+
+        gradTperp_mag(ix^D)=zero
+        do idir=1,ndir
+          gradTperp_mag(ix^D)=gradTperp_mag(ix^D)+gradT_perp(idir)**2
+        end do
+        gradTperp_mag(ix^D)=dsqrt(gradTperp_mag(ix^D))
+
+        if(gradTperp_mag(ix^D)>smalldouble) then
+          do idir=1,ndir
+            nperp(ix^D,idir)=gradT_perp(idir)/gradTperp_mag(ix^D)
+          end do
+        else
+          gradTperp_mag(ix^D)=zero
+          do idir=1,ndir
+            nperp(ix^D,idir)=zero
+          end do
+        end if
+      end do
+    end do
+   }
+   {^IFTHREED
+    do ix3=ixOmin3,ixOmax3
+      do ix2=ixOmin2,ixOmax2
+        do ix1=ixOmin1,ixOmax1
+          Bmag=dsqrt(Bvec(ix^D,1)**2+Bvec(ix^D,2)**2+Bvec(ix^D,3)**2)
+          if(Bmag>smalldouble) then
+            bunitvec(1)=Bvec(ix^D,1)/Bmag
+            bunitvec(2)=Bvec(ix^D,2)/Bmag
+            bunitvec(3)=Bvec(ix^D,3)/Bmag
+          else
+            bunitvec(1)=zero
+            bunitvec(2)=zero
+            bunitvec(3)=zero
+          end if
+
+          if(slab_uniform) then
+            gradT(1)=((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)
+            gradT(2)=((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)
+            gradT(3)=((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3)
+          else
+            do idir=1,ndir
+              gradT(idir)=gradT_cell(ix^D,idir)
+            end do
+          end if
+
+          bgradT(ix^D)=zero
+          do idir=1,ndir
+            bgradT(ix^D)=bgradT(ix^D)+bunitvec(idir)*gradT(idir)
+          end do
+
+          do idir=1,ndir
+            gradT_perp(idir)=gradT(idir)-bgradT(ix^D)*bunitvec(idir)
+          end do
+
+          gradTperp_mag(ix^D)=dsqrt(gradT_perp(1)**2+gradT_perp(2)**2+gradT_perp(3)**2)
+          if(gradTperp_mag(ix^D)>smalldouble) then
+            do idir=1,ndir
+              nperp(ix^D,idir)=gradT_perp(idir)/gradTperp_mag(ix^D)
+            end do
+          else
+            gradTperp_mag(ix^D)=zero
+            do idir=1,ndir
+              nperp(ix^D,idir)=zero
+            end do
+          end if
+        end do
+      end do
+    end do
+    }
+  end subroutine mhd_get_hyperbolic_tc_geometry
+
+  subroutine add_hyperbolic_tc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
+    use mod_global_parameters
+    use mod_geometry, only: gradient
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: qdt
     double precision, dimension(ixI^S,1:ndim), intent(in) :: x
     double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
-    double precision, dimension(ixI^S) :: Te,rho_loc
-    double precision :: sigma_T5,sigma_T7,f_sat,sigmaT5_bgradT,tau,eint,Bdir(ndir),bunitvec(ndim)
-    integer :: ix^D
+    double precision, dimension(ixI^S) :: R,Te,rho_loc,pth_loc
+    double precision, dimension(ixI^S,1:ndir) :: Bvec
+    double precision, dimension(ixI^S) :: bgradT, gradTperp_mag
+    double precision, dimension(ixI^S,1:ndir) :: nperp
+    double precision, dimension(ixI^S) :: gradT_geom
+    double precision, parameter :: lnLambda_perp = 20.d0
+    double precision, parameter :: xe_prefac_cgs = 4.753567596681522d6
+    double precision :: kappa_T5,kappa_T5_perp,kappa_T5_perp_eff
+    double precision :: kappa_T7,f_sat,kappaT5_bgradT,kappaT5_gradTperp,tau,B2,fB,gradT1
+    double precision :: Bmag_loc,Tloc,Tcond,nloc_code,Cchi,chi
+    double precision :: cmax(ndim),c2,cfast2,avMinCs2(ndim),inv_rho
+    logical :: use_perp_source
+    integer :: ix^D,idir
 
-    call mhd_get_rho(wCT,x,ixI^L,ixI^L,rho_loc)
-    if(Te_ > 0) then
-      ! Use EOS-cached temperature (LTE-accurate, avoids recomputation)
-      Te(ixI^S)=wCT(ixI^S,Te_)
-    else
-      ! Compute from primitives (FI case)
-      block0: block
-        double precision, dimension(ixI^S) :: R
-        call eos%get_Rfactor(wCTprim,x,ixI^L,ixI^L,R)
-        Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
-      end block block0
-    end if
-    ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
-    ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
-   {^IFONED
-    ! assume magnetic field line is along the one dimension
-    do ix1=ixOmin1,ixOmax1
-      if(mhd_trac) then
-        if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-          sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
-          sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
-        else
-          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-          sigma_T7=sigma_T5*Te(ix^D)
-        end if
+    Cchi = 0.823d0*(xe_prefac_cgs/lnLambda_perp) * &
+           unit_magneticfield*unit_temperature**1.5d0/unit_numberdensity
+    call eos%get_Rfactor(wCT,x,ixI^L,ixI^L,R)
+    {do ix^DB=ixImin^DB,ixImax^DB\}
+      if(has_equi_rho_and_p) then
+        rho_loc(ix^D)=wCTprim(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0)
+        pth_loc(ix^D)=wCTprim(ix^D,p_)+block%equi_vars(ix^D,equi_pe0_,0)
       else
-        sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-        sigma_T7=sigma_T5*Te(ix^D)
+        rho_loc(ix^D)=wCTprim(ix^D,rho_)
+        pth_loc(ix^D)=wCTprim(ix^D,p_)
       end if
-      sigmaT5_bgradT=sigma_T5*(8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0/block%ds(ix^D,1)
-      ! internal energy density: eint = e_total - KE - ME(perturbation)
-      eint=wCT(ix^D,e_)-half*((^C&wCT(ix^D,m^C_)**2+)/rho_loc(ix^D)+(^C&wCT(ix^D,b^C_)**2+))
-      if(mhd_htc_sat) then
-        ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
-        f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
-        tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(eint*cmax_global**2))
-        w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
+      Te(ix^D)=pth_loc(ix^D)/(R(ix^D)*rho_loc(ix^D))
+    {end do\}
+    use_perp_source = mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
+    if(B0field) then
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=wCT(ix^D,mag(idir))+block%B0(ix^D,idir,0)
+        end do
+      {end do\}
+    else
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        do idir=1,ndir
+          Bvec(ix^D,idir)=wCT(ix^D,mag(idir))
+        end do
+      {end do\}
+    end if
+   {^NOONED
+    call mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
+   }
+   {^IFONED
+    gradT_geom=zero
+    if(.not.slab_uniform) then
+      call gradient(Te,ixI^L,ixO^L,1,gradT_geom)
+    end if
+    do ix1=ixOmin1,ixOmax1
+      if(mhd_hyperbolic_tc_constant) then
+        kappa_T5=mhd_hyperbolic_tc_kappa
+        kappa_T7=kappa_T5*Te(ix1)
       else
-        w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-         max(4.d0*dt, sigma_T7*courantpar**2/(eint*cmax_global**2))
+        Tcond = Te(ix1)
+        if(mhd_trac) then
+          Tcond = max(Tcond, block%wextra(ix1,Tcoff_))
+        end if
+        kappa_T5=mhd_hyperbolic_tc_kappa*sqrt(Tcond**5)
+        kappa_T7=kappa_T5*Tcond
+      end if
+      if(slab_uniform) then
+        gradT1=((8.d0*(Te(ix1+1)-Te(ix1-1))-Te(ix1+2)+Te(ix1-2))/12.d0)/block%ds(ix1,1)
+      else
+        gradT1=gradT_geom(ix1)
+      end if
+      B2=zero
+      do idir=1,ndir
+        B2=B2+Bvec(ix1,idir)**2
+      end do
+      if(B2>smalldouble**2) then
+        bgradT(ix1)=Bvec(ix1,1)*gradT1/dsqrt(B2)
+      else
+        bgradT(ix1)=zero
+      end if
+      kappaT5_bgradT=kappa_T5*bgradT(ix1)
+      inv_rho=1.d0/rho_loc(ix1)
+      c2=eos%gamma*pth_loc(ix1)*inv_rho
+      cfast2 = B2*inv_rho + c2
+      avMinCs2(1) = cfast2**2 - 4.0d0*c2*Bvec(ix1,1)**2*inv_rho
+      cmax(1) = sqrt(half*(cfast2 + sqrt(dabs(avMinCs2(1)))))
+      if(mhd_hyperbolic_tc_sat) then
+        f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
+        tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*eos%inv_gamma_minus_1*cmax(1)**2))
+        w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+      else
+        w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/&
+         max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*eos%inv_gamma_minus_1*cmax(1)**2))
       end if
     end do
-    }
+   }
    {^IFTWOD
     do ix2=ixOmin2,ixOmax2
       do ix1=ixOmin1,ixOmax1
-        if(mhd_trac) then
-          if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-            sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
-            sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
-          else
-            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-            sigma_T7=sigma_T5*Te(ix^D)
+        if(mhd_hyperbolic_tc_constant) then
+          kappa_T5=mhd_hyperbolic_tc_kappa
+          kappa_T7=kappa_T5*Te(ix^D)
+        else
+          Tcond=Te(ix^D)
+          if(mhd_trac) then
+            Tcond=max(Tcond, block%wextra(ix^D,Tcoff_))
+          end if
+          kappa_T5=mhd_hyperbolic_tc_kappa*sqrt(Tcond**5)
+          kappa_T7 = kappa_T5*Tcond
+        end if
+        kappaT5_bgradT=kappa_T5*bgradT(ix^D)
+        B2 = zero
+        do idir = 1, ndir
+          B2 = B2 + Bvec(ix^D,idir)**2
+        end do
+        if(use_perp_source) then
+          select case(mhd_hyperbolic_tc_perp_mode)
+          case(1)
+            kappa_T5_perp=mhd_hyperbolic_tc_kappa_perp_factor*kappa_T5
+          case(2)
+            if(mhd_hyperbolic_tc_Bmin>zero) then
+              fB=B2/(B2+mhd_hyperbolic_tc_Bmin**2)
+            else
+              fB=one
+            end if
+            kappa_T5_perp_eff=(one-fB)*kappa_T5
+            kappa_T5_perp=kappa_T5_perp_eff
+          case(3)
+            Bmag_loc = dsqrt(B2)
+            Tloc = max(Te(ix^D), smalldouble)
+            nloc_code = max(rho_loc(ix^D), smalldouble)
+            chi = Cchi*Bmag_loc*Tloc**1.5d0/nloc_code
+            kappa_T5_perp_eff = kappa_T5/(one+chi**2)
+            kappa_T5_perp = kappa_T5_perp_eff
+          case default
+            kappa_T5_perp=zero
+          end select
+          kappaT5_gradTperp=kappa_T5_perp*gradTperp_mag(ix^D)
+        end if
+        inv_rho=1.d0/rho_loc(ix^D)
+        c2=eos%gamma*pth_loc(ix^D)*inv_rho
+        cfast2 = B2*inv_rho + c2
+        do idir=1,ndim
+          avMinCs2(idir)=cfast2**2-4.0d0*c2*Bvec(ix^D,idir)**2*inv_rho
+          cmax(idir)=sqrt(half*(cfast2+sqrt(dabs(avMinCs2(idir)))))\
+        end do
+        if(mhd_hyperbolic_tc_sat) then
+          f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
+          tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*eos%inv_gamma_minus_1*maxval(cmax(:))**2))
+          w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+          if(use_perp_source) then
+            w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(f_sat*kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
           end if
         else
-          sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-          sigma_T7=sigma_T5*Te(ix^D)
-        end if
-        if(B0field) then
-          ^C&bdir(^C)=wCT({ix^D},mag(^C))+block%B0({ix^D},^C,0)\
-        else
-          ^C&bdir(^C)=wCT({ix^D},mag(^C))\
-        end if
-        if(Bdir(1)/=0.d0) then
-          bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(^CE&(Bdir(^CE)/Bdir(1))**2+))
-        else
-          bunitvec(1)=0.d0
-        end if
-        if(Bdir(2)/=0.d0) then
-          bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(^CF&(Bdir(^CF)/Bdir(2))**2+))
-        else
-          bunitvec(2)=0.d0
-        end if
-        sigmaT5_bgradT=sigma_T5*(&
-           bunitvec(1)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
-          +bunitvec(2)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
-        ! internal energy density: eint = e_total - KE - ME(perturbation)
-        eint=wCT(ix^D,e_)-half*((^C&wCT(ix^D,m^C_)**2+)/rho_loc(ix^D)+(^C&wCT(ix^D,b^C_)**2+))
-        if(mhd_htc_sat) then
-          f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
-          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(eint*cmax_global**2))
-          w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
-        else
-          w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-           max(4.d0*dt, sigma_T7*courantpar**2/(eint*cmax_global**2))
+          tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*eos%inv_gamma_minus_1*maxval(cmax(:))**2))
+          w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+          if(use_perp_source) then
+            w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
+          end if
         end if
       end do
     end do
-    }
+   }
    {^IFTHREED
     do ix3=ixOmin3,ixOmax3
       do ix2=ixOmin2,ixOmax2
         do ix1=ixOmin1,ixOmax1
-          if(mhd_trac) then
-            if(Te(ix^D)<block%wextra(ix^D,Tcoff_)) then
-              sigma_T5=hypertc_kappa*dsqrt(block%wextra(ix^D,Tcoff_)**5)
-              sigma_T7=sigma_T5*block%wextra(ix^D,Tcoff_)
-            else
-              sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-              sigma_T7=sigma_T5*Te(ix^D)
+          if(mhd_hyperbolic_tc_constant) then
+            kappa_T5=mhd_hyperbolic_tc_kappa
+            kappa_T7=kappa_T5*Te(ix^D)
+          else
+            Tcond=Te(ix^D)
+            if(mhd_trac) then
+              Tcond=max(Tcond, block%wextra(ix^D,Tcoff_))
+            end if
+            kappa_T5=mhd_hyperbolic_tc_kappa*sqrt(Tcond**5)
+            kappa_T7 = kappa_T5*Tcond
+          end if
+          kappaT5_bgradT=kappa_T5*bgradT(ix^D)
+          B2 = zero
+          do idir = 1, ndir
+            B2 = B2 + Bvec(ix^D,idir)**2
+          end do
+          if(use_perp_source) then
+            select case(mhd_hyperbolic_tc_perp_mode)
+            case(1)
+              kappa_T5_perp=mhd_hyperbolic_tc_kappa_perp_factor*kappa_T5
+            case(2)
+              if(mhd_hyperbolic_tc_Bmin>zero) then
+                fB=B2/(B2+mhd_hyperbolic_tc_Bmin**2)
+              else
+                fB=one
+              end if
+              kappa_T5_perp_eff=(one-fB)*kappa_T5
+              kappa_T5_perp=kappa_T5_perp_eff
+            case(3)
+              Bmag_loc = dsqrt(B2)
+              Tloc = max(Te(ix^D), smalldouble)
+              nloc_code = max(rho_loc(ix^D), smalldouble)
+              chi = Cchi*Bmag_loc*Tloc**1.5d0/nloc_code
+              kappa_T5_perp_eff = kappa_T5/(one+chi**2)
+              kappa_T5_perp = kappa_T5_perp_eff
+            case default
+              kappa_T5_perp=zero
+            end select
+            kappaT5_gradTperp=kappa_T5_perp*gradTperp_mag(ix^D)
+          end if
+          inv_rho=1.d0/rho_loc(ix^D)
+          c2=eos%gamma*pth_loc(ix^D)*inv_rho
+          cfast2 = B2*inv_rho + c2
+          do idir = 1, ndim
+            avMinCs2(idir)=cfast2**2-4.0d0*c2*Bvec(ix^D,idir)**2*inv_rho
+            cmax(idir)=sqrt(half*(cfast2+sqrt(dabs(avMinCs2(idir)))))\
+          end do
+          if(mhd_hyperbolic_tc_sat) then
+            f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
+            tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*eos%inv_gamma_minus_1*maxval(cmax(:))**2))
+            w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+            if(use_perp_source) then
+              w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(f_sat*kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
             end if
           else
-            sigma_T5=hypertc_kappa*dsqrt(Te(ix^D)**5)
-            sigma_T7=sigma_T5*Te(ix^D)
-          end if
-          if(B0field) then
-            ^C&bdir(^C)=wCT({ix^D},mag(^C))+block%B0({ix^D},^C,0)\
-          else
-            ^C&bdir(^C)=wCT({ix^D},mag(^C))\
-          end if
-          if(Bdir(1)/=0.d0) then
-            bunitvec(1)=sign(1.d0,Bdir(1))/dsqrt(1.d0+(Bdir(2)/Bdir(1))**2+(Bdir(3)/Bdir(1))**2)
-          else
-            bunitvec(1)=0.d0
-          end if
-          if(Bdir(2)/=0.d0) then
-            bunitvec(2)=sign(1.d0,Bdir(2))/dsqrt(1.d0+(Bdir(1)/Bdir(2))**2+(Bdir(3)/Bdir(2))**2)
-          else
-            bunitvec(2)=0.d0
-          end if
-          if(Bdir(3)/=0.d0) then
-            bunitvec(3)=sign(1.d0,Bdir(3))/dsqrt(1.d0+(Bdir(1)/Bdir(3))**2+(Bdir(2)/Bdir(3))**2)
-          else
-            bunitvec(3)=0.d0
-          end if
-          sigmaT5_bgradT=sigma_T5*(&
-             bunitvec(1)*((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)&
-            +bunitvec(2)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
-            +bunitvec(3)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
-          ! internal energy density: eint = e_total - KE - ME(perturbation)
-          eint=wCT(ix^D,e_)-half*((^C&wCT(ix^D,m^C_)**2+)/rho_loc(ix^D)+(^C&wCT(ix^D,b^C_)**2+))
-          if(mhd_htc_sat) then
-            ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
-            f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(wCTprim(ix^D,p_)/rho_loc(ix^D))**1.5d0))
-            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(eint*cmax_global**2))
-            w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
-          else
-            w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-             max(4.d0*dt, sigma_T7*courantpar**2/(eint*cmax_global**2))
+            tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*eos%inv_gamma_minus_1*maxval(cmax(:))**2))
+            w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/tau
+            if(use_perp_source) then
+              w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
+            end if
           end if
         end do
       end do
     end do
-    }
-  end subroutine add_hypertc_source
+   }
+  end subroutine add_hyperbolic_tc_source
 
-  !> Compute the Lorentz force (JxB)
+  !> Compute the Lorentz force (JxB) Note: Unused subroutine
+  !> perhaps useful for post-processing when made public
   subroutine get_Lorentz_force(ixI^L,ixO^L,w,JxB)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixO^L
@@ -4207,44 +5202,13 @@ contains
     call cross_product(ixI^L,ixO^L,a,b,JxB)
   end subroutine get_Lorentz_force
 
-  !> Compute 1/(1+v_A^2/c^2) for semirelativistic MHD, where v_A is the Alfven
-  !> velocity
-  subroutine mhd_gamma2_alfven(ixI^L, ixO^L, w, gamma_A2)
-    use mod_global_parameters
-    integer, intent(in)           :: ixI^L, ixO^L
-    double precision, intent(in)  :: w(ixI^S, nw)
-    double precision, intent(out) :: gamma_A2(ixO^S)
-    double precision              :: rho(ixI^S)
-
-    ! mhd_get_rho cannot be used as x is not a param
-    if(has_equi_rho0) then
-      rho(ixO^S) = w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i)
-    else
-      rho(ixO^S) = w(ixO^S,rho_)
-    endif
-    ! Compute the inverse of 1 + B^2/(rho * c^2)
-    gamma_A2(ixO^S) = 1.0d0/(1.0d0+mhd_mag_en_all(w, ixI^L, ixO^L)/rho(ixO^S)*inv_squared_c)
-  end subroutine mhd_gamma2_alfven
-
-  !> Compute 1/sqrt(1+v_A^2/c^2) for semirelativisitic MHD, where v_A is the
-  !> Alfven velocity
-  function mhd_gamma_alfven(w, ixI^L, ixO^L) result(gamma_A)
-    use mod_global_parameters
-    integer, intent(in)           :: ixI^L, ixO^L
-    double precision, intent(in)  :: w(ixI^S, nw)
-    double precision              :: gamma_A(ixO^S)
-
-    call mhd_gamma2_alfven(ixI^L, ixO^L, w, gamma_A)
-    gamma_A = sqrt(gamma_A)
-  end function mhd_gamma_alfven
-
   subroutine mhd_get_rho(w,x,ixI^L,ixO^L,rho)
     use mod_global_parameters
     integer, intent(in)           :: ixI^L, ixO^L
     double precision, intent(in)  :: w(ixI^S,1:nw),x(ixI^S,1:ndim)
     double precision, intent(out) :: rho(ixI^S)
 
-    if(has_equi_rho0) then
+    if(has_equi_rho_and_p) then
       rho(ixO^S) = w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i)
     else
       rho(ixO^S) = w(ixO^S,rho_)
@@ -4266,7 +5230,7 @@ contains
     logical :: flag(ixI^S,1:nw)
 
     flag=.false.
-    if(has_equi_pe0) then
+    if(has_equi_rho_and_p) then
       where(w(ixO^S,ie)+block%equi_vars(ixO^S,equi_pe0_,0)*eos%inv_gamma_minus_1<small_e)&
              flag(ixO^S,ie)=.true.
     else
@@ -4275,7 +5239,7 @@ contains
     if(any(flag(ixO^S,ie))) then
       select case (small_values_method)
       case ("replace")
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           where(flag(ixO^S,ie)) w(ixO^S,ie)=small_e - &
                   block%equi_vars(ixO^S,equi_pe0_,0)*eos%inv_gamma_minus_1
         else
@@ -4298,11 +5262,12 @@ contains
 
 
   !> Source terms after split off time-independent magnetic field
-  subroutine add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x)
+  subroutine add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
 
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: qdt, dtfactor,wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
+    double precision, intent(in) :: wCTprim(ixI^S,1:nw)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     double precision :: a(ixI^S,3), b(ixI^S,3), axb(ixI^S,3)
@@ -4311,7 +5276,7 @@ contains
     a=0.d0
     b=0.d0
     ! for force-free field J0xB0 =0
-    if(.not.B0field_forcefree) then
+    if((.not.B0field_forcefree).and.(.not.has_equi_rho_and_p)) then
       ! store B0 magnetic field in b
       b(ixO^S,1:ndir)=block%B0(ixO^S,1:ndir,0)
 
@@ -4334,11 +5299,11 @@ contains
     if(total_energy) then
       a=0.d0
       ! for free-free field -(vxB0) dot J0 =0
-      b(ixO^S,:)=wCT(ixO^S,mag(:))
+      b(ixO^S,:)=wCTprim(ixO^S,mag(:))
       ! store full magnetic field B0+B1 in b
-      if(.not.B0field_forcefree) b(ixO^S,:)=b(ixO^S,:)+block%B0(ixO^S,:,0)
+      if((.not.B0field_forcefree).and.(.not.has_equi_rho_and_p)) b(ixO^S,:)=b(ixO^S,:)+block%B0(ixO^S,:,0)
       ! store velocity in a
-      a(ixI^S,1:ndir)=wCT(ixI^S,mom(1:ndir))
+      a(ixI^S,1:ndir)=wCTprim(ixI^S,mom(1:ndir))
       ! -E = a x b
       call cross_product(ixI^L,ixO^L,a,b,axb)
       if(local_timestep) then
@@ -4349,20 +5314,42 @@ contains
         axb(ixO^S,:)=axb(ixO^S,:)*qdt
       endif
       ! add -(vxB) dot J0 source term in energy equation
+      ! where it is adding -J0 dot (vxB_1) when appropriate
       do idir=7-2*ndir,3
         w(ixO^S,e_)=w(ixO^S,e_)-axb(ixO^S,idir)*block%J0(ixO^S,idir)
       end do
-      if(mhd_ambipolar) then
+      if(mhd_hall) then
+         ! store hall velocity in a, only partial current is needed
+         call mhd_getv_Hall(wCT,x,ixI^L,ixO^L,a,.true.)
+         ! -E = a x b
+         call cross_product(ixI^L,ixO^L,a,b,axb)
+         if(local_timestep) then
+           do idir=1,3
+             axb(ixO^S,idir)=axb(ixO^S,idir)*block%dt(ixO^S)*dtfactor
+           enddo
+         else
+           axb(ixO^S,:)=axb(ixO^S,:)*qdt
+         endif
+         ! add -(vxB) dot J0 source term in energy equation
+         do idir=7-2*ndir,3
+           w(ixO^S,e_)=w(ixO^S,e_)-axb(ixO^S,idir)*block%J0(ixO^S,idir)
+         end do
+      endif
+      if(mhd_ambipolar_sts) then
+        ! in STS variant of ambipolar, we added for split B the term div(B_1xE_ambi)
+        ! hence needs to add J_0 dot E_ambi 
+        ! to get finally the term etaA (J_perpB)^/B^2-B_1 dot (curl Eambi)
         !reuse axb
         call mhd_get_jxbxb(wCT,x,ixI^L,ixO^L,axb)
         ! source J0 * E
         do idir=sdim,3
           !set electric field in jxbxb: E=nuA * jxbxb, where nuA=-etaA/rho^2
           call multiplyAmbiCoef(ixI^L,ixO^L,axb(ixI^S,idir),wCT,x)
-          w(ixO^S,e_)=w(ixO^S,e_)+axb(ixO^S,idir)*block%J0(ixO^S,idir)
+          w(ixO^S,e_)=w(ixO^S,e_)+qdt*axb(ixO^S,idir)*block%J0(ixO^S,idir)
         enddo
       endif
     end if
+    
 
     if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_B0')
 
@@ -4392,7 +5379,7 @@ contains
     call divvector(E,ixI^L,ixO^L,divE)
     ! curl E
     call curlvector(E,ixI^L,ixO^L,curlE,idirmin,1,3)
-    ! add source term in momentum equations (1/c0^2-1/c^2)(E dot divE - E x curlE)
+    ! add source term in momentum equations (1/c0^2-1/c^2)(E divE - E x curlE)
     ! equation (26) and (27)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       w(ix^D,m1_)=w(ix^D,m1_)+qdt*(inv_squared_c0-inv_squared_c)*&
@@ -4436,8 +5423,8 @@ contains
         w(ix^D,e_)=tmp
       end if
    {end do\}
-    if(mhd_ambipolar)then
-      call add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x,e_)
+    if(mhd_ambipolar_sts)then
+      call add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x)
     end if
 
     if(fix_small_values) then
@@ -4468,8 +5455,12 @@ contains
       B(ixO^S, idir) = wCT(ixO^S,mag(idir))
     end do
 
-    !call get_current(wCT,ixI^L,ixO^L,idirmin,current)
-    call curlvector(wCT(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,7-2*ndir,ndir,.true.)
+    if(slab_uniform)then
+      ! get current in fourth order accuracy in Cartesian
+      call curlvector(wCT(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,7-2*ndir,ndir,.true.)
+    else
+      call get_current(wCT,ixI^L,ixO^L,idirmin,current)
+    endif
 
     J=0.0d0
     do idir=7-2*ndir,3
@@ -4480,82 +5471,89 @@ contains
     call cross_product(ixI^L,ixO^L,J,B,JxB)
     }
     {^IFTHREED
-    !call get_current(wCT,ixI^L,ixO^L,idirmin,current)
-    ! get current in fourth order accuracy in Cartesian
-    call curlvector(wCT(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,1,ndir,.true.)
+    if(slab_uniform)then
+      ! get current in fourth order accuracy in Cartesian
+      call curlvector(wCT(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,1,ndir,.true.)
+    else
+      call get_current(wCT,ixI^L,ixO^L,idirmin,current)
+    endif
     ! get Lorentz force JxB
     call cross_product(ixI^L,ixO^L,current,wCT(ixI^S,mag(1:ndir)),JxB)
     }
 
-    if(mhd_semirelativistic) then
-      ! (v . nabla) v
-      do idir=1,ndir
-        do idims=1,ndim
-          call gradient(wCTprim(ixI^S,mom(idir)),ixI^L,ixO^L,idims,J(ixI^S,idims))
-        end do
-        B(ixO^S,idir)=sum(wCTprim(ixO^S,mom(1:ndir))*J(ixO^S,1:ndir),dim=ndim+1)
-      end do
-      ! nabla p
-      do idir=1,ndir
-        call gradient(wCTprim(ixI^S,p_),ixI^L,ixO^L,idir,J(ixI^S,idir))
-      end do
-
-      if(mhd_gravity) then
-        gravity_field=0.d0
-        call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field(ixI^S,1:ndim))
-        do idir=1,ndir
-          B(ixO^S,idir)=wCT(ixO^S,rho_)*(B(ixO^S,idir)-gravity_field(ixO^S,idir))+J(ixO^S,idir)-JxB(ixO^S,idir)
-        end do
-      else
-        do idir=1,ndir
-          B(ixO^S,idir)=wCT(ixO^S,rho_)*B(ixO^S,idir)+J(ixO^S,idir)-JxB(ixO^S,idir)
-        end do
-      end if
-
-      b2(ixO^S)=sum(wCT(ixO^S,mag(:))**2,dim=ndim+1)
-      tmp(ixO^S)=sqrt(b2(ixO^S))
-      where(tmp(ixO^S)>smalldouble)
-        tmp(ixO^S)=1.d0/tmp(ixO^S)
-      else where
-        tmp(ixO^S)=0.d0
-      end where
-      ! unit vector of magnetic field
-      do idir=1,ndir
-        bu(ixO^S,idir)=wCT(ixO^S,mag(idir))*tmp(ixO^S)
-      end do
-
-      !b2(ixO^S)=b2(ixO^S)/w(ixO^S,rho_)*inv_squared_c
-      !b2(ixO^S)=b2(ixO^S)/(1.d0+b2(ixO^S))
-      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-         ! Va^2/c^2
-         Vaoc=b2(ix^D)/w(ix^D,rho_)*inv_squared_c
-         ! Va^2/c^2 / (1+Va^2/c^2)
-         b2(ix^D)=Vaoc/(1.d0+Vaoc)
-      {end do\}
-      ! bu . F
-      tmp(ixO^S)=sum(bu(ixO^S,1:ndir)*B(ixO^S,1:ndir),dim=ndim+1)
-      ! Rempel 2017 ApJ 834, 10 equation (54)
-      do idir=1,ndir
-        J(ixO^S,idir)=b2(ixO^S)*(B(ixO^S,idir)-bu(ixO^S,idir)*tmp(ixO^S))
-      end do
-      !! Rempel 2017 ApJ 834, 10 equation (29) add SR force at momentum equation
-      do idir=1,ndir
-        w(ixO^S,mom(idir))=w(ixO^S,mom(idir))+qdt*J(ixO^S,idir)
-      end do
-      ! Rempel 2017 ApJ 834, 10 equation (30) add work of Lorentz force and SR force
-      w(ixO^S,e_)=w(ixO^S,e_)+qdt*sum(wCTprim(ixO^S,mom(1:ndir))*&
-              (JxB(ixO^S,1:ndir)+J(ixO^S,1:ndir)),dim=ndim+1)
-    else
+    ! mhd_semirelativistic does not combine with mhd_hydrodynamic_e
+    !!if(mhd_semirelativistic) then
+    !!  ! (v . nabla) v
+    !!  do idir=1,ndir
+    !!    do idims=1,ndim
+    !!      call gradient(wCTprim(ixI^S,mom(idir)),ixI^L,ixO^L,idims,J(ixI^S,idims))
+    !!    end do
+    !!    B(ixO^S,idir)=sum(wCTprim(ixO^S,mom(1:ndir))*J(ixO^S,1:ndir),dim=ndim+1)
+    !!  end do
+    !!  ! nabla p
+    !!  do idir=1,ndir
+    !!    call gradient(wCTprim(ixI^S,p_),ixI^L,ixO^L,idir,J(ixI^S,idir))
+    !!  end do
+    !!  if(mhd_gravity) then
+    !!    gravity_field=0.d0
+    !!    call usr_gravity(ixI^L,ixO^L,wCT,x,gravity_field(ixI^S,1:ndim))
+    !!    do idir=1,ndir
+    !!      B(ixO^S,idir)=wCT(ixO^S,rho_)*(B(ixO^S,idir)-gravity_field(ixO^S,idir))+J(ixO^S,idir)-JxB(ixO^S,idir)
+    !!    end do
+    !!  else
+    !!    do idir=1,ndir
+    !!      B(ixO^S,idir)=wCT(ixO^S,rho_)*B(ixO^S,idir)+J(ixO^S,idir)-JxB(ixO^S,idir)
+    !!    end do
+    !!  end if
+    !!  b2(ixO^S)=sum(wCT(ixO^S,mag(:))**2,dim=ndim+1)
+    !!  tmp(ixO^S)=sqrt(b2(ixO^S))
+    !!  where(tmp(ixO^S)>smalldouble)
+    !!    tmp(ixO^S)=1.d0/tmp(ixO^S)
+    !!  else where
+    !!    tmp(ixO^S)=0.d0
+    !!  end where
+    !!  ! unit vector of magnetic field
+    !!  do idir=1,ndir
+    !!    bu(ixO^S,idir)=wCT(ixO^S,mag(idir))*tmp(ixO^S)
+    !!  end do
+    !!  !b2(ixO^S)=b2(ixO^S)/w(ixO^S,rho_)*inv_squared_c
+    !!  !b2(ixO^S)=b2(ixO^S)/(1.d0+b2(ixO^S))
+    !!  {do ix^DB=ixOmin^DB,ixOmax^DB\}
+    !!     ! Va^2/c^2
+    !!     Vaoc=b2(ix^D)/w(ix^D,rho_)*inv_squared_c
+    !!     ! Va^2/c^2 / (1+Va^2/c^2)
+    !!     b2(ix^D)=Vaoc/(1.d0+Vaoc)
+    !!  {end do\}
+    !!  ! bu . F
+    !!  tmp(ixO^S)=sum(bu(ixO^S,1:ndir)*B(ixO^S,1:ndir),dim=ndim+1)
+    !!  ! Rempel 2017 ApJ 834, 10 equation (54)
+    !!  do idir=1,ndir
+    !!    J(ixO^S,idir)=b2(ixO^S)*(B(ixO^S,idir)-bu(ixO^S,idir)*tmp(ixO^S))
+    !!  end do
+    !!  !! Rempel 2017 ApJ 834, 10 equation (29) add SR force at momentum equation
+    !!  do idir=1,ndir
+    !!    w(ixO^S,mom(idir))=w(ixO^S,mom(idir))+qdt*J(ixO^S,idir)
+    !!  end do
+    !!  ! Rempel 2017 ApJ 834, 10 equation (30) add work of Lorentz force and SR force
+    !!  w(ixO^S,e_)=w(ixO^S,e_)+qdt*sum(wCTprim(ixO^S,mom(1:ndir))*&
+    !!          (JxB(ixO^S,1:ndir)+J(ixO^S,1:ndir)),dim=ndim+1)
+    !!else
       ! add work of Lorentz force
       w(ixO^S,e_)=w(ixO^S,e_)+qdt*sum(wCTprim(ixO^S,mom(1:ndir))*JxB(ixO^S,1:ndir),dim=ndim+1)
+    !!end if
+
+    if(mhd_ambipolar_sts)then
+      call add_source_ambipolar_internal_energy(qdt,ixI^L,ixO^L,wCT,w,x)
     end if
+
+    if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_hydrodynamic_e')
 
   end subroutine add_source_hydrodynamic_e
 
   !> Add resistive source to w within ixO Uses 3 point stencil (1 neighbour) in
-  !> each direction, non-conservative. If the fourthorder precompiler flag is
-  !> set, uses fourth order central difference for the laplacian. Then the
-  !> stencil is 5 (2 neighbours).
+  !> each direction, non-conservative. Uses the generic Laplacian
+  !> with fourth order central difference (on uniform cartesian) for the laplacian. Then the
+  !> stencil is 5 (2 neighbours). NOTE: Unused subroutine!
   subroutine add_source_res1(qdt,ixI^L,ixO^L,wCT,w,x)
     use mod_global_parameters
     use mod_usr_methods
@@ -4565,21 +5563,18 @@ contains
     double precision, intent(in)    :: qdt
     double precision, intent(in) :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
-    integer :: ixA^L,idir,jdir,kdir,idirmin,idim,jxO^L,hxO^L,ix
-    integer :: lxO^L, kxO^L
 
+    integer :: ixA^L,idir,jdir,kdir,idirmin,idim
     double precision :: tmp(ixI^S),tmp2(ixI^S)
 
     ! For ndir=2 only 3rd component of J can exist, ndir=1 is impossible for MHD
     double precision :: current(ixI^S,7-2*ndir:3),eta(ixI^S)
     double precision :: gradeta(ixI^S,1:ndim), Bf(ixI^S,1:ndir)
+    double precision :: lapl_vec(ixI^S,1:ndir)
 
-    ! Calculating resistive sources involve one extra layer
-    if (mhd_4th_order) then
-      ixA^L=ixO^L^LADD2;
-    else
-      ixA^L=ixO^L^LADD1;
-    end if
+    ! Calculating resistive sources involves one extra layer
+    ! asking here for two, so Cartesian works with 4th order CD
+    ixA^L=ixO^L^LADD2;
 
     if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
          call mpistop("Error in add_source_res1: Non-conforming input limits")
@@ -4592,7 +5587,6 @@ contains
        gradeta(ixO^S,1:ndim)=zero
     else
        call usr_special_resistivity(wCT,ixI^L,ixA^L,idirmin,x,current,eta)
-       ! assumes that eta is not function of current?
        do idim=1,ndim
           call gradient(eta,ixI^L,ixO^L,idim,tmp)
           gradeta(ixO^S,idim)=tmp(ixO^S)
@@ -4605,34 +5599,12 @@ contains
       Bf(ixI^S,1:ndir)=wCT(ixI^S,mag(1:ndir))
     end if
 
+    call laplacian_of_vector(Bf,ixI^L,ixO^L,lapl_vec)
+
     do idir=1,ndir
-       ! Put B_idir into tmp2 and eta*Laplace B_idir into tmp
-       if (mhd_4th_order) then
-         tmp(ixO^S)=zero
-         tmp2(ixI^S)=Bf(ixI^S,idir)
-         do idim=1,ndim
-            lxO^L=ixO^L+2*kr(idim,^D);
-            jxO^L=ixO^L+kr(idim,^D);
-            hxO^L=ixO^L-kr(idim,^D);
-            kxO^L=ixO^L-2*kr(idim,^D);
-            tmp(ixO^S)=tmp(ixO^S)+&
-                 (-tmp2(lxO^S)+16.0d0*tmp2(jxO^S)-30.0d0*tmp2(ixO^S)+16.0d0*tmp2(hxO^S)-tmp2(kxO^S)) &
-                 /(12.0d0 * dxlevel(idim)**2)
-         end do
-       else
-         tmp(ixO^S)=zero
-         tmp2(ixI^S)=Bf(ixI^S,idir)
-         do idim=1,ndim
-            jxO^L=ixO^L+kr(idim,^D);
-            hxO^L=ixO^L-kr(idim,^D);
-            tmp(ixO^S)=tmp(ixO^S)+&
-                 (tmp2(jxO^S)-2.0d0*tmp2(ixO^S)+tmp2(hxO^S))/dxlevel(idim)**2
-         end do
-       end if
-
-       ! Multiply by eta
-       tmp(ixO^S)=tmp(ixO^S)*eta(ixO^S)
-
+       ! Multiply by eta to store eta*Laplace B_idir
+       tmp(ixO^S)=lapl_vec(ixO^S,idir)*eta(ixO^S)
+       
        ! Subtract grad(eta) x J = eps_ijk d_j eta J_k if eta is non-constant
        if (mhd_eta<zero)then
           do jdir=1,ndim; do kdir=idirmin,3
@@ -4662,9 +5634,9 @@ contains
 
   end subroutine add_source_res1
 
-  !> Add resistive source to w within ixO
+  !> Add resistive source to w within ixO in an explicit fashion
   !> Uses 5 point stencil (2 neighbours) in each direction, conservative
-  subroutine add_source_res2(qdt,ixI^L,ixO^L,wCT,w,x)
+  subroutine add_source_res_exp(qdt,ixI^L,ixO^L,wCT,w,x)
     use mod_global_parameters
     use mod_usr_methods
     use mod_geometry
@@ -4682,7 +5654,7 @@ contains
     ixA^L=ixO^L^LADD2;
 
     if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
-         call mpistop("Error in add_source_res2: Non-conforming input limits")
+         call mpistop("Error in add_source_res_exp: Non-conforming input limits")
 
     ixA^L=ixO^L^LADD1;
     ! Calculate current density within ixL: J=curl B, thus J_i=eps_ijk*d_j B_k
@@ -4729,8 +5701,79 @@ contains
       end if
     end if
 
-    if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_res2')
-  end subroutine add_source_res2
+    if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_res_exp')
+  end subroutine add_source_res_exp
+
+
+  !> Add ambipolar source to w within ixO in an explicit fashion
+  !> Uses 5 point stencil (2 neighbours) in each direction, conservative
+  subroutine add_source_ambi_exp(qdt,ixI^L,ixO^L,wCT,w,x)
+    use mod_global_parameters
+    use mod_usr_methods
+    use mod_geometry
+
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(in)    :: qdt
+    double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+
+    double precision :: current(ixI^S,1:3),curlj(ixI^S,1:3)
+    double precision :: tmpvec(ixI^S,1:3),tmp(ixI^S),btot2(ixI^S)
+    integer :: ixA^L,idir,idirmin1
+
+    ixA^L=ixO^L^LADD2;
+
+    if (ixImin^D>ixAmin^D.or.ixImax^D<ixAmax^D|.or.) &
+         call mpistop("Error in add_source_ambi_exp: Non-conforming input limits")
+
+    ixA^L=ixO^L^LADD1;
+    ! Calculate -J_perpB = (JxB)xB
+    call mhd_get_jxbxb(wCT,x,ixI^L,ixA^L,current)
+
+    tmpvec=current
+    do idir=1,3
+      !set electric field in tmpvec : E=nuA * jxbxb, where nuA=-etaA/rho^2
+      !tmpvec(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * jxbxb(ixA^S,i)
+      call multiplyAmbiCoef(ixI^L,ixA^L,tmpvec(ixI^S,idir),wCT,x)
+    end do
+
+    ! dB/dt= -curl(J_perpB*etaA), thus B_i=B_i-eps_ijk d_j Jeta_k
+    call curlvector(tmpvec,ixI^L,ixO^L,curlj,idirmin1,1,3)
+    if(stagger_grid) then
+      if(ndim==2.and.ndir==3) then
+        ! if 2.5D
+        w(ixO^S,mag(ndir)) = w(ixO^S,mag(ndir))-qdt*curlj(ixO^S,ndir)
+      end if
+    else
+      w(ixO^S,mag(1:ndir)) = w(ixO^S,mag(1:ndir))-qdt*curlj(ixO^S,1:ndir)
+    end if
+
+    if(mhd_energy) then
+      ! compute ambipolar heating term: nuA* J_perpB^2/ B^2
+      ! avoiding nulls here
+      btot2(ixA^S)=mhd_mag_en_all(wCT,ixI^L,ixA^L)
+      where (btot2(ixA^S)>smalldouble )
+          tmp(ixA^S) = sum(current(ixA^S,1:3)**2,dim=ndim+1) / btot2(ixA^S)
+      elsewhere
+          tmp(ixA^S) = zero
+      endwhere
+      ! multiply with nuA where nuA=-etaA/rho^2
+      call multiplyAmbiCoef(ixI^L,ixA^L,tmp,wCT,x)
+      ! compensate - sign and add timestep
+      tmp(ixO^S)=-qdt*tmp(ixO^S)
+      if(total_energy) then
+        ! de/dt= +div(B x E_ambi) = eta J^2 - B dot curl(eta J)
+        ! de1/dt= eta J^2 - B1 dot curl(eta J)
+        w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)-&
+        qdt*sum(wCT(ixO^S,mag(1:ndir))*curlj(ixO^S,1:ndir),dim=ndim+1)
+      else
+        ! add eta*J**2 source term in the internal or hydrodynamic energy equation
+        w(ixO^S,e_)=w(ixO^S,e_)+tmp(ixO^S)
+      end if
+    end if
+
+    if (fix_small_values) call mhd_handle_small_values(.false.,w,x,ixI^L,ixO^L,'add_source_ambi_exp')
+  end subroutine add_source_ambi_exp
 
   !> Add Hyper-resistive source to w within ixO
   !> Uses 9 point stencil (4 neighbours) in each direction.
@@ -5039,19 +6082,19 @@ contains
         block%J0(ixO^S,idirmin0:3)
   end subroutine get_current
 
-  !> If resistivity is not zero, check diffusion time limit for dt
-  subroutine mhd_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+  !> If resistivity is not zero, check diffusion time limit for dt and similar other effects
+  subroutine mhd_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
-    use mod_radiative_cooling, only: cooling_get_dt
     use mod_viscosity, only: viscosity_get_dt
     use mod_gravity, only: gravity_get_dt
     use mod_cak_force, only: cak_get_dt
+    use mod_fld, only: fld_radforce_get_dt
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: dtnew
     double precision, intent(in)    :: dx^D
-    double precision, intent(in)    :: w(ixI^S,1:nw)
+    double precision, intent(in)    :: wprim(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
     double precision              :: dxarr(ndim)
@@ -5062,10 +6105,14 @@ contains
 
     ^D&dxarr(^D)=dx^D;
     if (mhd_eta>zero)then
+      if(slab_uniform) then
        dtnew=dtdiffpar*minval(dxarr(1:ndim))**2/mhd_eta
+      else
+       dtnew=dtdiffpar*minval(block%ds(ixO^S,1:ndim))**2/mhd_eta
+      end if
     else if (mhd_eta<zero)then
-       call get_current(w,ixI^L,ixO^L,idirmin,current)
-       call usr_special_resistivity(w,ixI^L,ixO^L,idirmin,x,current,eta)
+       call get_current(wprim,ixI^L,ixO^L,idirmin,current)
+       call usr_special_resistivity(wprim,ixI^L,ixO^L,idirmin,x,current,eta)
        dtnew=bigdouble
        do idim=1,ndim
          if(slab_uniform) then
@@ -5086,38 +6133,68 @@ contains
       end if
     end if
 
-    if(mhd_radiative_cooling) then
-      call cooling_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x,rc_fl)
-    end if
-
     if(mhd_viscosity) then
-      call viscosity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call viscosity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
 
     if(mhd_gravity) then
-      call gravity_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call gravity_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
 
     if(mhd_ambipolar_exp) then
-      dtnew=min(dtdiffpar*get_ambipolar_dt(w,ixI^L,ixO^L,dx^D,x),dtnew)
+      dtnew=min(dtdiffpar*get_ambipolar_dt(wprim,ixI^L,ixO^L,dx^D,x),dtnew)
     endif
 
     if (mhd_cak_force) then
-      call cak_get_dt(w,ixI^L,ixO^L,dtnew,dx^D,x)
+      call cak_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     end if
+
+    if(mhd_radiation_fld) then
+      call fld_radforce_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x,fld_fl)
+    endif
 
   end subroutine mhd_get_dt
 
+  !> Wrappers for the FLD implicit (MG diffusion) hooks: phys_implicit_update /
+  !> phys_evaluate_implicit have fixed interfaces with no fluid argument, so
+  !> these inject the module's fld_fl object into the threaded fld routines.
+  subroutine mhd_fld_implicit_update(dtfactor,qdt,qtC,psa,psb)
+    use mod_global_parameters
+    use mod_fld, only: fld_implicit_update
+    type(state), target          :: psa(max_blocks)
+    type(state), target          :: psb(max_blocks)
+    double precision, intent(in) :: qdt
+    double precision, intent(in) :: qtC
+    double precision, intent(in) :: dtfactor
+
+    call fld_implicit_update(dtfactor,qdt,qtC,psa,psb,fld_fl)
+  end subroutine mhd_fld_implicit_update
+
+  subroutine mhd_fld_evaluate_implicit(qtC,psa)
+    use mod_global_parameters
+    use mod_fld, only: fld_evaluate_implicit
+    type(state), target          :: psa(max_blocks)
+    double precision, intent(in) :: qtC
+
+    call fld_evaluate_implicit(qtC,psa,fld_fl)
+  end subroutine mhd_fld_evaluate_implicit
+
   ! Add geometrical source terms to w
+  ! Geometric sources to momentum and induction
+  ! for the regular case, not semi-relativistic, nor any splitting active
+  ! but possibly no energy equation at all
+  ! NOTE: Hall terms in induction not handled yet
   subroutine mhd_add_source_geom(qdt,dtfactor,ixI^L,ixO^L,wCT,wprim,w,x)
     use mod_global_parameters
     use mod_geometry
     use mod_rotating_frame, only: rotating_frame_add_source
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, dtfactor,x(ixI^S,1:ndim)
     double precision, intent(inout) :: wCT(ixI^S,1:nw),wprim(ixI^S,1:nw),w(ixI^S,1:nw)
 
+    double precision :: adiabs(ixI^S), gammas(ixI^S)
     double precision :: tmp,tmp1,invr,cot
     integer          :: ix^D
     integer :: mr_,mphi_ ! Polar var. names
@@ -5126,6 +6203,18 @@ contains
     mr_=mom(1); mphi_=mom(1)-1+phi_  ! Polar var. names
     br_=mag(1); bphi_=mag(1)-1+phi_
 
+    if(.not.mhd_energy) then
+      if(associated(usr_set_adiab)) then
+         call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+      else
+         adiabs=mhd_adiab
+      end if
+      if(associated(usr_set_gamma)) then
+         call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+      else
+         gammas=eos%gamma
+      end if
+    end if
 
     select case (coordinate)
     case (cylindrical)
@@ -5139,7 +6228,7 @@ contains
         if(mhd_energy) then
           tmp=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**eos%gamma+half*(^C&wprim(ix^D,b^C_)**2+)
+          tmp=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*(^C&wprim(ix^D,b^C_)**2+)
         end if
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp-&
@@ -5168,7 +6257,7 @@ contains
         if(mhd_energy) then
           tmp1=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         else
-          tmp1=mhd_adiab*wprim(ix^D,rho_)**eos%gamma+half*(^C&wprim(ix^D,b^C_)**2+)
+          tmp1=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*(^C&wprim(ix^D,b^C_)**2+)
         end if
         ! m1
         {^IFONEC
@@ -5239,16 +6328,22 @@ contains
   end subroutine mhd_add_source_geom
 
   ! Add geometrical source terms to w
+  ! Geometric sources to momentum and induction
+  ! for the semi-relativistic, hence no splitting active
+  ! but possibly no energy equation at all
+  ! NOTE: Hall terms in induction not handled yet
   subroutine mhd_add_source_geom_semirelati(qdt,dtfactor,ixI^L,ixO^L,wCT,wprim,w,x)
     use mod_global_parameters
     use mod_geometry
     use mod_rotating_frame, only: rotating_frame_add_source
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, dtfactor,x(ixI^S,1:ndim)
     double precision, intent(inout) :: wCT(ixI^S,1:nw),wprim(ixI^S,1:nw),w(ixI^S,1:nw)
 
-    double precision :: tmp,tmp1,tmp2,invr,cot,E(ixO^S,1:ndir)
+    double precision :: adiabs(ixI^S), gammas(ixI^S)
+    double precision :: tmp,tmp1,tmp2,invr,cot,ef(ixO^S,1:ndir)
     integer          :: ix^D
     integer :: mr_,mphi_ ! Polar var. names
     integer :: br_,bphi_
@@ -5256,6 +6351,18 @@ contains
     mr_=mom(1); mphi_=mom(1)-1+phi_  ! Polar var. names
     br_=mag(1); bphi_=mag(1)-1+phi_
 
+    if(.not.mhd_energy) then
+      if(associated(usr_set_adiab)) then
+         call usr_set_adiab(w,x,ixI^L,ixO^L,adiabs)
+      else
+         adiabs=mhd_adiab
+      end if
+      if(associated(usr_set_gamma)) then
+         call usr_set_gamma(w,x,ixI^L,ixO^L,gammas)
+      else
+         gammas=eos%gamma
+      end if
+    end if
 
     select case (coordinate)
     case (cylindrical)
@@ -5269,29 +6376,29 @@ contains
         if(mhd_energy) then
           tmp=wprim(ix^D,p_)
         else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**eos%gamma
+          tmp=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)
         end if
         ! E=Bxv
         {^IFTHREEC
-        E(ix^D,1)=wprim(ix^D,b2_)*wprim(ix^D,m3_)-wprim(ix^D,b3_)*wprim(ix^D,m2_)
-        E(ix^D,2)=wprim(ix^D,b3_)*wprim(ix^D,m1_)-wprim(ix^D,b1_)*wprim(ix^D,m3_)
-        E(ix^D,3)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
+        ef(ix^D,1)=wprim(ix^D,b2_)*wprim(ix^D,m3_)-wprim(ix^D,b3_)*wprim(ix^D,m2_)
+        ef(ix^D,2)=wprim(ix^D,b3_)*wprim(ix^D,m1_)-wprim(ix^D,b1_)*wprim(ix^D,m3_)
+        ef(ix^D,3)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
         }
         {^IFTWOC
-        E(ix^D,1)=zero
+        ef(ix^D,1)=zero
         ! store e3 in e2 to count e3 when ^C is from 1 to 2
-        E(ix^D,2)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
+        ef(ix^D,2)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
         }
         {^IFONEC
-        E(ix^D,1)=zero
+        ef(ix^D,1)=zero
         }
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp+&
-           half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c) -&
+           half*((^C&wprim(ix^D,b^C_)**2+)+(^C&ef(ix^D,^C)**2+)*inv_squared_c) -&
                     wprim(ix^D,bphi_)**2+wprim(ix^D,rho_)*wprim(ix^D,mphi_)**2)
           w(ix^D,mphi_)=w(ix^D,mphi_)+invr*(&
                    -wprim(ix^D,rho_)*wprim(ix^D,mphi_)*wprim(ix^D,mr_) &
-                   +wprim(ix^D,bphi_)*wprim(ix^D,br_)+E(ix^D,phi_)*E(ix^D,1)*inv_squared_c)
+                   +wprim(ix^D,bphi_)*wprim(ix^D,br_)+ef(ix^D,phi_)*ef(ix^D,1)*inv_squared_c)
           if(.not.stagger_grid) then
             w(ix^D,bphi_)=w(ix^D,bphi_)+invr*&
                      (wprim(ix^D,bphi_)*wprim(ix^D,mr_) &
@@ -5299,7 +6406,7 @@ contains
           end if
         else
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp+half*((^C&wprim(ix^D,b^C_)**2+)+&
-             (^C&e(ix^D,^C)**2+)*inv_squared_c))
+             (^C&ef(ix^D,^C)**2+)*inv_squared_c))
         end if
         if(mhd_glm) w(ix^D,br_)=w(ix^D,br_)+wprim(ix^D,psi_)*invr
      {end do\}
@@ -5313,22 +6420,22 @@ contains
         end if
         ! E=Bxv
         {^IFTHREEC
-        E(ix^D,1)=wprim(ix^D,b2_)*wprim(ix^D,m3_)-wprim(ix^D,b3_)*wprim(ix^D,m2_)
-        E(ix^D,2)=wprim(ix^D,b3_)*wprim(ix^D,m1_)-wprim(ix^D,b1_)*wprim(ix^D,m3_)
-        E(ix^D,3)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
+        ef(ix^D,1)=wprim(ix^D,b2_)*wprim(ix^D,m3_)-wprim(ix^D,b3_)*wprim(ix^D,m2_)
+        ef(ix^D,2)=wprim(ix^D,b3_)*wprim(ix^D,m1_)-wprim(ix^D,b1_)*wprim(ix^D,m3_)
+        ef(ix^D,3)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
         }
         {^IFTWOC
         ! store e3 in e1 to count e3 when ^C is from 1 to 2
-        E(ix^D,1)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
-        E(ix^D,2)=zero
+        ef(ix^D,1)=wprim(ix^D,b1_)*wprim(ix^D,m2_)-wprim(ix^D,b2_)*wprim(ix^D,m1_)
+        ef(ix^D,2)=zero
         }
         {^IFONEC
-        E(ix^D,1)=zero
+        ef(ix^D,1)=zero
         }
         if(mhd_energy) then
-          tmp1=wprim(ix^D,p_)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
+          tmp1=wprim(ix^D,p_)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&ef(ix^D,^C)**2+)*inv_squared_c)
         else
-          tmp1=mhd_adiab*wprim(ix^D,rho_)**eos%gamma+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&e(ix^D,^C)**2+)*inv_squared_c)
+          tmp1=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*((^C&wprim(ix^D,b^C_)**2+)+(^C&ef(ix^D,^C)**2+)*inv_squared_c)
         end if
         ! m1
         {^IFONEC
@@ -5337,7 +6444,7 @@ contains
         {^NOONEC
         w(ix^D,m1_)=w(ix^D,m1_)+invr*&
            (two*tmp1+(^CE&wprim(ix^D,rho_)*wprim(ix^D,m^CE_)**2-&
-            wprim(ix^D,b^CE_)**2-E(ix^D,^CE)**2*inv_squared_c+))
+            wprim(ix^D,b^CE_)**2-ef(ix^D,^CE)**2*inv_squared_c+))
         }
         ! b1
         if(mhd_glm) then
@@ -5352,7 +6459,7 @@ contains
         {^IFTWOC
         ! m2
         w(ix^D,m2_)=w(ix^D,m2_)+invr*(tmp1*cot-wprim(ix^D,rho_)*wprim(ix^D,m1_)*wprim(ix^D,m2_)&
-            +wprim(ix^D,b1_)*wprim(ix^D,b2_)+E(ix^D,1)*E(ix^D,2)*inv_squared_c)
+            +wprim(ix^D,b1_)*wprim(ix^D,b2_)+ef(ix^D,1)*ef(ix^D,2)*inv_squared_c)
         ! b2
         if(.not.stagger_grid) then
           tmp=wprim(ix^D,m1_)*wprim(ix^D,b2_)-wprim(ix^D,m2_)*wprim(ix^D,b1_)
@@ -5366,9 +6473,9 @@ contains
         {^IFTHREEC
         ! m2
         w(ix^D,m2_)=w(ix^D,m2_)+invr*(tmp1*cot-wprim(ix^D,rho_)*wprim(ix^D,m1_)*wprim(ix^D,m2_) &
-            +wprim(ix^D,b1_)*wprim(ix^D,b2_)+E(ix^D,1)*E(ix^D,2)*inv_squared_c&
+            +wprim(ix^D,b1_)*wprim(ix^D,b2_)+ef(ix^D,1)*ef(ix^D,2)*inv_squared_c&
             +(wprim(ix^D,rho_)*wprim(ix^D,m3_)**2&
-            -wprim(ix^D,b3_)**2-E(ix^D,3)**2*inv_squared_c)*cot)
+            -wprim(ix^D,b3_)**2-ef(ix^D,3)**2*inv_squared_c)*cot)
         ! b2
         if(.not.stagger_grid) then
           tmp=wprim(ix^D,m1_)*wprim(ix^D,b2_)-wprim(ix^D,m2_)*wprim(ix^D,b1_)
@@ -5381,10 +6488,10 @@ contains
         w(ix^D,m3_)=w(ix^D,m3_)+invr*&
             (-wprim(ix^D,m3_)*wprim(ix^D,m1_)*wprim(ix^D,rho_) &
              +wprim(ix^D,b3_)*wprim(ix^D,b1_) &
-             +E(ix^D,3)*E(ix^D,1)*inv_squared_c&
+             +ef(ix^D,3)*ef(ix^D,1)*inv_squared_c&
            +(-wprim(ix^D,m2_)*wprim(ix^D,m3_)*wprim(ix^D,rho_) &
              +wprim(ix^D,b2_)*wprim(ix^D,b3_)&
-             +E(ix^D,2)*E(ix^D,3)*inv_squared_c)*cot)
+             +ef(ix^D,2)*ef(ix^D,3)*inv_squared_c)*cot)
         ! b3
         if(.not.stagger_grid) then
           w(ix^D,b3_)=w(ix^D,b3_)+invr*&
@@ -5404,19 +6511,40 @@ contains
   end subroutine mhd_add_source_geom_semirelati
 
   ! Add geometrical source terms to w
+  ! Geometric sources to momentum and induction
+  ! for those cases where any kind of splitting (B0field or has_equi_rho_and_p) is active
+  ! This implies that there is an energy equation included for sure
+  ! B0field impacts terms in induction equation and geometric sources for them
+  ! both flags affect the terms in momentum equation, in three variants (TF, TT, FT)
+  ! NOTE: Hall terms in induction not handled yet
   subroutine mhd_add_source_geom_split(qdt,dtfactor,ixI^L,ixO^L,wCT,wprim,w,x)
     use mod_global_parameters
     use mod_geometry
     use mod_rotating_frame, only: rotating_frame_add_source
+    use mod_usr_methods, only: usr_set_adiab, usr_set_gamma
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qdt, dtfactor,x(ixI^S,1:ndim)
     double precision, intent(inout) :: wCT(ixI^S,1:nw),wprim(ixI^S,1:nw),w(ixI^S,1:nw)
 
     double precision :: tmp,tmp1,tmp2,invr,cot
+    double precision :: adiabs(ixI^S), gammas(ixI^S)
     integer          :: ix^D
     integer :: mr_,mphi_ ! Polar var. names
     integer :: br_,bphi_
+
+    if(.not.mhd_energy) then
+      if(associated(usr_set_adiab)) then
+        call usr_set_adiab(wprim,x,ixI^L,ixO^L,adiabs)
+      else
+        adiabs=mhd_adiab
+      end if
+      if(associated(usr_set_gamma)) then
+        call usr_set_gamma(wprim,x,ixI^L,ixO^L,gammas)
+      else
+        gammas=eos%gamma
+      end if
+    end if
 
     mr_=mom(1); mphi_=mom(1)-1+phi_  ! Polar var. names
     br_=mag(1); bphi_=mag(1)-1+phi_
@@ -5434,18 +6562,30 @@ contains
         if(mhd_energy) then
           tmp=wprim(ix^D,p_)+half*(^C&wprim(ix^D,b^C_)**2+)
         else
-          tmp=mhd_adiab*wprim(ix^D,rho_)**eos%gamma+half*(^C&wprim(ix^D,b^C_)**2+)
+          tmp=adiabs(ix^D)*wprim(ix^D,rho_)**gammas(ix^D)+half*(^C&wprim(ix^D,b^C_)**2+)
         end if
+        if(B0field) tmp=tmp+(^C&block%B0(ix^D,^C,0)*wprim(ix^D,b^C_)+)
         if(phi_>0) then
           w(ix^D,mr_)=w(ix^D,mr_)+invr*(tmp-&
                     wprim(ix^D,bphi_)**2+wprim(ix^D,mphi_)*wCT(ix^D,mphi_))
+          if(B0field) then
+            w(ix^D,mr_)=w(ix^D,mr_)+invr*(-block%B0(ix^D,phi_,0)*wprim(ix^D,bphi_)-wprim(ix^D,bphi_)*block%B0(ix^D,phi_,0))
+          endif
           w(ix^D,mphi_)=w(ix^D,mphi_)+invr*(&
                    -wCT(ix^D,mphi_)*wprim(ix^D,mr_) &
                    +wprim(ix^D,bphi_)*wprim(ix^D,br_))
+          if(B0field) then
+            w(ix^D,mphi_)=w(ix^D,mphi_)+invr*(block%B0(ix^D,phi_,0)*wprim(ix^D,br_)+wprim(ix^D,bphi_)*block%B0(ix^D,r_,0))
+          endif
           if(.not.stagger_grid) then
             w(ix^D,bphi_)=w(ix^D,bphi_)+invr*&
                      (wprim(ix^D,bphi_)*wprim(ix^D,mr_) &
                      -wprim(ix^D,br_)*wprim(ix^D,mphi_))
+            if(B0field) then
+              w(ix^D,bphi_)=w(ix^D,bphi_)+invr*&
+                     (block%B0(ix^D,phi_,0)*wprim(ix^D,mr_) &
+                     -block%B0(ix^D,r_,0)*wprim(ix^D,mphi_))
+            endif
           end if
         else
           w(ix^D,mr_)=w(ix^D,mr_)+invr*tmp
@@ -5465,6 +6605,7 @@ contains
         ! m1
         {^IFONEC
         w(ix^D,mom(1))=w(ix^D,mom(1))+two*tmp1*invr
+        if(B0field) w(ix^D,mom(1))=w(ix^D,mom(1))+two*tmp2*invr
         }
         {^NOONEC
         if(B0field) then
@@ -5597,21 +6738,35 @@ contains
     end if
   end function mhd_mag_en_all
 
-  subroutine mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall)
+  subroutine mhd_getv_Hall(w,x,ixI^L,ixO^L,vHall,partial)
     use mod_global_parameters
+    use mod_geometry
 
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(inout) :: vHall(ixI^S,1:ndir)
+    logical, intent(in), optional :: partial
 
     double precision :: current(ixI^S,7-2*ndir:3)
     double precision :: rho(ixI^S)
     integer          :: idir, idirmin, ix^D
+    logical          :: use_partial
 
+    use_partial=.false.
+    if(present(partial)) use_partial=partial
     call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    ! Calculate current density and idirmin
-    call get_current(w,ixI^L,ixO^L,idirmin,current)
+    if(.not.use_partial)then
+       ! Calculate current density and idirmin, including J0 when split
+       call get_current(w,ixI^L,ixO^L,idirmin,current)
+    else
+       if(slab_uniform) then
+         ! fourth order CD in cartesian
+         call curlvector(w(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,7-2*ndir,ndir,.true.)
+       else
+         call curlvector(w(ixI^S,mag(1:ndir)),ixI^L,ixO^L,current,idirmin,7-2*ndir,ndir)
+       endif
+    endif
     do idir = idirmin, ndir
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
          vHall(ix^D,idir)=-mhd_etah*current(ix^D,idir)/rho(ix^D)
@@ -5619,30 +6774,6 @@ contains
     end do
 
   end subroutine mhd_getv_Hall
-
-  subroutine mhd_get_Jambi(w,x,ixI^L,ixO^L,res)
-    use mod_global_parameters
-
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(in)    :: w(ixI^S,nw)
-    double precision, intent(in)    :: x(ixI^S,1:ndim)
-    double precision, allocatable, intent(inout) :: res(:^D&,:)
-
-
-    double precision :: current(ixI^S,7-2*ndir:3)
-    integer          :: idir, idirmin
-
-    res = 0d0
-
-    ! Calculate current density and idirmin
-    call get_current(w,ixI^L,ixO^L,idirmin,current)
- 
-    res(ixO^S,idirmin:3)=-current(ixO^S,idirmin:3)
-    do idir = idirmin, 3
-      call multiplyAmbiCoef(ixI^L,ixO^L,res(ixI^S,idir),w,x)
-    enddo
-
-  end subroutine mhd_get_Jambi
 
   subroutine mhd_modify_wLR(ixI^L,ixO^L,qt,wLC,wRC,wLp,wRp,s,idir)
     use mod_global_parameters
@@ -6280,7 +7411,7 @@ contains
   end subroutine mhd_clean_divb_multigrid
   }
 
-  !> get electric field though averaging neighors to update faces in CT
+  !> get electric field through averaging neighors to update faces in CT
   subroutine mhd_update_faces_average(ixI^L,ixO^L,qt,qdt,wp,fC,fE,sCT,s,vcts)
     use mod_global_parameters
     use mod_usr_methods
@@ -6475,7 +7606,7 @@ contains
               fE(ix^D,idir)=quarter*&
               (fC(ix^D,iwdim1,idim2)+fC({ix^D+i1kr^D},iwdim1,idim2)&
               -fC(ix^D,iwdim2,idim1)-fC({ix^D+i2kr^D},iwdim2,idim1))
-              if(partial_energy) Ein(ix^D,idir)=fE(ix^D,idir)
+              if(numerical_resistive_heating) Ein(ix^D,idir)=fE(ix^D,idir)
            {end do\}
             ! add slope in idim2 direction from equation (50)
             ixAmin^D=ixCmin^D;
@@ -6528,7 +7659,7 @@ contains
               end if
               fE(ix^D,idir)=fE(ix^D,idir)+0.25d0*(ELC+ERC)
               ! difference between average and upwind interpolated E
-              if(partial_energy) Ein(ix^D,idir)=fE(ix^D,idir)-Ein(ix^D,idir)
+              if(numerical_resistive_heating) Ein(ix^D,idir)=fE(ix^D,idir)-Ein(ix^D,idir)
               ! add resistive electric field at cell edges E=-vxB+eta J
               if(mhd_eta/=zero) fE(ix^D,idir)=fE(ix^D,idir)+E_resi(ix^D,idir)
               ! add ambipolar electric field
@@ -6542,7 +7673,7 @@ contains
       end do
     end do
 
-    if(partial_energy) then
+    if(numerical_resistive_heating) then
       ! add upwind diffused magnetic energy back to energy
       ! calculate current density at cell edges
       jce=0.d0
@@ -6606,9 +7737,9 @@ contains
        {end do\}
        }
         ! save additional numerical resistive heating to an extra variable
-        if(nwextra>0) then
-          block%w(ixO^S,nw)=block%w(ixO^S,nw)+jce(ixO^S,idir)
-        end if
+       !! if(nwextra>0) then
+       !!   block%w(ixO^S,nw)=block%w(ixO^S,nw)+jce(ixO^S,idir)
+       !! end if
       end do
     end if
 
@@ -6863,7 +7994,7 @@ contains
       ixA^L=ixO^L^LADD1;
       call get_current(wCT,ixI^L,ixA^L,idirmin,jcc)
       call usr_special_resistivity(wp,ixI^L,ixA^L,idirmin,x,jcc,eta)
-      ! calcuate eta on cell edges
+      ! calculate eta on cell edges
       do idir=sdim,3
         ixCmax^D=ixOmax^D;
         ixCmin^D=ixOmin^D+kr(idir,^D)-1;
@@ -6896,10 +8027,10 @@ contains
 
     ixA^L=ixO^L^LADD1;
     call mhd_get_jxbxb(w,x,ixI^L,ixA^L,jxbxb)
-    ! calcuate electric field on cell edges from cell centers
+    ! calculate electric field on cell edges from cell centers
     do idir=sdim,3
-      !set electric field in jxbxb: E=nuA * jxbxb, where nuA=-etaA/rho^2
-      !jxbxb(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * jxbxb(ixA^S,i)
+      ! set ambipolar electric field in jxbxb: E=nuA * jxbxb, where nuA=-etaA/rho^2
+      ! E_ambi(ixA^S,i) = -(mhd_eta_ambi/w(ixA^S, rho_)**2) * jxbxb(ixA^S,i)
       call multiplyAmbiCoef(ixI^L,ixA^L,jxbxb(ixI^S,idir),w,x)
       ixCmax^D=ixOmax^D;
       ixCmin^D=ixOmin^D+kr(idir,^D)-1;

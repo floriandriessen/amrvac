@@ -60,3 +60,7 @@
  &paramlist
         courantpar=0.5d0
  /
+
+ &eos_list
+        gamma=1.6666666666666667d0
+ /

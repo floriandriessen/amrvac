@@ -179,11 +179,21 @@ contains
     if(fix_small_values) call phys_handle_small_values(prolongprimitive,wFi,sFi%x,ixG^LL,ixM^LL,'prolong_2nd')
 
     ! Convert child cells from prolongation space to conserved.
-    if(associated(phys_from_prolong)) then
-      ! EoS-aware: (rho, v, T) -> (rho, rho*v, E) using EoS tables
+    if(associated(phys_from_prolong) .and. associated(phys_wb_prolong)) then
+      ! EoS-aware interpolation produced (rho, v, T) in the child cells.
+      ! WB is also active: re-balance pressure via the HSE recurrence so
+      ! the prolonged state preserves the discrete WB reference exactly.
+      !   (rho,v,T) -[from_prolong]-> (rho,m,E) -[to_primitive]-> (rho,v,p)
+      !   -[wb_prolong]-> (rho_eq, v, p_eq) -[to_conserved]-> (rho_eq, m, E_eq)
+      call phys_from_prolong(ixG^LL,ixM^LL,wFi,sFi%x)
+      call phys_to_primitive(ixG^LL,ixM^LL,wFi,sFi%x)
+      call phys_wb_prolong(ixG^LL,ixM^LL,wFi,sFi%x)
+      call phys_to_conserved(ixG^LL,ixM^LL,wFi,sFi%x)
+    else if(associated(phys_from_prolong)) then
+      ! EoS-aware only: (rho, v, T) -> (rho, rho*v, E) using EoS tables
       call phys_from_prolong(ixG^LL,ixM^LL,wFi,sFi%x)
     else if(associated(phys_wb_prolong)) then
-      ! WB: rebuild p from HSE recurrence using interpolated T = p/rho
+      ! WB only: rebuild p from HSE recurrence using interpolated T = p/rho
       if(.not. prolongprimitive .and. .not. associated(phys_to_prolong)) then
         call phys_to_primitive(ixG^LL,ixM^LL,wFi,sFi%x)
       end if

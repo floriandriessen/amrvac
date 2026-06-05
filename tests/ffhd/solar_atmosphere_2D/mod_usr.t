@@ -130,10 +130,10 @@ contains
     call ffhd_to_conserved(ixI^L,ixO^L,w,x)
   end subroutine initonegrid_usr
 
-  subroutine specialbound_usr(qt,ixI^L,ixO^L,iB,w,x)
+  subroutine specialbound_usr(qdt,qt,ixI^L,ixO^L,iB,w,x)
     !> special boundary types, user defined
     integer, intent(in) :: ixO^L,iB,ixI^L
-    double precision, intent(in) :: qt,x(ixI^S,1:ndim)
+    double precision, intent(in) :: qdt,qt,x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     double precision :: pth(ixI^S),tmp(ixI^S),ggrid(ixI^S),invT(ixI^S)

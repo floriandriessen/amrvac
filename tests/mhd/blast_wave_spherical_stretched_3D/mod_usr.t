@@ -1,6 +1,7 @@
 ! blast wave
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   implicit none
 
 contains
@@ -33,7 +34,7 @@ contains
        end if
        first=.false.
     end if
-    rbs=0.2d0
+    rbs=0.5d0
     w(ixO^S,rho_)=1.d0
     w(ixO^S,p_)=1.d0
     xc1=(xprobmin1+xprobmax1)*0.5d0
@@ -68,7 +69,7 @@ contains
 
     if(mhd_glm) w(ixO^S,psi_)=0.d0
 
-    call mhd_to_conserved(ixI^L,ixO^L,w,x)
+    call eos%to_conserved(ixI^L,ixO^L,w,x)
 
   end subroutine initonegrid_usr
 

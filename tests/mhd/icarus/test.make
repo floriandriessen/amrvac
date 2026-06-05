@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=3
+SETUP_FLAGS := -d=3 -v=3
 SCHEME_DIR := ../../schemes
 SCHEMES := 2step_tvdlf_mm
 

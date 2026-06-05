@@ -623,7 +623,10 @@ contains
             else 
               if (neighbor_type(i^D,igrid) /= neighbor_boundary) cycle
             end if
-            call update_eos_4_bc(ixG^LL,ixM^LL,psb(igrid)%w,psb(igrid)%x) !>Ensure interior eos grid is ready for e.g., extrapolation
+            !> Refresh the EoS-derived ghost fields before extrapolation; the hook
+            !> is set (in amrvac.t) only when the EoS needs it, e.g. LTE.
+            if (associated(update_eos_4_bc)) &
+               call update_eos_4_bc(ixG^LL,ixM^LL,psb(igrid)%w,psb(igrid)%x)
             call bc_phys(iside,idims,time,qdt,psb(igrid),ixG^LL,ixB^L)
           end do
         end do

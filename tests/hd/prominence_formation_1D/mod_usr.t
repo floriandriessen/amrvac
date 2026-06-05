@@ -1,5 +1,6 @@
 module mod_usr
   use mod_hd
+  use mod_eos, only: eos
   implicit none
   double precision :: k_B,mass_H
   double precision :: heatunit,ds,gzone,usr_grav,kai0
@@ -38,7 +39,7 @@ contains
       print*, 'unit_velocity = ', unit_velocity
       print*, 'unit_time = ', unit_time
       print*, 'usr_grav = ', usr_grav
-      print*, 'kpara', tc_k_para
+      print*, 'kpara', tc_fl%tc_k_para
     end if
     !> length of the ghostzones
     gzone=0.005d0*(xprobmax1-xprobmin1)
@@ -56,9 +57,15 @@ contains
     double precision :: s1,ra,s2,dip,span,loop,Fc,sj
     double precision :: Tcor,Tpho,htra,wtra,p0,res,rhob,pb
     double precision, dimension(jmax) :: theta,x_i,y_i,z_i,s_i
-    double precision, dimension(imax) :: x_o,y_o,z_o
-    double precision, dimension(imax) :: dz,sumt
+    double precision, dimension(imax),save :: x_o,y_o,z_o
+    double precision, dimension(imax),save :: dz,sumt
+    !double precision, allocatable :: x_o,y_o,z_o,dz,sumt
 
+    !allocate(x_o(imax))
+    !allocate(y_o(imax))
+    !allocate(z_o(imax))
+    !allocate(dz(imax))
+    !allocate(sumt(imax))
     s1=0.8d0 ! foot
     ra=0.5d0 ! shoulder
     s2=s1+ra*dpi/2.d0
@@ -190,7 +197,7 @@ contains
       end do
     end do
     if(mype==zero) then
-      print*, 'temprature from', minval(t_o), 'to', maxval(t_o)
+      print*, 'temperature from', minval(t_o), 'to', maxval(t_o)
       print*, 'density from', rhob, 'to', minval(r_o)
       print*, 'pressure from', pb, 'to', minval(p_o)
       print*, 'gravity from', minval(g_o), 'to', maxval(g_o)
@@ -214,12 +221,12 @@ contains
       w(ix^D,p_)    =p_o(na)+(one-cos(dpi*res/ds))/two*(p_o(na+1)-p_o(na))
     {end do\}
     w(ixO^S,mom(1))=zero
-    call hd_to_conserved(ixI^L,ixO^L,w,x)
+    call eos%to_conserved(ixI^L,ixO^L,w,x)
   end subroutine initonegrid_usr
 
-  subroutine specialbound_usr(qt,ixI^L,ixO^L,iB,w,x)
+  subroutine specialbound_usr(qdt,qt,ixI^L,ixO^L,iB,w,x)
     integer, intent(in) :: ixO^L, iB, ixI^L
-    double precision, intent(in) :: qt,x(ixI^S,1:ndim)
+    double precision, intent(in) :: qdt,qt,x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     integer :: idir,ix^D,grsize
 
@@ -230,13 +237,13 @@ contains
       w(ixO^S,p_)=pbc(1:nghostcells,grsize)
       w(ixO^S,mom(1))=-w(ixOmax1+nghostcells:ixOmax1+1:-1,mom(1))&
                       /w(ixO^S,rho_)
-      call hd_to_conserved(ixI^L,ixO^L,w,x)
+      call eos%to_conserved(ixI^L,ixO^L,w,x)
     case(2)
       w(ixO^S,rho_)=rbc(nghostcells:1:-1,grsize)
       w(ixO^S,p_)=pbc(nghostcells:1:-1,grsize)
       w(ixO^S,mom(1))=-w(ixOmin1-1:ixOmin1-nghostcells:-1,mom(1))&
                       /w(ixO^S,rho_)
-      call hd_to_conserved(ixI^L,ixO^L,w,x)
+      call eos%to_conserved(ixI^L,ixO^L,w,x)
     case default
       call mpistop("Special boundary is not defined for this region")
     end select
@@ -372,7 +379,7 @@ contains
     double precision :: pth(ixI^S)
     double precision :: ens1(ixI^S),ens2(ixI^S),ens3(ixI^S)
 
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
     w(ixO^S,nw+1)=pth(ixO^S)/w(ixO^S,rho_)
   end subroutine specialvar_output
 
@@ -395,7 +402,7 @@ contains
 
     data first /.true./
 
-    invg=1.d0/(hd_gamma-1.d0)
+    invg=1.d0/(eos%gamma-1.d0)
     dxcp=dxlevel(1)
 
     if(first) then
@@ -405,7 +412,7 @@ contains
       first=.false.
     end if
 
-    call hd_get_pthermal(w,x,ixI^L,ixI^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixI^L,pth)
     Te(ixI^S)=pth(ixI^S)/w(ixI^S,rho_)
     do i=ixImin1,ixImax1-1
       kai(i)=kai0*dsqrt(Te(i)*Te(i+1))**2.5d0

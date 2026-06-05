@@ -254,7 +254,7 @@ contains
   ! Custom particle gridvars filler
   subroutine fill_additional_gridvars_usr
     use mod_global_parameters
-    use mod_usr_methods, only: usr_particle_fields
+    !use mod_usr_methods, only: usr_particle_fields
 
     !integer :: igrid, iigrid
     !double precision :: rhoprofile(ixG^T)
@@ -266,20 +266,19 @@ contains
 
   end subroutine fill_additional_gridvars_usr
 
-  subroutine update_payload_usr(igrid,w,wold,xgrid,xpart,upart,qpart,mpart,payload,npayload,particle_time)
+  subroutine update_payload_usr(igrid,xpart,upart,qpart,mpart,payload,npayload,particle_time)
     use mod_global_parameters
     integer, intent(in)           :: igrid,npayload
-    double precision, intent(in)  :: w(ixG^T,1:nw),wold(ixG^T,1:nw)
-    double precision, intent(in)  :: xgrid(ixG^T,1:ndim),xpart(1:ndir),upart(1:ndir),qpart,mpart,particle_time
+    double precision, intent(in)  :: xpart(1:ndir),upart(1:ndir),qpart,mpart,particle_time
     double precision, intent(out) :: payload(npayload)
  
     double precision :: rhoprofile(ixG^T)
 
     ! put the solution at particle_time for comparison
     if (npayload > 0) then
-      call set_density_profile(ixG^LL,ixG^LL,particle_time,xgrid,rhoprofile)
+      call set_density_profile(ixG^LL,ixG^LL,particle_time,ps(igrid)%x(ixG^T,1:ndim),rhoprofile)
       gridvars(igrid)%w(ixG^T,isol) = rhoprofile(ixG^T)
-      call interpolate_var(igrid,ixG^LL,ixG^LL,gridvars(igrid)%w(ixG^T,isol),xgrid,xpart,payload(1))
+      call interpolate_var(igrid,ixG^LL,ixG^LL,gridvars(igrid)%w(ixG^T,isol),ps(igrid)%x(ixG^T,1:ndim),xpart,payload(1))
     end if
 
   end subroutine update_payload_usr

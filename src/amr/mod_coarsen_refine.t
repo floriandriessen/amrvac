@@ -167,11 +167,7 @@ contains
 
     ! since we only filled mesh values, and advance assumes filled
     ! ghost cells, do boundary filling for the new levels
-    if (time_advance) then
-       call getbc(global_time+dt,0.d0,ps,iwstart,nwgc)
-    else
-       call getbc(global_time,0.d0,ps,iwstart,nwgc)
-    end if
+    call getbc(global_time,0.d0,ps,iwstart,nwgc)
 
     if (use_multigrid) call mg_update_refinement(n_coarsen, n_refine)
 

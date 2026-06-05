@@ -539,6 +539,7 @@ module mod_thermal_emission
       ! unit [DN cm^-1 s^-1 pixel^-1]
       ! ingrate flux along line of sight: DN s^-1 pixel^-1
       use mod_global_parameters
+      use mod_eos, only: eos
 
       integer, intent(in) :: wl
       integer, intent(in) :: ixI^L, ixO^L
@@ -639,7 +640,7 @@ module mod_thermal_emission
       ! get actual electron density from EoS (replaces rho with ne)
       block
         double precision :: nH_dummy(ixI^S)
-        call fl%get_ne_nH(ixI^L, ixO^L, w, Ne, nH_dummy)
+        call eos%get_ne_nH(ixI^L, ixO^L, w, Ne, nH_dummy)
       end block
       if (SI_unit) then
         Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
@@ -702,6 +703,7 @@ module mod_thermal_emission
       !flux (cgs): photons cm^-3 s^-1
       !flux (SI): photons m^-3 s^-1
       use mod_global_parameters
+      use mod_eos, only: eos
 
       integer, intent(in)           :: ixI^L,ixO^L
       integer, intent(in)           :: El,Eu
@@ -729,7 +731,7 @@ module mod_thermal_emission
       ! get actual electron density from EoS (replaces rho with ne)
       block
         double precision :: nH_dummy(ixI^S)
-        call fl%get_ne_nH(ixI^L, ixO^L, w, Ne, nH_dummy)
+        call eos%get_ne_nH(ixI^L, ixO^L, w, Ne, nH_dummy)
       end block
       if (SI_unit) then
         Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
@@ -786,6 +788,7 @@ module mod_thermal_emission
 
     subroutine get_GOES_flux_grid(ixI^L,ixO^L,w,x,dV,xbox^L,xb^L,fl,eflux_grid)
       use mod_global_parameters
+      use mod_eos, only: eos
 
       integer, intent(in)           :: ixI^L,ixO^L
       double precision, intent(in)  :: x(ixI^S,1:ndim),dV(ixI^S)
@@ -828,7 +831,7 @@ module mod_thermal_emission
         ! get actual electron density from EoS (replaces rho with ne)
         block
           double precision :: nH_dummy(ixI^S)
-          call fl%get_ne_nH(ixI^L, ixb^L, w, Ne, nH_dummy)
+          call eos%get_ne_nH(ixI^L, ixb^L, w, Ne, nH_dummy)
         end block
         if (SI_unit) then
           Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
@@ -2779,6 +2782,7 @@ module mod_thermal_emission
     end subroutine integrate_emission_spherical
 
     subroutine integrate_whitelight_spherical(igrid,numXI1,numXI2,numWI,xI1,xI2,dxI,fl,datatype,WLB)
+      use mod_eos, only: eos
 
       integer, intent(in) :: igrid,numXI1,numXI2,numWI
       double precision, intent(in) :: xI1(numXI1),xI2(numXI2)
@@ -2827,7 +2831,7 @@ module mod_thermal_emission
       ! get actual electron density from EoS (replaces rho with ne)
       block
         double precision :: nH_dummy(ixI^S)
-        call fl%get_ne_nH(ixI^L, ixO^L, ps(igrid)%w, Ne, nH_dummy)
+        call eos%get_ne_nH(ixI^L, ixO^L, ps(igrid)%w, Ne, nH_dummy)
       end block
       sigma_PSF=1.d0
       pixel=LASCO_rsl*arcsec

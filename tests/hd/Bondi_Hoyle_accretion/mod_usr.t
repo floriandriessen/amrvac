@@ -1,5 +1,6 @@
 module mod_usr
   use mod_hd
+  use mod_eos, only: eos
   implicit none
   double precision :: mach, rho0, vel, Racc, gm, pini
 
@@ -21,13 +22,12 @@ contains
 
   subroutine initglobaldata_usr
     
-    hd_gamma=5.d0/3.d0
     mach=4.d0
     vel=one
     gm=half
     rho0=one
     Racc=one
-    pini=((1/hd_gamma)*rho0*vel**two)/mach**two
+    pini=((1/eos%gamma)*rho0*vel**two)/mach**two
 
   end subroutine initglobaldata_usr
 
@@ -42,7 +42,7 @@ contains
     w(ix^S,rho_)   =  rho0
     w(ix^S,mom(1)) = -rho0*vel*dcos(x(ix^S,2))
     w(ix^S,mom(2)) =  rho0*vel*dsin(x(ix^S,2))
-    w(ix^S,e_)     =  pini/(hd_gamma-one)+half*rho0*vel**two
+    w(ix^S,e_)     =  pini/(eos%gamma-one)+half*rho0*vel**two
 
   end subroutine initonegrid_usr
 
@@ -72,12 +72,12 @@ contains
 
   end subroutine get_dt_pt_grav
 
-  subroutine specialbound_usr(qt,ixG^L,ixB^L,iB,w,x)
+  subroutine specialbound_usr(qdt,qt,ixG^L,ixB^L,iB,w,x)
 
     ! special boundary types, user defined
 
     integer, intent(in) :: ixG^L, ixB^L, iB
-    double precision, intent(in) :: qt, x(ixG^S,1:ndim)
+    double precision, intent(in) :: qdt,qt, x(ixG^S,1:ndim)
     double precision, intent(inout) :: w(ixG^S,1:nw)
     double precision :: rho(ixG^S)
     
@@ -94,8 +94,8 @@ contains
       w(ixBmax1,ixB^LIM^DE:,mom(2)) = rho(ixBmax1,ixB^LIM^DE:) * &
          (w(ixBmax1+1,ixB^LIM^DE:,mom(2))/w(ixBmax1+1,ixB^LIM^DE:,rho_))*(x(ixBmax1+1,ixB^LIM^DE:,1)/x(ixBmax1,ixB^LIM^DE:,1))
       ! (e+P+rho*phi)*v_r*r^2    cont
-      w(ixBmax1,ixB^LIM^DE:,e_) = (one/hd_gamma)*&
-         ( (hd_gamma-one)*half*&
+      w(ixBmax1,ixB^LIM^DE:,e_) = (one/eos%gamma)*&
+         ( (eos%gamma-one)*half*&
             ( ( (min(zero,w(ixBmax1+1,ixB^LIM^DE:,mom(1))*&
                  ( x(ixBmax1+1,ixB^LIM^DE:,1)/x(ixBmax1,ixB^LIM^DE:,1) )**two))**two+&
                 (rho(ixBmax1,ixB^LIM^DE:) * &
@@ -103,7 +103,7 @@ contains
                 /rho(ixBmax1,ixB^LIM^DE:))+ &
                rho(ixBmax1,ixB^LIM^DE:)*(gm/dabs(x(ixBmax1,ixB^LIM^DE:,1))) +&
                (rho(ixBmax1,ixB^LIM^DE:)/w(ixBmax1+1,ixB^LIM^DE:,rho_))*&
-                (hd_gamma*w(ixBmax1+1,ixB^LIM^DE:,e_)-(hd_gamma-one)*half*&
+                (eos%gamma*w(ixBmax1+1,ixB^LIM^DE:,e_)-(eos%gamma-one)*half*&
                 ((w(ixBmax1+1,ixB^LIM^DE:,mom(1))**two+w(ixBmax1+1,ixB^LIM^DE:,mom(2))**two)/w(ixBmax1+1,ixB^LIM^DE:,rho_)) -&
                 w(ixBmax1+1,ixB^LIM^DE:,rho_)*(gm/dabs(x(ixBmax1+1,ixB^LIM^DE:,1))) ) )
 
@@ -139,14 +139,14 @@ contains
             (zeta(ixO^S)**two/&
             (x(ixO^S,1)*dsin(x(ixO^S,2))*(two*zeta(ixO^S)-x(ixO^S,1)*dsin(x(ixO^S,2)))))*&
             ((zeta(ixO^S)*vel)/x(ixO^S,1))
-       w(ixO^S,e_)  = ((rho0*vel**two)/hd_gamma)*&
-            (one/(mach**two*(hd_gamma-one))+half)*&
+       w(ixO^S,e_)  = ((rho0*vel**two)/eos%gamma)*&
+            (one/(mach**two*(eos%gamma-one))+half)*&
             (zeta(ixO^S)**two/&
             (x(ixO^S,1)*dsin(x(ixO^S,2))*(two*zeta(ixO^S)-x(ixO^S,1)*dsin(x(ixO^S,2)))))+&
-            (rho0/hd_gamma)*&
+            (rho0/eos%gamma)*&
             (zeta(ixO^S)**two/&
             (x(ixO^S,1)*dsin(x(ixO^S,2))*(two*zeta(ixO^S)-x(ixO^S,1)*dsin(x(ixO^S,2)))))*&
-            (half*(hd_gamma-one)* (dsqrt(vel**two+(two*gm)/x(ixO^S,1)-&
+            (half*(eos%gamma-one)* (dsqrt(vel**two+(two*gm)/x(ixO^S,1)-&
             ((zeta(ixO^S)*vel)/x(ixO^S,1))**two)**two+&
             ((zeta(ixO^S)*vel)/x(ixO^S,1))**two) + gm/x(ixO^S,1))
     endwhere

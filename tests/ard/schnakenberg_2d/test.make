@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=2
+SETUP_FLAGS := -d=2 -v=3
 TESTS := imex_nonlin_adv.log
 
 include ../../test_rules.make

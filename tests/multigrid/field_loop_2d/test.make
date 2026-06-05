@@ -1,4 +1,4 @@
-SETUP_FLAGS := -d=2
+SETUP_FLAGS := -d=2 -v=2
 TESTS := test_field_loop_2d.log
 
 include ../../test_rules.make

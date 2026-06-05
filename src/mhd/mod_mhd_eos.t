@@ -40,7 +40,7 @@ contains
             eos%to_conserved        => mhd_to_conserved_semirelati_noe
           end if
         else
-          if(has_equi_rho0) then
+          if(has_equi_rho_and_p) then
             eos%to_primitive        => mhd_to_primitive_split_rho
             eos%to_conserved        => mhd_to_conserved_split_rho
           else if(mhd_internal_e) then
@@ -60,7 +60,7 @@ contains
           call mpistop('LTE EoS not supported with mhd_hydrodynamic_e')
         if (mhd_semirelativistic) &
           call mpistop('LTE EoS not supported with mhd_semirelativistic')
-        if (has_equi_rho0 .or. has_equi_pe0) &
+        if (has_equi_rho_and_p) &
           call mpistop('LTE EoS not supported with equilibrium splitting')
         if (.not. mhd_energy) &
           call mpistop('LTE EoS requires mhd_energy=.true.')
@@ -99,8 +99,6 @@ contains
 
       ! === Prolongation ===
       if (eos%eos_type == 'LTE' .and. eos%ionE) then
-        eos%to_prolong    => mhd_to_prolong_LTE
-        eos%from_prolong  => mhd_from_prolong_LTE
         phys_to_prolong   => mhd_to_prolong_LTE
         phys_from_prolong => mhd_from_prolong_LTE
       end if
@@ -149,13 +147,13 @@ contains
         mhd_get_temperature => mhd_get_temperature_from_Te
       else
         if(mhd_internal_e) then
-          if(has_equi_pe0 .and. has_equi_rho0) then
+          if(has_equi_rho_and_p) then
             mhd_get_temperature => mhd_get_temperature_from_eint_with_equi
           else
             mhd_get_temperature => mhd_get_temperature_from_eint
           end if
         else
-          if(has_equi_pe0 .and. has_equi_rho0) then
+          if(has_equi_rho_and_p) then
             mhd_get_temperature => mhd_get_temperature_from_etot_with_equi
           else
             mhd_get_temperature => mhd_get_temperature_from_etot
@@ -178,6 +176,45 @@ contains
     !> TC and RC modules to EoS-aware function pointers.
     subroutine bind_eos_to_source()
 
+      ! Override eos%get_temperature_from_{etot,eint} per (eos_type, internal_e, equi).
+      ! Runs AFTER eos_finalise's unconditional generic-helper assignment.
+      ! Two semantically distinct hooks:
+      !   - from_etot: caller's w(:,e_) is total energy; subtract KE+ME before T.
+      !   - from_eint: caller's w(:,e_) is gas internal energy; compute T directly.
+      ! In mhd_internal_e mode w(:,e_) IS already eint, so the etot hook is bound
+      ! to the same routine as the eint hook (no subtraction). Required because
+      ! eos_finalise's generic helper calls phys_e_to_ei, which is left unbound
+      ! by mhd_phys_init when mhd_internal_e=.true.
+      if (eos%eos_type == 'LTE') then
+        if (mhd_internal_e) then
+          ! w(:,e_) is eint; both hooks do the LTE table lookup directly.
+          eos%get_temperature_from_etot => eos%get_temperature_from_eint
+        else
+          ! Total-energy: subtract KE+ME (via phys_e_to_ei) then LTE table lookup.
+          eos%get_temperature_from_etot => mhd_get_temperature_from_etot_LTE
+        end if
+      else  ! FI
+        if (mhd_internal_e) then
+          ! w(:,e_) is eint; both hooks share the eint variant.
+          if (has_equi_rho_and_p) then
+            eos%get_temperature_from_etot => mhd_get_temperature_from_eint_with_equi
+            eos%get_temperature_from_eint => mhd_get_temperature_from_eint_with_equi
+          else
+            eos%get_temperature_from_etot => mhd_get_temperature_from_eint
+            eos%get_temperature_from_eint => mhd_get_temperature_from_eint
+          end if
+        else
+          ! Total-energy: distinct etot/eint paths.
+          if (has_equi_rho_and_p) then
+            eos%get_temperature_from_etot => mhd_get_temperature_from_etot_with_equi
+            eos%get_temperature_from_eint => mhd_get_temperature_from_eint_with_equi
+          else
+            eos%get_temperature_from_etot => mhd_get_temperature_from_etot
+            eos%get_temperature_from_eint => mhd_get_temperature_from_eint
+          end if
+        end if
+      end if
+
       if (allocated(tc_fl)) then
         tc_fl%get_temperature_from_conserved => eos%get_temperature_from_etot
         if (eos%eos_type == 'LTE' .and. eos%ionE) then
@@ -188,13 +225,17 @@ contains
         tc_fl%get_rho => eos%get_rho
         tc_fl%get_ne_nH => eos%get_ne_nH
         tc_fl%get_var_Rfactor => eos%get_Rfactor
+        tc_fl%inv_gamma_minus_1 =  eos%inv_gamma_minus_1
+        tc_fl%nH2rhoFactor      =  eos%nH2rhoFactor
+        tc_fl%log_T_floor       =  eos_get_log_T_floor()
+        tc_fl%eint_from_T       => eint_nH_from_T
         ! Equilibrium-specific pointers
-        if(has_equi_pe0 .and. has_equi_rho0 .and. mhd_equi_thermal) then
-          tc_fl%has_equi = .true.
+        if(has_equi_rho_and_p .and. mhd_equi_thermal) then
+          tc_fl%subtract_equi = .true.
           tc_fl%get_temperature_equi => mhd_get_temperature_equi
           tc_fl%get_rho_equi => mhd_get_rho_equi
         else
-          tc_fl%has_equi = .false.
+          tc_fl%subtract_equi = .false.
         end if
       end if
 
@@ -204,19 +245,33 @@ contains
         rc_fl%get_var_Rfactor  => eos%get_Rfactor
         rc_fl%get_Te           => eos%get_Te
         rc_fl%get_ne_nH        => eos%get_ne_nH
+        rc_fl%ionE              =  eos%ionE
+        rc_fl%method            =  eos%method
+        rc_fl%inv_gamma_minus_1 =  eos%inv_gamma_minus_1
+        rc_fl%nH2rhoFactor      =  eos%nH2rhoFactor
+        rc_fl%eion_per_nH       =  eos%eion_per_nH
+        rc_fl%eint_from_T       => eint_nH_from_T
+        rc_fl%p2eint            => p2eint_from_nH_p
+        rc_fl%T_from_eint       => T_from_nH_eint
+        rc_fl%y_from_eint       => y_from_nH_eint
         ! Equilibrium-specific pointers
-        if(has_equi_pe0 .and. has_equi_rho0 .and. mhd_equi_thermal) then
-          rc_fl%has_equi = .true.
+        if(has_equi_rho_and_p .and. mhd_equi_thermal) then
+          rc_fl%subtract_equi = .true.
           rc_fl%get_rho_equi => mhd_get_rho_equi
           rc_fl%get_pthermal_equi => mhd_get_pe_equi
         else
-          rc_fl%has_equi = .false.
+          rc_fl%subtract_equi = .false.
         end if
         !> Build the variable-c_V Townsend Y_mod table now that all
         !> EoS tables (eint_from_T, T, neOnH) are in code units.
         !> build_Y_mod_table checks coolmethod=='exact' and .not.isPPL
-        !> internally and early-returns otherwise.
-        if (eos%ionE) call build_Y_mod_table(rc_fl)
+        !> internally and early-returns otherwise. Feed it the inverse-table nH
+        !> grid via the port so it never touches eos% directly.
+        if (eos%ionE) then
+          call eos_get_eintT_grid(rc_fl%Y_mod_n_nH, &
+               rc_fl%Y_mod_lg_nH_min, rc_fl%Y_mod_lg_nH_max)
+          call build_Y_mod_table(rc_fl)
+        end if
       end if
 
       if (allocated(te_fl_mhd)) then
@@ -224,6 +279,14 @@ contains
         te_fl_mhd%get_pthermal     => eos%get_thermal_pressure
         te_fl_mhd%get_var_Rfactor  => eos%get_Rfactor
         te_fl_mhd%get_ne_nH        => eos%get_ne_nH
+      end if
+
+      if (allocated(fld_fl)) then
+        !> Radiation (FLD) fluid: gas-EoS callbacks. get_temperature_from_pressure
+        !> is the FI T=p/(R*rho) routine (the LTE variant is a later pass).
+        fld_fl%gamma       =  eos%gamma
+        fld_fl%get_tgas    => eos%get_temperature_from_pressure
+        fld_fl%get_Rfactor => eos%get_Rfactor
       end if
 
     end subroutine bind_eos_to_source
@@ -968,7 +1031,7 @@ contains
       double precision, intent(inout) :: w(ixI^S, nw)
       double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-      double precision :: T_val, eint_val, T_FI
+      double precision :: T_val, eint_val, T_FI, log_T_min
       double precision :: nH(ixI^S), log_nH(ixI^S)
       integer :: ix^D
 
@@ -976,6 +1039,15 @@ contains
       T_FI = (eos%eint_rho_FI_threshold &
           * eos%nH2rhoFactor - eos%eion_per_nH) &
           * eos%gamma_minus_1 / eos%n_per_nH_FI
+
+      ! Floor for log_T into the (rho, T) inverse table; entropy method uses
+      ! eos%eintT, legacy 'tables' method uses eos%eint_from_T. Picking the
+      ! wrong container leaves var2_min = 0 → floors T at 10^6 K.
+      if (eos%method == 'entropy') then
+        log_T_min = eos%eintT%var2_min
+      else
+        log_T_min = eos%eint_from_T%var2_min
+      end if
 
       call eos%get_nH(w, x, ixI^L, ixO^L, nH)
       log_nH(ixO^S) = dlog10(nH(ixO^S))
@@ -994,7 +1066,7 @@ contains
           ! Ionisation zone: eint/nH from T table
           eint_val = eint_nH_from_T( &
               log_nH(ix^D), &
-              dlog10(max(T_val, 10.0d0**eos%eint_from_T%var2_min))) &
+              dlog10(max(T_val, 10.0d0**log_T_min))) &
               * nH(ix^D)
         end if
         if (mhd_internal_e) then
@@ -1189,7 +1261,7 @@ contains
       double precision, intent(in) :: x(ixI^S,1:ndim)
       double precision, intent(out):: pth(ixI^S)
 
-      if(has_equi_rho0) then
+      if(has_equi_rho_and_p) then
         pth(ixO^S)=mhd_adiab*(w(ixO^S,rho_)+block%equi_vars(ixO^S,equi_rho0_,0))**eos%gamma
       else
         pth(ixO^S)=mhd_adiab*w(ixO^S,rho_)**eos%gamma
@@ -1210,7 +1282,7 @@ contains
       integer :: iw, ix^D
 
      {do ix^DB= ixOmin^DB,ixOmax^DB\}
-        if(has_equi_pe0) then
+        if(has_equi_rho_and_p) then
           pth(ix^D)=eos%gamma_minus_1*w(ix^D,e_)+block%equi_vars(ix^D,equi_pe0_,0)
         else
           pth(ix^D)=eos%gamma_minus_1*w(ix^D,e_)
@@ -1251,7 +1323,7 @@ contains
       integer :: iw, ix^D
 
      {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        if(has_equi_rho0) then
+        if(has_equi_rho_and_p) then
           pth(ix^D)=eos%gamma_minus_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/(w(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0))&
                +(^C&w(ix^D,b^C_)**2+)))+block%equi_vars(ix^D,equi_pe0_,0)
         else
@@ -1504,6 +1576,29 @@ contains
                   ((w(ixO^S,rho_) +block%equi_vars(ixO^S,equi_rho0_,b0i))*R(ixO^S))
 
     end subroutine mhd_get_temperature_from_eint_with_equi
+
+    !> LTE+MHD: T from total energy. Subtract KE+ME (via the MHD-aware
+    !> phys_e_to_ei dispatcher) to get eint, then look up T in the LTE table
+    !> through eos%get_temperature_from_eint (bound to get_temperature_from_eint_LTE
+    !> by eos_finalise). Always fresh; does not use the iw_te cache.
+    !> Should NOT be bound when mhd_internal_e=.true. (w(:,e_) is already eint
+    !> and phys_e_to_ei is unbound) - use eos%get_temperature_from_eint directly.
+    subroutine mhd_get_temperature_from_etot_LTE(w, x, ixI^L, ixO^L, res)
+      use mod_global_parameters
+      integer, intent(in)          :: ixI^L, ixO^L
+      double precision, intent(in) :: w(ixI^S, 1:nw)
+      double precision, intent(in) :: x(ixI^S, 1:ndim)
+      double precision, intent(out):: res(ixI^S)
+
+      double precision :: wlocal(ixI^S, 1:nw)
+
+      wlocal(ixI^S, 1:nw) = w(ixI^S, 1:nw)
+      ! Subtract KE+ME from w(:,e_) via the MHD-aware dispatcher
+      call phys_e_to_ei(ixI^L, ixO^L, wlocal, x)
+      ! Now wlocal(:,e_) is the gas internal energy; LTE table lookup
+      call eos%get_temperature_from_eint(wlocal, x, ixI^L, ixO^L, res)
+
+    end subroutine mhd_get_temperature_from_etot_LTE
 
     subroutine mhd_get_temperature_equi(w,x, ixI^L, ixO^L, res)
       use mod_global_parameters

@@ -62,5 +62,5 @@
         nusrpayload=1
         dtsave_particles = 0.005d0
         write_ensemble = .true.
-        write_individual = .false.
+        write_individual = .true.
  /

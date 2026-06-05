@@ -1,27 +1,45 @@
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   use mod_lookup_table
   use mod_bc_data
   !SI units, constants
   use mod_constants, only: mp_SI, kB_SI, miu0_SI
+  use, intrinsic :: ieee_arithmetic
+  use mod_datacube
+  use mod_particles
   implicit none
 
   character(len=20)                              :: printsettingformat
   double precision                               :: omega_frame
+  double precision, parameter                    :: omega_HEEQ = 2.d0*dpi/(365.25d0*24.d0) ! rad/h
   character(len=500)                             :: amr_criterion, cme_parameter_file
+  integer, parameter                             :: AMR_NONE=0, AMR_SHOCK=1, AMR_LONWINDOW=2, AMR_TRACING=3, AMR_SPIRAL=4
+  integer                                        :: amr_mode = AMR_NONE
 
-  integer                                        :: cme_flag, num_cmes, relaxation, cme_insertion
+  double precision                               :: spiral_lon_min
+  double precision                               :: spiral_lon_max
+  double precision                               :: spiral_speed
+
+  double precision                               :: amr_start_hour
+
+  integer                                        ::  num_cmes, relaxation, cme_insertion
   type satellite_pos
     real(kind=8), dimension(:,:), allocatable    :: positions
   end type satellite_pos
 
   !Shared over subroutines
+
   real(kind=8), allocatable                      :: coord_grid_init(:,:,:),variables_init(:,:,:)
   type(satellite_pos), dimension(:), allocatable :: positions_list
-  character(len=250), dimension(10)               :: trajectory_list
+  character(len=250), dimension(10)              :: trajectory_list
+  character(len=11), dimension(10)               :: sat_name = (/'earth      ','mars       ','mercury    ','venus      ', &
+                                                                 'sta        ','stb        ','psp        ','SolO       ', &
+                                                                 'bepi       ','juno       '/)
+
   integer, dimension(10)                          :: which_satellite = (/0, 0, 0, 0, 0, 0, 0, 0, 0, 0/)     ! intended order: earth, mars, mercury, venus, sta, stb, psp, solo, bepi, juno
   integer, dimension(10)                          :: sat_indx = (/0, 0, 0, 0, 0, 0, 0, 0, 0, 0/)     ! intended order: earth, mars, mercury, venus, sta, stb, psp, solo, bepi, juno
-  integer                                        :: sat_count=0, zero_count=0
+  integer                                         :: sat_count=0, zero_count=0
 
   integer, dimension(10)                          :: last_index = (/0, 0, 0, 0, 0, 0, 0, 0, 0, 0/)  ! intended order: earth, mars, mercury, venus, sta, stb, psp, solo, bepi, juno
   integer, dimension(10)                          :: last_index_s = (/0, 0, 0, 0, 0, 0, 0, 0, 0, 0/)
@@ -43,29 +61,41 @@ module mod_usr
   integer             :: cme_exists
       public :: bc_data_get_3d
 
+   ! Additional variables
+  integer                     :: dr1_, dt1_, dp1_
+
 contains
 
   subroutine usr_params_read(files)
+    implicit none
     character(len=*), intent(in) :: files(:)
-    integer :: n
+    integer :: n, ios
 
     namelist /rotating_frame_list/ omega_frame
-    namelist /icarus_list/ amr_criterion, cme_flag, num_cmes, relaxation, cme_insertion, &
-    cme_parameter_file, magnetogram_time 
+    namelist /icarus_list/ amr_criterion,  num_cmes, relaxation, cme_insertion, &
+    cme_parameter_file, magnetogram_time,  amr_start_hour
 
     do n = 1, size(files)
-       open(unitpar, file=trim(files(n)), status="old")
-       read(unitpar, rotating_frame_list, end=111)
-
-       read(unitpar, icarus_list, end=111)
-111    close(unitpar)
+       open(unitpar, file=trim(files(n)), status="old", action="read")
+       ! Read in the order they appear;
+      ios = 0
+      read(unitpar, nml=rotating_frame_list, iostat=ios)
+      ios = 0
+      read(unitpar, nml=icarus_list,        iostat=ios)
+      close(unitpar)
     end do
-   if (num_cmes .eq.0) then
-      cme_flag = 0
-   end if
-   if (cme_flag .eq. 0) then
-     cme_insertion = 0
-   end if
+    
+    if (num_cmes  == 0) cme_insertion = 0
+    ! --- Map AMR mode (case-sensitive) ---
+    select case (trim(adjustl(amr_criterion)))
+      case ('shock');     amr_mode = AMR_SHOCK
+      case ('lonwindow'); amr_mode = AMR_LONWINDOW
+      case ('tracing');   amr_mode = AMR_TRACING
+      case default;       amr_mode = AMR_NONE
+    end select
+    
+   
+    ! --- Parse magnetogram_time 'YYYY_MM_DD_HH_MM_SS'  ---
       read (magnetogram_time(1:4),*) magnetogram_timestamp(1)
       read (magnetogram_time(6:7),*) magnetogram_timestamp(2)
       read (magnetogram_time(9:10),*) magnetogram_timestamp(3)
@@ -79,6 +109,7 @@ contains
     use mod_global_parameters
     use mod_usr_methods
 
+
     call usr_params_read(par_files)
     usr_set_parameters  => initglobaldata_usr
     usr_init_one_grid   => initonegrid_usr
@@ -89,16 +120,28 @@ contains
     usr_source          => specialsource
     usr_create_particles => generate_particles
     usr_particle_position => move_particle
+    particles_define_additional_gridvars => define_additional_gridvars_usr
+    particles_fill_additional_gridvars => fill_additional_gridvars_usr
+    usr_update_payload => update_payload_usr
+    usr_modify_output      => set_output_vars
+
 
     call set_coordinate_system('spherical_3D')
+
+
     call mhd_activate()
+
+    dr1_ = var_set_extravar("dr1","dr1")
+    dt1_  = var_set_extravar("dt1","dt1")
+    dp1_  = var_set_extravar("dp1","dp1")
+
 
 
     !  Note: mhd_activate sets the physical units used by MPI-AMRVAC as governed
     ! in subroutine mhd_phys_init (in mod_mhd_phys.t) which in turn calls
     ! subroutine mhd_physical_units (also in mod_mhd_phys.t)
     !  There, the parameters SI_unit, eq_state_units, mhd_partial_ionization enter
-    !  Sometime we use He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2
+    !  Sometime we use eos%He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2
     !  Moreover, we use 3 out of
     !      unit_density, unit_numberdensity, unit_length, unit_time, unit_velocity,
     !      unit_pressure, unit_magneticfield, unit_temperature,
@@ -107,14 +150,14 @@ contains
     printsettingformat='(1x,A50,ES15.7)'
     if(mype==0) then
       write(*,*)'----------------PARAMETERS--   ----------------------'
-      write(*,printsettingformat) "mhd_gamma ",mhd_gamma
+      write(*,printsettingformat) "eos%gamma ",eos%gamma
       write(*,printsettingformat) "mhd_eta ",mhd_eta
       write(*,*)'----------------BEGIN UNITS  ------------------------'
       write(*,*)'----------------UNIT CONTROLS------------------------'
       write(*,*) "SI_unit",SI_unit
       write(*,*) "eq_state_units",eq_state_units
       write(*,*) "mhd_partial_ionization",mhd_partial_ionization
-      write(*,printsettingformat) "He_abundance",He_abundance
+      write(*,printsettingformat) "eos%He_abundance",eos%He_abundance
       write(*,printsettingformat) "H_ion_fr",H_ion_fr
       write(*,printsettingformat) "He_ion_fr",He_ion_fr
       write(*,printsettingformat) "He_ion_fr2",He_ion_fr2
@@ -175,8 +218,12 @@ contains
       if (num_cmes == 0) then
         ALLOCATE(timestamp(1))
         ALLOCATE(cme_index(10,1))
-        ALLOCATE(starting_index(10, 1))
-        ALLOCATE(time_difference_cme_magn(10, 1))
+        ALLOCATE(starting_index(10,1))
+        ALLOCATE(time_difference_cme_magn(10,1))
+        timestamp(:) = 0.0
+        cme_index(:,:) = 1   ! ensure not zero (valid Fortran index)
+        starting_index(:,:) = 1
+        time_difference_cme_magn(:,:) = 0.0
       else
         call read_cme_parameters(cme_parameter_file)
       end if
@@ -204,24 +251,26 @@ contains
 
         ALLOCATE(positions_list(10), STAT=AllocateStatus)
 
-       ! Temporarily only reading out at Earth location until particle sampling is finally fixed
-       ! Remove the line below to read out at all satellites. 
-       which_satellite = (/1, 0, 0, 0, 0, 0, 0, 0, 0, 0/)
+
       ! for each satellite, read the trajectory data and save in the arrays of time and locations
       do i = 1, 10
         if (which_satellite(i)==1) then
           sat_indx(i-zero_count) = i
           sat_count = sat_count+1
           call read_satellite_trajectory(trajectory_list(i), i)
-          !print *, i, positions_list(i)%positions(1,1)
+          
         end if
          if (which_satellite(i) == 0) then
           zero_count = zero_count+1
          end if
       end do
 
-
-
+      if (mype == 0) then
+        write(*,*) 'Particle -> spacecraft mapping:'
+        do i = 1, sat_count
+           write(*,'(I6,2X,I2,2X,A)') i, sat_indx(i), trim(sat_name(sat_indx(i)))
+        end do
+      end if
 
 
       ! calculate timestamp for cme insertion
@@ -233,9 +282,13 @@ contains
         call cme_insertion_longitudes_fix()
       end if
 
+      firstglobalusr = .false.
+
     end if
 
-    mhd_gamma= 3.0d0/2.0d0
+    !> gamma is set in the parfile (&eos_list gamma=1.5d0), read once at
+    !> eos_init so the derived gamma constants stay consistent. Do not set
+    !> eos%gamma from user code.
     call set_units(Lunit_in, Tunit_in, Rhounit_in, Vunit_in, Bunit_in, Eunit_in, Punit_in)
 
     w_convert_factor(rho_) = Rhounit_in ! in km/m^3
@@ -249,95 +302,206 @@ contains
 
   end subroutine initglobaldata_usr
 
+  subroutine define_additional_gridvars_usr(ngridvars)
+    use mod_global_parameters
+    integer, intent(inout) :: ngridvars
+ 
+    ! three extra variables defined above as dr1_ dt1_ dp1_ already accounted for
+    ! no need to raise ngridvars here, unless additional payload is created
+
+  end subroutine define_additional_gridvars_usr
+
+  subroutine fill_additional_gridvars_usr
+    use mod_global_parameters
+    use mod_usr_methods, only: usr_particle_fields
+
+    integer :: igrid, iigrid
+    double precision :: pth(ixG^T)
+    double precision :: w(ixG^T,1:nw)
+
+! No need for what follows anymore: extravars already accounted for in nw array
+! Here we would only add ADDITIONAL payloads beyond nw array
+!    do iigrid=1,igridstail; igrid=igrids(iigrid);
+!      w(ixG^T,1:nw) = ps(igrid)%w(ixG^T,1:nw)
+!      gridvars(igrid)%w(ixG^T,dr1_)=block%dx(ixG^T,1)
+!      gridvars(igrid)%w(ixG^T,dt1_)=block%dx(ixG^T,2)
+!      gridvars(igrid)%w(ixG^T,dp1_)=block%dx(ixG^T,3)
+!    end do
+
+  end subroutine fill_additional_gridvars_usr
+
+  subroutine update_payload_usr(igrid,xpart,upart,qpart,mpart,mypayload,mynpayload,particle_time)
+    use mod_global_parameters
+    integer, intent(in)           :: igrid,mynpayload
+    double precision, intent(in)  :: xpart(1:ndir),upart(1:ndir),qpart,mpart,particle_time
+    double precision, intent(out) :: mypayload(mynpayload)
+    double precision              :: xgrid(ixG^T,1:ndim)
+
+! No need for what follows anymore: extravars already accounted for in nw array
+! Here we would only handle ADDITIONAL payloads beyond nw array
+    !xgrid = ps(igrid)%x
+    ! put the solution at particle_time for comparison
+    !if (npayload > 0) then
+    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dr1_),xgrid,xpart,mypayload(1))
+    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dt1_),xgrid,xpart,mypayload(2))
+    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dp1_),xgrid,xpart,mypayload(3))
+    !end if
+
+  end subroutine update_payload_usr
+
   subroutine generate_particles(n_particles, x, v, q, m, follow)
     use mod_particles
     integer, intent(in)           :: n_particles
-    double precision, intent(out) :: x(3, n_particles)
-    double precision, intent(out) :: v(3, n_particles)
-    double precision, intent(out) :: q(n_particles)
-    double precision, intent(out) :: m(n_particles)
+    double precision, intent(out) :: x(3, n_particles), v(3, n_particles)
+    double precision, intent(out) :: q(n_particles), m(n_particles)
     logical, intent(out)          :: follow(n_particles)
-    integer                       :: satellite_index, delta_sat
+    integer                       :: i, satellite_index, delta_sat
 
-    if (sat_count < n_particles) then
-      delta_sat = n_particles-sat_count
-    end if
-    do satellite_index = 1, n_particles-delta_sat
-      v(:, satellite_index) = 0.d0
-      q(satellite_index) = 0.d0
-      m(satellite_index) = 0.d0
-      call get_particle(x(:, sat_indx(satellite_index)), sat_indx(satellite_index), n_particles-delta_sat)
+    ! only create as many particles as we have satellites
+    sat_count = min(sat_count, n_particles)
+    do i = 1, sat_count
+       v(:, i)       = 0.d0
+       q(i)          = 0.d0
+       m(i)          = 0.d0
+       call initialize_particle(x(:, i), sat_indx(i) )
+       follow(i)     = .true.
     end do
-    follow(:) = .true.
+
+    ! explicitly disable the rest
+    do i = sat_count+1, n_particles
+       x(:, i)    = 0.d0
+       v(:, i)    = 0.d0
+       q(i)       = 0.d0
+       m(i)       = 0.d0
+       follow(i)  = .false.
+    end do
 
   end subroutine generate_particles
 
-  subroutine get_particle(x, satellite_index, n_particles)
-    double precision, intent(out)      :: x(3)
-    integer, intent(in)                :: satellite_index
-    integer                            :: n_particles
-    double precision, dimension(10)     :: orbital_period = (/365.24, 686.98, 87.969, 224.7, 346.0, 388.0, 88.0, 168.0, 87.969, 1590.0/)    ! earth, mars, mercury, venus, sta, stb, psp, solo
-    double precision                   :: phi_satellite, before_cme
+  subroutine initialize_particle(x, satellite_index)
+    use mod_global_parameters
+    implicit none
+    double precision, intent(out) :: x(3)            ! (r, theta, phi)
+    integer,          intent(in)  :: satellite_index
 
+    integer :: npos, idx0
+    double precision :: t0
+    double precision :: r0, lat0, phi_heeq, phi_rot
 
-    before_cme = (cme_index(1,1) - magnetogram_index(1))/60.0
-    x(1) = positions_list(satellite_index)%positions(7, starting_index(satellite_index,1))
-    x(2) = (dpi/2.0 - positions_list(satellite_index)%positions(8, starting_index(satellite_index,1)))
-
-    ! phi_satellite here is at qt = 0, so at the simulation start
-    phi_satellite = positions_list(satellite_index)%positions(9, starting_index(satellite_index,1))&
-     + ((timestamp(1)-before_cme))*(2.0*dpi)/24.0*(1/2.447d1-1/orbital_period(1))
-
-    if (phi_satellite < 0) then
-      phi_satellite = 2 * dpi + phi_satellite
-    else if (phi_satellite > 2*dpi) then
-      phi_satellite = mod(phi_satellite, 2.0*dpi)
-    end if
-    x(3) = phi_satellite
-  end subroutine get_particle
-
-  subroutine move_particle(x, satellite_index, told, tnew)
-    double precision, intent(inout) :: x(3)
-    double precision, intent(in)    :: told,tnew
-    double precision                :: xf(3), xc(3), x_test(3)
-    integer, intent(in)             :: satellite_index
-
-    double precision                :: phi_satellite, before_cme, delta_lon, lon_old, lon_new
-    double precision, dimension(10)     :: orbital_period = (/365.24, 686.98, 87.969, 224.7, 346.0, 388.0, 88.0, 168.0, 87.969, 1590.0/)    ! earth, mars, mercury, venus, sta, stb, psp, solo
-
-    double precision                :: curr_lon,prev_lon, final_fix, curr_lon_e
-    integer, dimension(8)           :: prev_index_s = (/0, 0, 0, 0, 0, 0, 0, 0/)
-
-
-    last_index_s(satellite_index) = starting_index(satellite_index, 1) + floor(tnew*60.0)
-    before_cme = (cme_index(1,1) - magnetogram_index(1))/60.0
-
-    curr_lon = positions_list(satellite_index)%positions(9, last_index_s(satellite_index))
-    prev_index_s(satellite_index) = starting_index(satellite_index, 1) + floor(told*60.0)
-    prev_lon = positions_list(satellite_index)%positions(9, prev_index_s(satellite_index))
-    delta_lon = curr_lon-prev_lon
-
-
-    xf(1) = positions_list(satellite_index)%positions(7, last_index_s(satellite_index))
-    xf(2) = dpi/2.0 - positions_list(satellite_index)%positions(8, last_index_s(satellite_index))
-    xf(3) = x(3) + delta_lon- (tnew-told)*(2.0*dpi)/24.0*(1/2.447d1-1/orbital_period(1))
-    last_index_s(satellite_index) = starting_index(satellite_index, 1) + ceiling(tnew*60.0)
-
-    xc(1) = positions_list(satellite_index)%positions(7, last_index_s(satellite_index))
-    xc(2) = dpi/2.0 - positions_list(satellite_index)%positions(8, last_index_s(satellite_index))
-    xc(3) = x(3) +delta_lon- (tnew-told)*(2.0*dpi)/24.0*(1/2.447d1-1/orbital_period(1))
-
-    if ((ceiling(tnew) - floor(tnew)) .gt. 0.0) then
-      x(1) = xf(1) + (tnew - floor(tnew))*(xc(1)-xf(1))/(ceiling(tnew) - floor(tnew))
-      x(2) = xf(2) + (tnew - floor(tnew))*(xc(2)-xf(2))/(ceiling(tnew) - floor(tnew))
-      x(3) = xf(3) + (tnew - floor(tnew))*(xc(3)-xf(3))/(ceiling(tnew) - floor(tnew))
-    else
-      x(1) = xf(1)
-      x(2) = xf(2)
-      x(3) = xf(3)
+    ! guard
+    npos = size(positions_list(satellite_index)%positions, 2)
+    if (npos <= 0) then
+      x(:) = 0.d0
+      return
     end if
 
+    ! Start index for this spacecraft (clamped)
+    idx0 = max(1, min(npos, starting_index(satellite_index, 1)))
 
+    ! Hours between magnetogram epoch and simulation start:
+    t0 = (relaxation + cme_insertion)*24.d0
+
+    ! Position at simulation start
+    r0   = positions_list(satellite_index)%positions(7, idx0)
+    lat0 = positions_list(satellite_index)%positions(8, idx0)   ! latitude [rad]
+    x(1) = r0
+    x(2) = dpi/2.d0 - lat0                                      ! theta = pi/2 - lat
+
+    ! HEEQ longitude at start index
+    phi_heeq = positions_list(satellite_index)%positions(9, idx0)
+
+    ! Convert to simulation rotating frame: subtract relative rotation over t0
+    phi_rot = phi_heeq +  (omega_frame - omega_HEEQ)*t0 
+
+    ! wrap to [0, 2π)
+    phi_rot = modulo(phi_rot, 2.d0*dpi)
+    if (phi_rot < 0.d0) phi_rot = phi_rot + 2.d0*dpi
+    x(3) = phi_rot
+  end subroutine initialize_particle
+
+
+
+    subroutine move_particle(x, particle_id, told, tnew)
+    use mod_global_parameters
+    implicit none
+    ! Inputs/outputs
+    double precision, intent(inout) :: x(3)     ! (r, theta, phi) in rotating frame
+    integer,          intent(in)    :: particle_id
+    double precision, intent(in)    :: told, tnew  ! hours since simulation start
+
+    ! Locals
+    integer :: sidx                 ! mapped spacecraft index (1..10)
+    integer :: npos, base           ! number of samples, start index
+    double precision :: idx0, idx1  ! fractional minute indices at told/tnew
+    integer :: i0, j0, i1, j1       ! bracketing minute samples [i, i+1]
+    double precision :: a0, a1      ! linear weights within minute [0,1)
+
+    double precision :: lon0f, lon0c, lon1f, lon1c
+    double precision :: d0, d1, lon0, lon1, dlon, dframe
+    double precision :: r_f, r_c, lat_f, lat_c, lat_new
+
+
+    !--- Map particle -> spacecraft; exit if invalid
+    sidx = sat_indx(particle_id)
+    if (sidx <= 0) return
+
+    !--- Ephemeris size
+    npos = size(positions_list(sidx)%positions, 2)
+    if (npos <= 1) return     ! need at least 2 samples to interpolate
+
+    !--- Starting index on minute grid (1-based, clamped)
+    base = max(1, starting_index(sidx, 1))
+    if (base > npos) base = npos
+
+    !--- Hours -> fractional minute indices (relative to 'base')
+    idx0 = dble(base) + told*60.0d0
+    idx1 = dble(base) + tnew*60.0d0
+
+    ! Low/high neighbors and weights at told
+    i0 = max(1, min(npos-1, int(idx0)))     ! floor for positive idx
+    j0 = i0 + 1
+    a0 = idx0 - dble(i0)                    ! in [0,1)
+
+    ! Low/high neighbors and weights at tnew
+    i1 = max(1, min(npos-1, int(idx1)))
+    j1 = i1 + 1
+    a1 = idx1 - dble(i1)
+
+
+    !--- Wrap-aware interpolation of inertial longitude at told
+    lon0f = positions_list(sidx)%positions(9, i0)
+    lon0c = positions_list(sidx)%positions(9, j0)
+    d0    = modulo((lon0c - lon0f) + dpi, 2.d0*dpi) - dpi
+    lon0  = lon0f + a0*d0
+
+    ! and at tnew
+    lon1f = positions_list(sidx)%positions(9, i1)
+    lon1c = positions_list(sidx)%positions(9, j1)
+    d1    = modulo((lon1c - lon1f) + dpi, 2.d0*dpi) - dpi
+    lon1  = lon1f + a1*d1
+
+    ! Inertial change over the step (wrap-aware)
+    dlon  = modulo((lon1 - lon0) + dpi, 2.d0*dpi) - dpi
+
+    ! subtract rotation of the simulation frame relative to HEEQ frame of spacecraft
+    dframe = (omega_frame - omega_HEEQ) * (tnew - told)
+    ! Advance azimuth in rotating frame and wrap to [0, 2π)
+    x(3) = modulo(x(3) + dlon - dframe, 2.d0*dpi)
+    if (x(3) < 0.d0) x(3) = x(3) + 2.d0*dpi
+
+    !--- Interpolate radius at tnew
+    r_f  = positions_list(sidx)%positions(7, i1)
+    r_c  = positions_list(sidx)%positions(7, j1)
+    x(1) = r_f + a1*(r_c - r_f)
+
+    !--- Interpolate latitude at tnew and convert to co-latitude
+    lat_f   = positions_list(sidx)%positions(8, i1)   ! latitude [rad]
+    lat_c   = positions_list(sidx)%positions(8, j1)
+    lat_new = lat_f + a1*(lat_c - lat_f)
+    x(2)    = dpi/2.d0 - lat_new                      ! theta = π/2 − latitude
+
+    ! Optional bookkeeping
+    last_index_s(sidx) = i1
   end subroutine move_particle
 
   subroutine initonegrid_usr(ixG^L,ix^L,w,x)
@@ -351,46 +515,71 @@ contains
     double precision    :: xloc(1:ndim)
     double precision    :: r_boundary
     integer             :: point11_clt, point11_lon, point22_clt, point22_lon
-
+    double precision :: phi(ixmin2:ixmax2,ixmin3:ixmax3)
     double precision :: velocity2d(ixmin2:ixmax2,ixmin3:ixmax3)
     double precision :: rho2d(ixmin2:ixmax2,ixmin3:ixmax3)
     double precision :: p2d(ixmin2:ixmax2,ixmin3:ixmax3)
     double precision :: br2d(ixmin2:ixmax2,ixmin3:ixmax3)
     integer ::  idir, i
 
-
+    double precision :: ur, rho, p, br, bphi, r, theta, sin_theta, u_phi_corot
     w(ix^S,1:nw) = zero
 
-
     r_boundary   = xprobmin1 !in R_sun
-!    print *, "lt_2dthing ", lt_3d(1)%n_points(1)
+    phi = x(ixmin1,ixmin2:ixmax2,ixmin3:ixmax3,3) 
+
     velocity2d(ixmin2:ixmax2, ixmin3:ixmax3) = bc_data_get_3d(bc_data_ix(mom(1), 1), &
            x(ixmin1, ixmin2:ixmax2, ixmin3:ixmax3, 2), &
-           x(ixmin1, ixmin2:ixmax2, ixmin3:ixmax3, 3), 0d0)
+           phi, 0d0)
     rho2d(ixmin2:ixmax2, ixmin3:ixmax3) = bc_data_get_3d(bc_data_ix(rho_, 1), &
            x(ixmin1, ixmin2:ixmax2, ixmin3:ixmax3, 2), &
-           x(ixmin1, ixmin2:ixmax2, ixmin3:ixmax3, 3), 0d0)
+           phi, 0d0)
     p2d(ixmin2:ixmax2, ixmin3:ixmax3) = bc_data_get_3d(bc_data_ix(p_, 1), &
            x(ixmin1, ixmin2:ixmax2, ixmin3:ixmax3, 2), &
-           x(ixmin1, ixmin2:ixmax2, ixmin3:ixmax3, 3), 0d0)
+           phi, 0d0)
     br2d(ixmin2:ixmax2, ixmin3:ixmax3) = bc_data_get_3d(bc_data_ix(mag(1), 1), &
            x(ixmin1, ixmin2:ixmax2, ixmin3:ixmax3, 2), &
-           x(ixmin1, ixmin2:ixmax2, ixmin3:ixmax3, 3), 0d0)
+           phi, 0d0)
 
 
 
-   do ix1=ixmin1,ixmax1
-      w(ix1,ixmin2:ixmax2,ixmin3:ixmax3,mom(1))=velocity2d(ixmin2:ixmax2, ixmin3:ixmax3)
-      w(ix1,ixmin2:ixmax2,ixmin3:ixmax3,rho_)=rho2d(ixmin2:ixmax2, ixmin3:ixmax3)&
-      *(r_boundary/x(ix1,ixmin2:ixmax2, ixmin3:ixmax3, 1))**2
-      w(ix1,ixmin2:ixmax2,ixmin3:ixmax3,p_)=p2d(ixmin2:ixmax2, ixmin3:ixmax3)&
-      *(r_boundary/x(ix1,ixmin2:ixmax2, ixmin3:ixmax3, 1))**2
-      w(ix1,ixmin2:ixmax2,ixmin3:ixmax3,mag(1))=br2d(ixmin2:ixmax2, ixmin3:ixmax3)&
-      *(r_boundary/x(ix1,ixmin2:ixmax2, ixmin3:ixmax3, 1))**2
-    enddo
+
+    do ix1 = ixmin1, ixmax1
+    do ix2 = ixmin2, ixmax2
+      do ix3 = ixmin3, ixmax3
+
+        ur   = velocity2d(ix2, ix3)
+        r    = x(ix1, ix2, ix3, 1)
+        theta = x(ix1, ix2, ix3, 2)
+        sin_theta = sin(theta)
+
+        rho  = rho2d(ix2, ix3) * (r_boundary / r)**2
+        p    = p2d(ix2, ix3)   * (r_boundary / r)**2
+        br   = br2d(ix2, ix3)  * (r_boundary / r)**2
+        
+        u_phi_corot = -omega_frame * r * sin_theta ! if  radial flow as inner BC in the inertial frame
+        
+        !u_phi_corot = -omega_frame * (r - r_boundary) * sin_theta ! if radial flow as inner BC in the corotating frame
+        bphi = 0.d0                                         ! (u_phi_corot / ur) * br (creates divB)
+
+
+        ! Fill primitive variables
+        w(ix1, ix2, ix3, rho_) = rho
+        w(ix1, ix2, ix3, p_)   = p
+        w(ix1, ix2, ix3, mom(1)) = ur
+        w(ix1, ix2, ix3, mom(2)) = 0.d0
+        w(ix1, ix2, ix3, mom(3)) = u_phi_corot
+
+        w(ix1, ix2, ix3, mag(1)) = br
+        w(ix1, ix2, ix3, mag(2)) = 0.d0
+        w(ix1, ix2, ix3, mag(3)) = bphi
+
+      end do
+    end do
+  end do
 
     !Convert to conserved values
-    call mhd_to_conserved(ixG^L,ix^L,w,x)
+    call eos%to_conserved(ixG^L,ix^L,w,x)
 
     if(mhd_n_tracer ==  1) then
        w(ix^S, tracer(1)) = 0.0d0
@@ -408,10 +597,13 @@ contains
     double precision :: divb(ixI^S), divmom(ixI^S)
     double precision :: v(ixI^S,ndir), divV(ixI^S), momentum(ixI^S, ndir)
     integer :: i
+    double precision :: r_boundary
+    double precision ::  r(ixO^S), theta(ixO^S), sin_theta(ixO^S)
 
     ! output divB1
     call get_divb(w,ixI^L,ixO^L,divb)
     w(ixO^S,nw+1)=divb(ixO^S)
+   
 
     do i=1,ndir
       v(ixI^S,i)=w(ixI^S,mom(i))/w(ixI^S,rho_)
@@ -419,7 +611,7 @@ contains
 
     call divvector(v,ixI^L,ixO^L,divV)
     !w(ixO^S,nw+2)=divV(ixO^S)*step_size(ixI^S)
-    w(ixO^S,nw+2)=divV(ixO^S)*1.37
+    w(ixO^S,nw+2)=divV(ixO^S)
     do i=1,ndir
       momentum(ixI^S,i)=w(ixI^S,mom(i))
     end do
@@ -427,13 +619,41 @@ contains
     call divvector(momentum,ixI^L,ixO^L,divmom)
     w(ixO^S,nw+3)=divmom(ixO^S)
 
+    w(ixO^S,nw+4)=block%dx(ixO^S,1)
+    w(ixO^S,nw+5)=block%dx(ixO^S,2)
+    w(ixO^S,nw+6)=block%dx(ixO^S,3)
+
+    r_boundary   = xprobmin1 !in R_sun
+
+    r    = x(ixO^S, 1)
+    theta = x(ixO^S, 2)
+    sin_theta = sin(theta)
+    w(ixO^S,nw+7) = (v(ixO^S,3) + &
+    omega_frame*(r)* sin_theta)*unit_velocity*1d-3 ! the unit in km/s
+
   end subroutine specialvar_output
 
   subroutine specialvarnames_output(varnames)
     character(len=*) :: varnames
 
-    varnames='divB divV div_mom'
+    varnames='divB divV div_mom dr dt dp v3I'
   end subroutine specialvarnames_output
+
+subroutine set_output_vars(ixI^L,ixO^L,qt,w,x)
+use mod_global_parameters
+
+    integer, intent(in)             :: ixI^L,ixO^L
+    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(inout) :: w(ixI^S,nw)
+
+
+    w(ixO^S,dr1_) = block%dx(ixO^S,1)
+    w(ixO^S,dt1_) = block%dx(ixO^S,2)
+    w(ixO^S,dp1_) = block%dx(ixO^S,3)
+
+   
+end subroutine set_output_vars
+  
 
   subroutine specialsource(qdt,ixI^L,ixO^L,iw^LIM,qtC,wCT,qt,w,x)
     use mod_global_parameters
@@ -460,170 +680,307 @@ contains
 
 
   subroutine specialrefine_grid(igrid,level,ixI^L,ixO^L,qt,w,x,refine,coarsen)
-    ! refine = -1 enforce to not refine
-    ! refine =  0 doesn't enforce anything
-    ! refine =  1 enforce refinement
-    ! coarsen = -1 enforce to not coarsen
-    !  coarsen =  0 doesn't enforce anything
-    ! coarsen =  1 enforce coarsen
+    use mod_global_parameters
+    implicit none
     integer, intent(inout)          :: refine, coarsen
 
-    ! added by me
+    ! locals
     integer, intent(in)             :: igrid, level, ixI^L, ixO^L
     double precision, intent(in)    :: qt, w(ixI^S,1:nw), x(ixI^S,1:ndim)
     double precision                :: v(ixI^S,ndir), divV(ixI^S)
-    integer                         :: i, block_num
-    double precision                :: threshold
-    integer                         :: ix1, ix2, ix3
-    double precision                :: xloc(1:ndim)
-    double precision                :: r, theta, phi, r_this, theta_this, phi_this
-    double precision                :: lon_cir, u_artificial
-    double precision                :: before_cme
-    double precision                :: phi_satellite
+    double precision                :: momvec(ixI^S,ndir), divRhoV(ixI^S)
+    double precision                :: rcell
+    integer                         :: ix1, ix2, ix3, i, cme_hit
+    double precision, parameter     :: thrV = -1.0d0   ! threshold for normalized div(V)
+    double precision, parameter     :: thrR = -5.0d0   ! threshold for normalized div(rho*V)
+    double precision, parameter     :: thrTR = 5.0d-3   ! threshold for normalized div(rho*V)
+    double precision, parameter     :: fudge_cap  = 1.0d0   ! 
+    double precision, parameter     :: eps_rho = 1.0d-30
+    double precision, parameter     :: Vchar   = 2.6d0     ! 500 ~ 2.6*193 km/s (= unit_velocity)
+    double precision, parameter     :: rhochar = 1.0d0     ! unit_density is characteristic density at inner boundary 
+    double precision, parameter     :: rchar   = 21.5d0   ! inner boundary in unit_length
 
-    ! To Follow Earth location in the domain
 
-    before_cme = (cme_index(1,1) - magnetogram_index(1))/60.0
-    phi_satellite =  positions_list(1)%positions(9, last_index(1))&
-      - (qt-(timestamp(1)-before_cme))*(2.0*dpi)/24.0*(1/2.447d1-1/365.24)
+    double precision                :: phi_satellite, before_cme
+    integer                         :: npos, i_now 
+      
+    double precision, parameter     :: halfw = 15.d0*dpi/180.d0 
+    double precision, parameter     :: phi0  = 0.5d0*dpi 
+    double precision, parameter     :: thr   = 1.0d0
+    logical                         :: has_tracer
 
-    ! Threshold for negative nabla V
-    threshold = -0.005
 
-    ! Refinement criterion for div(V)
-    if (amr_criterion == "shock") then
-      if (qt > timestamp(1)) then
-        do i=1,ndir
-          v(ixI^S,i)=w(ixI^S,mom(i))/w(ixI^S, rho_)
-        end do
-        call divvector(v,ixI^L,ixO^L,divV)
-
-        if (any(divV(ixO^S) < threshold)) then
-          refine = 1
-          coarsen = -1
-        else
-          refine = -1
-          coarsen = 1
-        end if
-      end if
-    end if
-
-   if (amr_criterion == "lonwindow" .and. qt>360.) then
-    if (any(x(ixI^S,3) >= dpi/2) .and. any(x(ixI^S,3) <= dpi/2)) then
-      refine = 1
-      coarsen = -1
-      else
-      refine = -1
+    ! default: coarsen
+      refine  = -1
       coarsen = 1
-    end if
-   end if
+        ! common precomputes used by several modes
+      if (num_cmes > 0) then
+        before_cme = (cme_index(1,1) - magnetogram_index(1))/60.0d0
+      else
+        before_cme = 0.0d0
+      end if
 
-    ! Refinement criterion for tracing function
-    if (amr_criterion == "tracing") then
-      if (qt > timestamp(1)) then
-      !  if (any(w(ixI^S,tracer(1)) > 0.001) .and. any(x(ixI^S,1) >= 50.0)) then
-          if (any(w(ixI^S,tracer(1)) > 0.001)) then
-            if (any(x(ixI^S,3) < phi_satellite + 30*dpi/180) .and. any(x(ixI^S,3) > max(phi_satellite -30*dpi/180,0.0)) ) then
-              refine = 1
-              coarsen = -1
-            else
-              refine = -1
-              coarsen = 1
-            end if
-        else
-          refine = -1
-          coarsen = 1
+      npos  = size(positions_list(1)%positions, 2)
+      i_now = max(1, min(npos, starting_index(1,1) + floor(qt*60.0d0)))
+
+      phi_satellite = positions_list(1)%positions(9, i_now) &
+                    - omega_frame * (qt - (timestamp(1) - before_cme))
+      phi_satellite = modulo(phi_satellite, 2.d0*dpi)
+      if (phi_satellite < 0.d0) phi_satellite = phi_satellite + 2.d0*dpi
+
+        select case (amr_mode)
+
+      case (AMR_SHOCK)
+        if (qt <= timestamp(1)) return
+    
+       ! ---- Phase 1: cheap angular mask pass 
+        cme_hit = 0
+        do ix2 = ixOmin2, ixOmax2
+          do ix3 = ixOmin3, ixOmax3
+            do i = 1, num_cmes
+              if (qt < timestamp(i)) cycle
+              call mask_cap( x(ixOmin1,ix2,ix3,2), &
+                             x(ixOmin1,ix2,ix3,3), &
+                             qt, fudge_cap, cme_hit, i )
+              if (cme_hit == 1) exit
+            end do
+            if (cme_hit == 1) exit
+          end do
+          if (cme_hit == 1) exit
+        end do
+
+        if (cme_hit == 0) return    
+
+        ! ---- Phase 2: compute divergences once
+        do i = 1, ndir
+          v(ixI^S,i)      = w(ixI^S,mom(i)) / max(w(ixI^S,rho_), eps_rho)
+          momvec(ixI^S,i) = w(ixI^S,mom(i))
+        end do
+        call divvector(v,      ixI^L, ixO^L, divV)
+        call divvector(momvec, ixI^L, ixO^L, divRhoV)
+
+        ! ---- Phase 3: scan only masked lines; refine on first match
+        do ix2 = ixOmin2, ixOmax2
+          do ix3 = ixOmin3, ixOmax3
+            do ix1 = ixOmin1, ixOmax1
+              rcell = x(ix1,ix2,ix3,1) 
+              if ( (rcell * divV(ix1,ix2,ix3)/Vchar)   < thrV .and. &
+                   (rcell**3 *  divRhoV(ix1,ix2,ix3) / (rhochar * rchar**2 * Vchar))  < thrR) then
+                refine  =  1
+                coarsen = -1
+                return
+              end if
+            end do
+          end do
+        end do
+
+      case (AMR_LONWINDOW)
+        ! refine if any cell is within fixed window around φ0 (wrap-safe)
+        block
+          if (any( abs( modulo((x(ixI^S,3)-phi0)+dpi, 2.d0*dpi)-dpi ) <= halfw )) then
+            refine=1; coarsen=-1
+          end if
+        end block
+
+      case (AMR_TRACING)
+
+        if (qt > timestamp(1)) then
+         
+
+         has_tracer = any( w(ixI^S, tracer(1)) > thrTR )
+
+         !has_tracer = any( w(ixI^S, tracer(1)) > thr * w(ixI^S, rho_) )
+
+         ! Old satellite/longitude window (DISABLED):
+         ! double precision, parameter :: halfw = 30.d0*dpi/180.d0
+         ! logical :: in_window
+         ! in_window = any( abs( modulo((x(ixI^S,3) - phi_satellite) + dpi, 2.d0*dpi) - dpi ) <= halfw )
+
+         if (has_tracer) then
+           refine=1; coarsen=-1
+         else
+           refine=-1; coarsen=1
+          end if
         end if
 
-      end if
-    end if
-
+      case default
+        ! leave defaults
+      end select
   end subroutine specialrefine_grid
 
-  subroutine specialbound_usr(qt,ixI^L,ixO^L,iB,w,x)
+  subroutine mask_cap(clt_point, lon_point, qt, fudge, is_inside_cme, i)
+    use mod_global_parameters
+    implicit none
+    double precision, intent(in)  :: clt_point, lon_point, qt, fudge
+    integer,          intent(out) :: is_inside_cme
+    integer,          intent(in)  :: i
+    double precision :: dphi, cosd, cth, phi_cme
+
+
+    phi_cme = modulo(lon_cme(i) - omega_frame * (qt - timestamp(i)) + 2.d0*dpi , 2.d0*dpi)
+    
+    ! wrap Δφ to (-π, π]
+    dphi = modulo((lon_point - phi_cme) + dpi, 2.d0*dpi) - dpi
+
+    ! cos(d) via spherical law of cosines (θ is co-lat)
+    cosd = sin(clt_point)*sin(clt_cme(i))*cos(dphi) + cos(clt_point)*cos(clt_cme(i))
+    cosd = max(-1.d0, min(1.d0, cosd))              ! clamp for safety
+
+    ! inside if d ≤ w_half  <=>  cos d ≥ cos w_half
+    cth  = cos(fudge * w_half(i))
+    if (cosd >= cth) then
+      is_inside_cme = 1
+    else
+      is_inside_cme = 0
+    end if
+  end subroutine mask_cap
+
+  subroutine specialbound_usr(qdt,qt,ixI^L,ixO^L,iB,w,x)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixO^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in) :: qdt,qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     integer             :: ix3,ix2
-    double precision    :: r, theta, phi, minimum
-    integer             :: i,j,k, valuej, valuek
+    double precision    :: vr_bc, vt_bc, vp_bc, br_bc, bt_bc, bp_bc, md_bc,rho_bc, temp_bc, p_bc, theta, phi
+    integer             :: i,j,k, valuej, valuek, i_in
     integer             :: nr_r, nr_colat, nr_lon
     integer             :: point11_clt, point11_lon, point22_clt, point22_lon
     double precision    :: xloc(1:ndim)
 
-    double precision    :: clt_zero, lon_zero
+    double precision    :: clt_zero, lon_zero, ts_magnetogram
+    double precision    :: r_ref, r_g
     integer             :: mask_cme, n, local_check
+
+    real, allocatable             :: mask(:)
+    real, allocatable             :: vr(:), vp(:), vt(:), br(:), bt(:), bp(:), md(:), temp(:)
+
+    double precision, allocatable :: clts(:), lons(:)
+    double precision :: time
+    integer :: idx, ndata, time_found
 
     select case(iB)
       case(1)! Lower radial boundary
         nr_colat = lt_3d(1)%n_points(1)
         nr_lon = lt_3d(1)%n_points(2)
-    !    print *, "in boundary function  ", nr_colat, nr_lon
-!        w(ixO^S,:) = 0.d0
-
-        !W IS USING CONSERVATIVE VALUES
-        !SO TO GET v1 WE NEED TO USE m1/rho!!
-
-        !rghost1 = x(ixOmax1,1,1,r_): radial coordinate at first ghost cell (closest to in-domain)
-        !rghost2 = x(ixOmin1,1,1,r_): radial coordinate at second ghost cell
-        !Inner boundary has a linear relation: f(r) = a + b*r
-        !We have f(r) boundary 21.5 and r = 21.5 and first physical cell f(r)
-        !then b. = f(r)_bound - f(r)_phys / (R_bound - R_phys)
-        !and a = f(r)_bound - b*21.5R_sun
-        !FOR NOW WE ASSUME NON-STRETCHED GRID!
-        call mhd_to_primitive(ixI^L,ixO^L,w,x)
-        do ix3 = ixOmin3, ixOmax3
+! Should we want a radial velocity in the inertial frame, we need to set v3 = -omega_frame * r  and B3 = -omega_frame * r * sin\theta / v1
+! we cannot use asymm BC for v3 and B3 in the par file, since that will kill any component in the corot-frame
+      
+      call eos%to_primitive(ixI^L,ixO^L,w,x)
+      do ix3 = ixOmin3, ixOmax3
           do ix2 = ixOmin2,ixOmax2
-            !Get data from the first phsyical cell going in the r-direction
-            r       = x(ixOmin1 +2 , ix2, ix3, 1)
-            theta   = x(ixOmin1, ix2, ix3, 2)
-            phi     = x(ixOmin1, ix2, ix3, 3)
-            xloc(:) = x(ixOmin1 +2, ix2, ix3,:)
-            !IMPORTANT NOTE:
-!            !AMRVAC has ghostcells that are largers than 2*pi
-            !We made sure that coord_grid_init also has data >2*pi
+            ! bc_data_set() has already filled ghost cells; keep its value at the
+            ! ghost cell adjacent to the domain and enforce r^2 Br = const inward.
+            br_bc  = w(ixOmax1, ix2, ix3, mag(1))
+            rho_bc = w(ixOmax1, ix2, ix3, rho_)
+            p_bc   = w(ixOmax1, ix2, ix3, p_)
+            r_ref  = x(ixOmax1, ix2, ix3, 1)
 
-            !Find the corresponding data in the initial grid
-!            !For now we take the values at 21.5+delta_r/2 as our grid coord_grid_init does not have 21.5R_sun
-            !TODO: add the 21.5 R_sun grid!!
+            do i = ixOmin1, ixOmax1-1   ! fill all other ghost cells
+              r_g = x(i, ix2, ix3, 1)
+              w(i,ix2,ix3,mag(1)) = br_bc  * (r_ref / r_g)**2
+              w(i,ix2,ix3,rho_)   = rho_bc * (r_ref / r_g)**2
+              w(i,ix2,ix3,mom(3)) = -omega_frame * (r_g)*sin(x(i, ix2, ix3, 2))
+              w(i,ix2,ix3,mag(3)) = -w(i,ix2,ix3,mag(1))*omega_frame * (r_g)&
+              *sin(x(i, ix2, ix3, 2))/w(i,ix2,ix3,mom(1))
 
-        !    call find_indices_coord_grid(xloc, point11_clt, point11_lon, point22_clt, point22_lon)
-            mask_cme = 0
-            if (num_cmes == 0) then
-              local_check = 1
-            else
-              local_check = num_cmes
+              ! (A) isothermal:
+              ! w(i,ix2,ix3,p_) = p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )
+
+              ! (B) polytropic:
+              w(i,ix2,ix3,p_)  =  p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )**eos%gamma
+
+            end do
+
+            ! leave Btheta, Bphi as set by bc_data_set
+ 
+            ! default: no tracer dye in the inner ghosts
+            if (mhd_n_tracer >= 1) then
+              do i = ixOmin1, ixOmax1
+                w(i, ix2, ix3, tracer(1)) = 0.d0
+              end do
             end if
-            do n=1, local_check
-              if (mask_cme .eq. 0) then
-                if (cme_flag == 1) then
-                  call mask(xloc(2), xloc(3), mask_cme, n)
-                end if
-                if (mask_cme .eq. 1) then
-                  ! Mass density
-                  w(ixOmax1, ix2, ix3, rho_) = rho_cme(n)/unit_density
-                  w(ixOmin1, ix2, ix3, rho_) = rho_cme(n)/unit_density
-                  ! speed
-                  w(ixOmax1, ix2, ix3, mom(1)) =  vr_cme(n)/unit_velocity
-                  w(ixOmin1, ix2, ix3, mom(1)) =  vr_cme(n)/unit_velocity
-                  !pressure: p
-                  w(ixOmax1, ix2, ix3, p_) = rho_cme(n) / (0.5 * mp_SI) * kB_SI * temperature_cme(n)/unit_pressure
-                  w(ixOmin1, ix2, ix3, p_) = rho_cme(n) / (0.5 * mp_SI) * kB_SI * temperature_cme(n)/unit_pressure
-                  ! Setting tracer function to the value of densicy inside CME
-                  w(ixOmax1, ix2, ix3,  tracer(1)) = rho_cme(n)/unit_density
-                  w(ixOmin1, ix2, ix3,  tracer(1)) = rho_cme(n)/unit_density
-                 else
-                  w(ixOmax1, ix2, ix3,  tracer(1)) = - w(ixOmin1+2, ix2, ix3,  tracer(1))
-                  w(ixOmin1, ix2, ix3,  tracer(1)) = - w(ixOmin1+3, ix2, ix3,  tracer(1))
-                end if
-              end if
-             end do
-            !Mass density
-      end do
-    end do
-        !convert back to conserved values
-        call mhd_to_conserved(ixI^L,ixO^L,w,x)
+           end do 
+         end do
+
+        do n = 1, num_cmes
+            time = qt - timestamp(n)
+            ts_magnetogram = timestamp(n) - relaxation*24 - cme_insertion*24
+
+            if (time > 0.0d0) then
+                call get_datacube_arrays(time, n, base_filename, time_found, clts, lons, mask, vr, vt, vp, br, bt, bp, md, temp)
+            else
+                time_found = 0
+            end if
+
+            if (time_found == 1) then
+                ndata   = size(mask)
+            end if
+
+            do ix3 = ixOmin3, ixOmax3
+                do ix2 = ixOmin2, ixOmax2
+                    theta = x(ixOmin1+2, ix2, ix3, 2)
+                    phi   = x(ixOmin1+2, ix2, ix3, 3)
+
+                    mask_cme = 0
+                   if (time_found == 1) then
+                        call get_value(theta, phi, ts_magnetogram, &
+                                       clts, lons, mask, vr, vp, vt, br, bt, bp, temp, md, ndata, mask_cme, &
+                                       vr_bc, vp_bc, vt_bc, br_bc, bt_bc, bp_bc, md_bc, temp_bc)
+
+                            if (mask_cme == 1) then
+                            if (.not. ieee_is_nan(vr_bc)) then
+                                w(ixOmin1, ix2, ix3, mom(1)) = vr_bc/unit_velocity
+                                w(ixOmax1, ix2, ix3, mom(1)) = vr_bc/unit_velocity
+                            end if
+
+                            if ((.not. ieee_is_nan(vt_bc))) then
+                                w(ixOmin1, ix2, ix3, mom(2)) = vt_bc/unit_velocity
+                                w(ixOmax1, ix2, ix3, mom(2)) = vt_bc/unit_velocity
+                            end if
+
+                            if ((.not. ieee_is_nan(vp_bc))) then
+                                w(ixOmin1, ix2, ix3, mom(3)) = vp_bc/unit_velocity
+                                w(ixOmax1, ix2, ix3, mom(3)) = vp_bc/unit_velocity
+                            end if
+
+                            if (.not. ieee_is_nan(br_bc)) then
+                                w(ixOmin1, ix2, ix3, mag(1)) = br_bc/unit_magneticfield
+                                w(ixOmax1, ix2, ix3, mag(1)) = br_bc/unit_magneticfield
+                            end if
+
+                            if (.not. ieee_is_nan(bt_bc)) then
+                                w(ixOmin1, ix2, ix3, mag(2)) = bt_bc/unit_magneticfield
+                                w(ixOmax1, ix2, ix3, mag(2)) = bt_bc/unit_magneticfield
+                            end if
+
+                            if (.not. ieee_is_nan(bp_bc)) then
+                                w(ixOmin1, ix2, ix3, mag(3)) = bp_bc/unit_magneticfield
+                                w(ixOmax1, ix2, ix3, mag(3)) = bp_bc/unit_magneticfield
+                            end if
+
+                            if (.not. ieee_is_nan(md_bc)) then
+                                w(ixOmin1, ix2, ix3, rho_) = md_bc/unit_density
+                                w(ixOmax1, ix2, ix3, rho_) = md_bc/unit_density
+                                w(ixOmax1, ix2, ix3, tracer(1)) = md_bc/unit_density
+                                w(ixOmin1, ix2, ix3, tracer(1)) = md_bc/unit_density
+                            end if
+
+                            p_bc = md_bc/(0.5*mp_SI) * kB_SI * temp_bc
+                            if (.not. ieee_is_nan(p_bc)) then
+                                w(ixOmin1, ix2, ix3, p_) = p_bc/unit_pressure
+                                w(ixOmax1, ix2, ix3, p_) = p_bc/unit_pressure
+                            end if
+                        else
+                            w(ixOmax1, ix2, ix3, tracer(1)) = - w(ixOmin1+2, ix2, ix3, tracer(1))
+                            w(ixOmin1, ix2, ix3, tracer(1)) = - w(ixOmin1+3, ix2, ix3, tracer(1))
+                        end if
+                    end if
+                end do
+            end do
+        end do
+
+        ! convert back to conserved values
+        call eos%to_conserved(ixI^L, ixO^L, w, x)
     end select
   end subroutine specialbound_usr
 
@@ -922,8 +1279,13 @@ contains
       end do
     end if
 
-    if (starting_index(index, 1) .eq. 0 .and. (num_cmes == 0)) then
-      starting_index(index, 1) = magnetogram_index(index)
+    if (magnetogram_index(index) == 0) then
+       ! pick nearest minute (simple fallback: first index)
+       magnetogram_index(index) = 1
+    end if
+
+    if (starting_index(index, 1) == 0 .and. (num_cmes == 0)) then
+      starting_index(index, 1) = max(1,magnetogram_index(index))
       cme_index(index,1) = magnetogram_index(index)
     end if
 
@@ -939,6 +1301,7 @@ contains
 
                 delta_steps = int((relaxation*24.0+cme_insertion*24.0+time_difference_cme_magn(index, n))*60)
                 starting_index(index, n) = i_date - delta_steps
+                starting_index(index, n) = max(1, min(nr_positions, starting_index(index, n))) 
 
                 exit
               end if
@@ -1011,102 +1374,122 @@ contains
     end do
   end subroutine read_cme_parameters
 
+! apply frame correction to CME longitudes using the simulation frame rate
   subroutine cme_insertion_longitudes_fix()
-    integer       :: i
+    use mod_global_parameters
+    implicit none
+    integer :: i
+    double precision :: time_shift  ! hours between magnetogram epoch and CME timestamp
 
-    do i=1, num_cmes
-       longitudes_fix(i) = (timestamp(i)-relaxation*24.0 - cme_insertion*24.0)*(2.0*dpi)/24.0*(1/2.447d1-1/365.24)
-       lon_cme(i) = lon_cme(i) - longitudes_fix(i)
+    if (num_cmes <= 0) return
+
+    do i = 1, num_cmes
+      ! Prefer the precomputed difference if available (hours):
+      if (allocated(time_difference_cme_magn)) then
+        time_shift = time_difference_cme_magn(1, i)
+      else
+        ! Fallback: recover the offset from the fields you already have (hours)
+        time_shift  = timestamp(i) - (relaxation + cme_insertion) * 24.0d0
+      end if
+
+! phi_rot = phi_heeq +  (omega_frame - omega_HEEQ)*t0
+
+      ! Frame-rotation correction (rad): how much the corotating frame turned over time_shift
+      longitudes_fix(i) = (omega_frame-omega_HEEQ) * time_shift
+
+      ! Express CME longitude at the simulation’s reference epoch (subtract forward rotation)
+      lon_cme(i) = lon_cme(i) - longitudes_fix(i)
+
+      ! Wrap to [0, 2π)
+      lon_cme(i) = modulo(lon_cme(i), 2.0d0*dpi)
+      if (lon_cme(i) < 0.d0) lon_cme(i) = lon_cme(i) + 2.0d0*dpi
     end do
-
   end subroutine cme_insertion_longitudes_fix
 
+! half time (scalar) for CME i
   subroutine find_half_time(t_half, i)
     use mod_global_parameters
-    double precision, dimension(num_cmes)          :: t_half
-    double precision                               :: au = 1.49d11
-    integer                                        :: i
-    !	 	we need to calculate at 0.1 AU
+    implicit none
+    double precision, intent(out) :: t_half
+    integer,          intent(in)  :: i
+    double precision              :: au
 
-    ! t_half defined as equation 2 in Shapes paper
-     t_half(i) = 0.1 * sin(w_half(i)) * au / vr_cme(i)/unit_time
-    ! t_half defined as equation 1 in Shapes paper
-    !  t_half(i) = 0.1 * tan(w_half(i)) * au / vr_cme(i) /unit_time
-     ! t_half(i) = t_half(i)/unit_time
-
+    au      = 1.49d11
+    ! Eq. 2 (Shapes paper), evaluated at 0.1 AU; return in simulation time units
+    t_half  = 0.1d0 * sin(w_half(i)) * au / vr_cme(i) / unit_time
   end subroutine find_half_time
 
-  subroutine find_opening_angle_spherical(t_half, theta_opening_angle, i)
+! opening half-angle (scalar) for CME i; spheroidal (planar-b) model
+  subroutine find_opening_angle_spherical(t_half, theta_half, i)
     use mod_global_parameters
-    double precision, dimension(num_cmes)        :: t_half,  theta_opening_angle
-    integer                                      :: i
+    implicit none
+    double precision, intent(in)  :: t_half
+    double precision, intent(out) :: theta_half
+    integer,          intent(in)  :: i
+    double precision              :: tau, arg
 
-    if (timestamp(i) <= global_time) then
-      if (global_time <= (timestamp(i) + 2*t_half(i))) then
-        ! opening angle defined as eq 4 in Shapes paper. spheroidal in planar b
-        theta_opening_angle(i) = w_half(i) * sqrt(1-((global_time-timestamp(i)) / t_half(i) - 1)**2)
+    theta_half = -1.0d0
+    if (timestamp(i) <= global_time .and. global_time <= timestamp(i) + 2.0d0*t_half) then
+      tau = (global_time - timestamp(i)) / t_half - 1.0d0
+      arg = 1.0d0 - tau*tau
+      if (arg > 0.0d0) then
+        theta_half = w_half(i) * sqrt(arg)
       end if
     end if
-
   end subroutine find_opening_angle_spherical
 
-  subroutine find_opening_angle_spherical3(t_half, theta_opening_angle, i)
+
+! opening half-angle (scalar) using Eq. 5 (spheroidal in planar-b)
+  subroutine find_opening_angle_spherical3(t_half, theta_half, i)
     use mod_global_parameters
-    double precision, dimension(num_cmes)    :: t_half, r_half,  theta_opening_angle, r_new
-    double precision           :: au = 1.49d11
-    integer  :: i
+    implicit none
+    double precision, intent(in)  :: t_half
+    double precision, intent(out) :: theta_half
+    integer,          intent(in)  :: i
+    double precision              :: au, r_half, r_new, num, den, cval
 
-    if (timestamp(i) <= global_time) then
-      if (global_time <= (timestamp(i) + 2*t_half(i))) then
-        ! opening angle defined as eq 5 in Shapes paper. spheroidal in planar b
-        r_half(i) = 0.1 * au * sin(w_half(i))
-        r_new(i) = (global_time - timestamp(i)) * vr_cme(i)*unit_time + 0.1*au - r_half(i)
-
-        theta_opening_angle(i)=acos((r_new(i)**2+(0.1*au)**2-r_half(i)**2)/(2.0*r_new(i)*0.1*au))
+    theta_half = -1.0d0
+    if (timestamp(i) <= global_time .and. global_time <= timestamp(i) + 2.0d0*t_half) then
+      au     = 1.49d11
+      r_half = 0.1d0 * au * sin(w_half(i))
+      r_new  = (global_time - timestamp(i)) * vr_cme(i) * unit_time + 0.1d0*au - r_half
+      if (r_new > 0.0d0) then
+        num  = r_new**2 + (0.1d0*au)**2 - r_half**2
+        den  = 2.0d0 * r_new * 0.1d0 * au
+        cval = max(-1.0d0, min(1.0d0, num/den))    ! clamp for acos safety
+        theta_half = acos(cval)
       end if
     end if
-
   end subroutine find_opening_angle_spherical3
 
-  subroutine mask(clt_p, lon_p, mask_value, i)
+! point-in-CME test (great-circle distance with wrap-around)
+  subroutine mask(clt_point, lon_point, is_inside_cme, i)
     use mod_global_parameters
-    double precision          :: clt_p, lon_p
-    double precision, dimension(num_cmes)           :: theta_opening_angle, t_half, distance, distance1
-    integer, intent(out)      :: mask_value
-    integer                   :: i
+    implicit none
+    double precision, intent(in)  :: clt_point, lon_point    ! co-lat (θ), lon (φ)
+    integer,          intent(out) :: is_inside_cme
+    integer,          intent(in)  :: i
 
-    theta_opening_angle(i) = -1
+    double precision :: half_time, half_angle
+    double precision :: dphi, cosd, d
 
-    call find_half_time(t_half, i)
-    !call find_opening_angle(t_half, theta_opening_angle,i)
-    !call find_opening_angle_spherical(t_half, theta_opening_angle,i)
-    call find_opening_angle_spherical3(t_half, theta_opening_angle, i)
+    is_inside_cme = 0
+    half_angle    = -1.0d0
 
-    if (theta_opening_angle(i) > 0) then
+    call find_half_time(half_time, i)
+    call find_opening_angle_spherical3(half_time, half_angle, i)
 
-      !distance(i) = (clt_p - clt_cme(i))**2 + (lon_p - lon_cme(i))**2
-      distance(i) = acos(sin(clt_p)*sin(clt_cme(i))*cos(lon_p-lon_cme(i)) + cos(clt_p)*cos(clt_cme(i)))
-      if (lon_cme(i) - theta_opening_angle(i) < 0) then
-        !distance1(i) = (clt_p - clt_cme(i))**2 + (-(2*dpi - lon_p) - lon_cme(i))**2
-        distance1(i) = acos(sin(clt_p)*sin(clt_cme(i))*cos(-(2*dpi - lon_p)-lon_cme(i)) + cos(clt_p)*cos(clt_cme(i)))
-      else if (lon_cme(i) + theta_opening_angle(i) > 2*dpi) then
-        !distance1(i) = (clt_p - clt_cme(i))**2 + (2*dpi + lon_p - lon_cme(i))**2
-        distance1(i) = acos(sin(clt_p)*sin(clt_cme(i))*cos((lon_p + 2*dpi)-lon_cme(i)) + cos(clt_p)*cos(clt_cme(i)))
-      else
-        distance1(i) = 1000
-      end if
+    if (half_angle <= 0.d0) return
 
-      if (distance(i) < theta_opening_angle(i)**2) then
-        mask_value = 1
-      else if (distance1(i) < theta_opening_angle(i)**2) then
-        mask_value = 1
-      else
-        mask_value = 0
-      end if
-    else
-      mask_value = 0
-    end if
+    ! Wrap-aware longitude difference Δφ ∈ (-π, π]
+    dphi = modulo((lon_point - lon_cme(i)) + dpi, 2.d0*dpi) - dpi
 
+    ! Spherical law of cosines for great-circle distance:
+    ! cos d = sinθ sinθc cosΔφ + cosθ cosθc
+    cosd = sin(clt_point)*sin(clt_cme(i))*cos(dphi) + cos(clt_point)*cos(clt_cme(i))
+    cosd = max(-1.d0, min(1.d0, cosd))
+    d    = acos(cosd)
+
+    if (d < half_angle) is_inside_cme = 1
   end subroutine mask
-
 end module mod_usr
