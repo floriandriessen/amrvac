@@ -614,16 +614,6 @@ contains
     end if
 
     bcphys=.true.
-
-    if(phys_partial_ionization) then
-      ! update temperature variable in w
-      !$OMP PARALLEL DO PRIVATE(igrid)
-      do iigrid=1,igridstail; igrid=igrids(iigrid);
-        call phys_update_temperature(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%w,ps(igrid)%x)
-      end do
-      !$OMP END PARALLEL DO
-    end if
-
   end subroutine sts_add_source2
 
   !> Iterates all the terms implemented with STS and adds the sources
@@ -961,16 +951,6 @@ contains
     end if
 
     bcphys=.true.
-
-    if(phys_partial_ionization) then
-      ! update temperature variable in w
-      !$OMP PARALLEL DO PRIVATE(igrid)
-      do iigrid=1,igridstail; igrid=igrids(iigrid);
-        call phys_update_temperature(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%w,ps(igrid)%x)
-      end do
-      !$OMP END PARALLEL DO
-    end if
-
   end subroutine sts_add_source1
 
 end module mod_supertimestepping

@@ -71,9 +71,6 @@ module mod_hd_phys
   !> Index of the radiation energy (when fld active)
   integer, public, protected              :: r_e
 
-  !> Indices of temperature
-  integer, public, protected :: Te_
-
   !> Index of the FIP passive scalar rho*fip in conserved form, fip in primitive form
   integer, public, protected :: fip_ = -1
 
@@ -200,7 +197,8 @@ contains
     use mod_cak_force, only: cak_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
-    use mod_ionization_degree
+    use mod_ionization_degree, only: ionization_degree_init, &
+        ionization_get_Rfactor_from_temperature
     use mod_usr_methods, only: usr_Rfactor
     use mod_fld
 
@@ -333,13 +331,6 @@ contains
        tracer(itr) = var_set_fluxvar("trc", "trp", itr, need_bc=.false.)
     end do
 
-    !  set temperature as an auxiliary variable to get ionization degree
-    if(hd_partial_ionization) then
-      Te_ = var_set_auxvar('Te','Te')
-    else
-      Te_ = -1
-    end if
-
     ! set number of variables which need update ghostcells
     nwgc=nwflux+nwaux
 
@@ -355,8 +346,7 @@ contains
 
     ! choose Rfactor in ideal gas law
     if(hd_partial_ionization) then
-      hd_get_Rfactor=>Rfactor_from_temperature_ionization
-      phys_update_temperature => hd_update_temperature
+      hd_get_Rfactor => Rfactor_from_current_state_ionization
     else if(associated(usr_Rfactor)) then
       hd_get_Rfactor=>usr_Rfactor
     else
@@ -393,15 +383,18 @@ contains
       rc_fl%fip_ = fip_
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%get_rho => hd_get_rho
+      rc_fl%get_temperature => hd_get_temperature_from_etot
       rc_fl%get_pthermal => hd_get_pthermal
       rc_fl%get_var_Rfactor => hd_get_Rfactor
+      if (hd_partial_ionization) then
+        rc_fl%get_Rfactor_from_temperature => ionization_get_Rfactor_from_temperature
+      end if
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
     end if
     allocate(te_fl_hd)
     te_fl_hd%get_rho=> hd_get_rho
-    te_fl_hd%get_pthermal=> hd_get_pthermal
-    te_fl_hd%get_var_Rfactor => hd_get_Rfactor
+    te_fl_hd%get_temperature => hd_get_temperature_from_etot
 {^IFTHREED
     phys_te_images => hd_te_images
 }
@@ -430,7 +423,11 @@ contains
     allocate(iw_vector(nvector))
     iw_vector(1) = mom(1) - 1
     ! initialize ionization degree table
-    if(hd_partial_ionization) call ionization_degree_init()
+    if (hd_partial_ionization) then
+      call ionization_degree_init(He_abundance, &
+           1.d0 + H_ion_fr + He_abundance * &
+           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)))
+    end if
 
   end subroutine hd_phys_init
 
@@ -568,6 +565,7 @@ contains
       !> Add cooling source in a split way (.true.) or un-split way (.false.)
       logical    :: rc_split=.false.
 
+      logical    :: rc_is_1d_loop = .false.
       logical    :: rad_damp=.false.
       double precision :: rad_damp_height=0.5d0
       double precision :: rad_damp_scale=0.15d0
@@ -579,7 +577,7 @@ contains
 
       namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split, &
                          rad_newton, rad_newton_trad, rad_newton_rhosurf, &
-                         rad_newton_pthick, rad_damp, rad_damp_height, rad_damp_scale
+                         rad_newton_pthick, rad_damp, rad_damp_height, rad_damp_scale, rc_is_1d_loop
   
       do n = 1, size(par_files)
         open(unitpar, file=trim(par_files(n)), status="old")
@@ -592,6 +590,7 @@ contains
       fl%tlow=tlow
       fl%Tfix=Tfix
       fl%rc_split=rc_split
+      fl%rc_is_1d_loop = rc_is_1d_loop
       fl%rad_damp = rad_damp
       fl%rad_damp_height = rad_damp_height
       fl%rad_damp_scale = rad_damp_scale
@@ -1098,8 +1097,7 @@ contains
     logical :: lrlt(ixI^S)
 
     {^IFONED
-    call hd_get_Rfactor(w,x,ixI^L,ixI^L,Te)
-    Te(ixI^S)=w(ixI^S,p_)/(Te(ixI^S)*w(ixI^S,rho_))
+    call hd_get_temperature_from_prim(w,x,ixI^L,ixI^L,Te)
 
     Tco_local=zero
     Tmax_local=maxval(Te(ixO^S))
@@ -1426,7 +1424,7 @@ contains
 
   end subroutine hd_get_trad
 
-  !> Calculate temperature=p/rho when in e_ the  total energy is stored
+  !> recover temperature from rho and pthermal using active EOS
   subroutine hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
     integer, intent(in)          :: ixI^L, ixO^L
@@ -1434,14 +1432,19 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S)
+    double precision :: R(ixI^S), pth(ixI^S)
 
-    call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    call hd_get_pthermal(w, x, ixI^L, ixO^L, res)
-    res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+    call hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
+
+    if(hd_partial_ionization) then
+      call hd_get_ionization_state_from_prho(ixI^L, ixO^L, w(ixI^S,rho_), &
+           pth, res, R)
+    else
+      call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S)=pth(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+    end if
   end subroutine hd_get_temperature_from_etot
 
-  !> Calculate temperature=p/rho when in e_ the  internal energy is stored
   subroutine hd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
     integer, intent(in)          :: ixI^L, ixO^L
@@ -1449,13 +1452,18 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S)
+    double precision :: R(ixI^S), pth(ixI^S)
 
-    call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S) = (hd_gamma - 1.0d0) * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+    if(hd_partial_ionization) then
+      pth(ixO^S) = (hd_gamma - 1.d0) * w(ixO^S, e_)
+      call hd_get_ionization_state_from_prho(ixI^L, ixO^L, w(ixI^S,rho_), &
+           pth, res, R)
+    else
+      call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S) = (hd_gamma - 1.0d0) * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+    end if
   end subroutine hd_get_temperature_from_eint
 
-  !> Calculate temperature=p/rho when in we work in primitives (hence e_ is p_)
   subroutine hd_get_temperature_from_prim(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
     integer, intent(in)          :: ixI^L, ixO^L
@@ -1465,8 +1473,13 @@ contains
 
     double precision :: R(ixI^S)
 
-    call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S)=w(ixO^S,p_)/(R(ixO^S)*w(ixO^S,rho_))
+    if(hd_partial_ionization) then
+      call hd_get_ionization_state_from_prho(ixI^L, ixO^L, w(ixI^S,rho_), &
+           w(ixI^S,p_), res, R)
+    else
+      call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S)=w(ixO^S,p_)/(R(ixO^S)*w(ixO^S,rho_))
+    end if
 
   end subroutine hd_get_temperature_from_prim
 
@@ -1725,14 +1738,6 @@ contains
     if (hd_radiation_fld) then
        call hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     endif
-
-    if(hd_partial_ionization) then
-      if(.not.qsourcesplit) then
-        active = .true.
-        call hd_update_temperature(ixI^L,ixO^L,wCT,w,x)
-      end if
-    end if
-
   end subroutine hd_add_source
 
   subroutine hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
@@ -1923,21 +1928,33 @@ contains
     if (hd_fip) call hd_bound_fip(primitive, ixI^L, ixO^L, w)
   end subroutine hd_handle_small_values
 
-  subroutine Rfactor_from_temperature_ionization(w,x,ixI^L,ixO^L,Rfactor)
+  subroutine Rfactor_from_current_state_ionization( &
+       w, x, ixI^L, ixO^L, Rfactor)
     use mod_global_parameters
-    use mod_ionization_degree
+
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: Rfactor(ixI^S)
+    double precision, intent(out) :: Rfactor(ixI^S)
 
-    double precision :: iz_H(ixO^S),iz_He(ixO^S)
+    double precision :: rho(ixI^S), pth(ixI^S), T(ixI^S)
 
-    call ionization_degree_from_temperature(ixI^L,ixO^L,w(ixI^S,Te_),iz_H,iz_He)
-    ! assume the first and second ionization of Helium have the same degree
-    Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/2.3d0
+    call hd_get_rho(w, x, ixI^L, ixO^L, rho)
+    call hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
+    call hd_get_ionization_state_from_prho( &
+         ixI^L, ixO^L, rho, pth, T, Rfactor)
+  end subroutine Rfactor_from_current_state_ionization
 
-  end subroutine Rfactor_from_temperature_ionization
+  subroutine hd_get_ionization_state_from_prho(ixI^L, ixO^L, rho, pth, T, Rfactor)
+    use mod_global_parameters
+    use mod_ionization_degree, only: ionization_get_state
+
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: rho(ixI^S), pth(ixI^S)
+    double precision, intent(out) :: T(ixI^S), Rfactor(ixI^S)
+
+    call ionization_get_state(ixI^L, ixO^L, rho, pth, T, Rfactor)
+  end subroutine hd_get_ionization_state_from_prho
 
   subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
     use mod_global_parameters
@@ -1949,24 +1966,5 @@ contains
     Rfactor(ixO^S)=RR
 
   end subroutine Rfactor_from_constant_ionization
-
-  subroutine hd_update_temperature(ixI^L,ixO^L,wCT,w,x)
-    use mod_global_parameters
-    use mod_ionization_degree
-
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: w(ixI^S,1:nw)
-
-    double precision :: iz_H(ixO^S),iz_He(ixO^S), pth(ixI^S)
-
-    call ionization_degree_from_temperature(ixI^L,ixO^L,wCT(ixI^S,Te_),iz_H,iz_He)
-
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,pth)
-
-    w(ixO^S,Te_)=(2.d0+3.d0*He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
-     He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
-
-  end subroutine hd_update_temperature
 
 end module mod_hd_phys

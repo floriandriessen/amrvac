@@ -261,14 +261,14 @@ contains
     ! Calculate both min and max of temperature on grid in one go.
     subroutine get_minmax_temperature(Tmax, Tmin)
         use mod_global_parameters
-        use mod_physics, only: phys_get_pthermal, phys_get_rho
+        use mod_physics, only: phys_get_pthermal, phys_get_rho, phys_get_Rfactor
 
         double precision, intent(out) :: Tmax, Tmin
 
-        integer                       :: iigrid, igrid, iw
+        integer                       :: iigrid, igrid
         double precision              :: Tmax_mype, Tmax_recv, Tmin_mype, Tmin_recv
-        double precision              :: w(ixG^T,1:nw), wlocal(ixG^T,1:nw), xlocal(ixG^T,1:nw)
-        double precision              :: Te(ixG^T), pth(ixG^T), rho(ixG^T)
+        double precision              :: wlocal(ixG^T,1:nw), xlocal(ixG^T,1:ndim)
+        double precision              :: Te(ixG^T), pth(ixG^T), rho(ixG^T), Rfactor(ixG^T)
 
         Tmax_mype = -bigdouble
         Tmin_mype = bigdouble
@@ -281,7 +281,8 @@ contains
             xlocal(ixG^T,1:ndim) = ps(igrid)%x(ixG^T,1:ndim)
             call phys_get_pthermal(wlocal,xlocal,ixG^LL,ixG^LL,pth)
             call phys_get_rho(wlocal,xlocal,ixG^LL,ixG^LL,rho)
-            Te(ixG^T) = pth(ixG^T)/rho(ixG^T)
+            call phys_get_Rfactor(wlocal,xlocal,ixG^LL,ixG^LL,Rfactor)
+            Te(ixG^T) = pth(ixG^T)/(rho(ixG^T)*Rfactor(ixG^T))
 
             ! Compare values on current grid to temporary max/min
             Tmax_mype = max(Tmax_mype,maxval(Te(ixM^T)))
@@ -305,7 +306,7 @@ contains
 
         double precision, intent(out) :: vmax
 
-        integer                       :: iigrid, igrid, iw
+        integer                       :: iigrid, igrid
         double precision              :: vmax_mype,vmax_recv
         double precision              :: v_vec(ixG^T,1:ndir), v(ixG^T)
 
@@ -336,7 +337,7 @@ contains
 
         double precision, intent(out) :: B1max, B2max, B3max
 
-        integer                       :: iigrid, igrid, iw
+        integer                       :: iigrid, igrid
         double precision              :: B1max_mype, B1max_recv
         double precision              :: B2max_mype, B2max_recv
         double precision              :: B3max_mype, B3max_recv

@@ -253,9 +253,9 @@ module mod_solar_atmosphere
 
 contains
 
-  subroutine get_atm_para(h,rho,pth,grav,nh,Tcurve,hc,rhohc,Tem)
+  subroutine get_atm_para(h,rho,pth,grav,nh,Tcurve,hc,rhohc,Tem,clamp_low_T)
     use mod_physics, only: phys_partial_ionization
-    use mod_ionization_degree
+    use mod_ionization_degree, only: ionization_get_Rfactor_from_temperature
     ! input:h,grav,nh,rho0,Tcurve; output:rho,pth (dimensionless units)
     ! nh -- number of points
     ! rho0 -- number density at h=0
@@ -265,11 +265,12 @@ contains
     double precision, intent(in) :: h(nh),grav(nh)
     double precision, intent(out) :: rho(nh),pth(nh)
     double precision, intent(out),optional :: Tem(nh)
+    logical, optional, intent(in) :: clamp_low_T
     double precision :: rhohc,hc
     character(*) :: Tcurve
 
     double precision :: h_cgs(nh),Te_cgs(nh),Te(nh)
-    double precision :: invT,dh,rhot,dht,ratio
+    double precision :: invT,dh,rhot,dht,ratio,Rfactor
     integer :: j
 
     h_cgs=h*unit_length
@@ -288,7 +289,11 @@ contains
         if (mype==0) print *, 'Temperature curve from Fontenla et al. 2007, ApJ, 667, 1243'
 
       case('AL-C7')
-        call get_Te_ALC7(h_cgs,Te_cgs,nh)
+        if (present(clamp_low_T)) then
+          call get_Te_ALC7(h_cgs,Te_cgs,nh,clamp_low_T=clamp_low_T)
+        else
+          call get_Te_ALC7(h_cgs,Te_cgs,nh)
+        endif
         if (mype==0) print *, 'Temperature curve from Avrett & Loeser 2008, ApJS, 175, 229'
 
       case default
@@ -301,7 +306,8 @@ contains
 
     if(phys_partial_ionization) then
       do j=1,nh
-        Te(j)=Te(j)*R_ideal_gas_law_partial_ionization(Te(j))
+        call ionization_get_Rfactor_from_temperature(Te(j), Rfactor)
+        Te(j) = Te(j)*Rfactor
       end do
     end if
 
@@ -329,15 +335,17 @@ contains
 
   end subroutine get_atm_para
 
-  subroutine get_Te_ALC7(h,Te,nh)
+  subroutine get_Te_ALC7(h,Te,nh,clamp_low_T)
     use mod_interpolation
 
     integer :: nh
     double precision :: h(nh),Te(nh)
+    logical, optional, intent(in) :: clamp_low_T
 
     integer :: ih,j,imin,imax,n_table
     double precision :: h_table(n_alc7),T_table(n_alc7)
     double precision :: unit_h,unit_T,htra,Ttra,Fc,kappa,dTdh
+    logical :: clamp_low
 
     ! temperature profile
     unit_h=1.d5 !  km -> cm
@@ -352,6 +360,9 @@ contains
     Ttra=577400.d0
     ! adiabatic temperature gradient below solar surface (Toriumi and Takasao 2017 ApJ 850 39)
     dTdh=-0.4d0*mH_cgs*solar_gravity/kB_cgs
+    clamp_low=.false.
+    if (present(clamp_low_T)) clamp_low=clamp_low_T
+
 
     do ih=1,nh
       if (h(ih)>h_table(n_table)) then
@@ -361,7 +372,11 @@ contains
 
       if (h(ih)<=h_table(1)) then
       ! below photosphere
-        Te(ih)=(h(ih)-h_table(1))*dTdh+T_table(1)
+        if (clamp_low) then
+          Te(ih)=T_table(1)
+        else
+          Te(ih)=(h(ih)-h_table(1))*dTdh+T_table(1)
+        endif
       endif
     enddo
 

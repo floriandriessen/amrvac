@@ -381,8 +381,7 @@ module mod_thermal_emission
   type te_fluid
 
     procedure (get_subr1), pointer, nopass :: get_rho => null()
-    procedure (get_subr1), pointer, nopass :: get_pthermal => null()
-    procedure (get_subr1), pointer, nopass :: get_var_Rfactor => null()
+    procedure (get_subr1), pointer, nopass :: get_temperature => null()
 
   end type te_fluid
 
@@ -540,7 +539,7 @@ module mod_thermal_emission
       integer :: n_table
       double precision, allocatable :: t_table(:),f_table(:)
       integer :: ix^D,iTt,i
-      double precision :: pth(ixI^S),Te(ixI^S),Ne(ixI^S)
+      double precision :: Te(ixI^S),Ne(ixI^S)
       double precision :: logT,logGT,GT
 
       ! selecting emission table 
@@ -622,10 +621,9 @@ module mod_thermal_emission
         allocate(f_table(1))
         call mpistop("Unknown wavelength")
       end select
-      call fl%get_pthermal(w,x,ixI^L,ixO^L,pth)
       call fl%get_rho(w,x,ixI^L,ixO^L,Ne)
-      call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Te)
-      Te(ixO^S)=pth(ixO^S)/(Ne(ixO^S)*Te(ixO^S))*unit_temperature
+      call fl%get_temperature(w,x,ixI^L,ixO^L,Te)
+      Te(ixO^S)=Te(ixO^S)*unit_temperature
       if (SI_unit) then
         Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
         flux(ixO^S)=Ne(ixO^S)**2
@@ -644,16 +642,21 @@ module mod_thermal_emission
             f_table(i)=-99.d0
           endif
         enddo 
-        logGT=zero
         {do ix^DB=ixOmin^DB,ixOmax^DB\}
+          logGT=zero
           logT=log10(Te(ix^D))
           if (logT>=t_table(1) .and. logT<=t_table(n_table)) then
-            do iTt=1,n_table-1
-              if (logT>=t_table(iTt) .and. logT<t_table(iTt+1)) then
-                logGT=f_table(iTt)*(logT-t_table(iTt+1))/(t_table(iTt)-t_table(iTt+1))+&
-                      f_table(iTt+1)*(logT-t_table(iTt))/(t_table(iTt+1)-t_table(iTt))
-              endif
-            enddo
+            if (logT>=t_table(n_table)) then
+              logGT=f_table(n_table)
+            else
+              do iTt=1,n_table-1
+                if (logT>=t_table(iTt) .and. logT<t_table(iTt+1)) then
+                  logGT=f_table(iTt)*(logT-t_table(iTt+1))/(t_table(iTt)-t_table(iTt+1))+&
+                        f_table(iTt+1)*(logT-t_table(iTt))/(t_table(iTt+1)-t_table(iTt))
+                  exit
+                endif
+              enddo
+            endif
             flux(ix^D)=flux(ix^D)*(10**(logGT))
             if(flux(ix^D)<smalldouble) flux(ix^D)=0.d0
           else
@@ -663,13 +666,19 @@ module mod_thermal_emission
       case default
       ! temperature table linear
         {do ix^DB=ixOmin^DB,ixOmax^DB\}
+          GT=zero
           if (Te(ix^D)>=t_table(1) .and. Te(ix^D)<=t_table(n_table)) then
-            do iTt=1,n_table-1
-              if (Te(ix^D)>=t_table(iTt) .and. Te(ix^D)<t_table(iTt+1)) then
-                GT=f_table(iTt)*(Te(ix^D)-t_table(iTt+1))/(t_table(iTt)-t_table(iTt+1))+&
-                   f_table(iTt+1)*(Te(ix^D)-t_table(iTt))/(t_table(iTt+1)-t_table(iTt))
-              endif
-            enddo
+            if (Te(ix^D)>=t_table(n_table)) then
+              GT=f_table(n_table)
+            else
+              do iTt=1,n_table-1
+                if (Te(ix^D)>=t_table(iTt) .and. Te(ix^D)<t_table(iTt+1)) then
+                  GT=f_table(iTt)*(Te(ix^D)-t_table(iTt+1))/(t_table(iTt)-t_table(iTt+1))+&
+                     f_table(iTt+1)*(Te(ix^D)-t_table(iTt))/(t_table(iTt+1)-t_table(iTt))
+                  exit
+                endif
+              enddo
+            endif
             flux(ix^D)=flux(ix^D)*GT
             if(flux(ix^D)<smalldouble) flux(ix^D)=0.d0
           else
@@ -698,7 +707,7 @@ module mod_thermal_emission
       integer :: ix^D,ixO^D
       integer :: iE,numE
       double precision :: I0,kb,keV,dE,Ei
-      double precision :: pth(ixI^S),Te(ixI^S),kbT(ixI^S)
+      double precision :: Te(ixI^S),kbT(ixI^S)
       double precision :: Ne(ixI^S),gff(ixI^S),fi(ixI^S)
       double precision :: EM(ixI^S)
 
@@ -707,10 +716,9 @@ module mod_thermal_emission
       keV=1.0d3*const_ev
       dE=0.1
       numE=floor((Eu-El)/dE)
-      call fl%get_pthermal(w,x,ixI^L,ixO^L,pth)
       call fl%get_rho(w,x,ixI^L,ixO^L,Ne)
-      call fl%get_var_Rfactor(w,x,ixI^L,ixO^L,Te)
-      Te(ixO^S)=pth(ixO^S)/(Ne(ixO^S)*Te(ixO^S))*unit_temperature
+      call fl%get_temperature(w,x,ixI^L,ixO^L,Te)
+      Te(ixO^S)=Te(ixO^S)*unit_temperature
       if (SI_unit) then
         Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
         EM(ixO^S)=(Ne(ixO^S))**2*1.d6 ! cm^-3 m^-3
@@ -745,7 +753,7 @@ module mod_thermal_emission
       double precision, intent(out) :: eflux
 
       double precision :: dxb^D,xb^L
-      integer :: iigrid,igrid,j
+      integer :: iigrid,igrid
       integer :: ixO^L,ixI^L,ix^D
       double precision :: eflux_grid,eflux_pe
 
@@ -775,9 +783,9 @@ module mod_thermal_emission
       double precision, intent(out) :: eflux_grid
 
       integer :: ix^D,ixO^D,ixb^L
-      integer :: iE,numE,j,inbox
+      integer :: iE,numE,inbox
       double precision :: I0,kb,keV,dE,Ei,El,Eu,A_cgs
-      double precision :: pth(ixI^S),Te(ixI^S),kbT(ixI^S)
+      double precision :: Te(ixI^S),kbT(ixI^S)
       double precision :: Ne(ixI^S),EM(ixI^S)
       double precision :: gff,fi,erg_SI
 
@@ -801,16 +809,17 @@ module mod_thermal_emission
         Eu=const_h*const_c/(1.d0*A_cgs)/keV ! 1 A
         dE=0.1  ! keV
         numE=floor((Eu-El)/dE)
-        call fl%get_pthermal(w,x,ixI^L,ixb^L,pth)
         call fl%get_rho(w,x,ixI^L,ixb^L,Ne)
-        call fl%get_var_Rfactor(w,x,ixI^L,ixb^L,Te)
-        Te(ixb^S)=pth(ixb^S)/(Ne(ixb^S)*Te(ixb^S))*unit_temperature
+        call fl%get_temperature(w,x,ixI^L,ixb^L,Te)
+        Te(ixb^S)=Te(ixb^S)*unit_temperature
         if (SI_unit) then
-          Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity/1.d6 ! m^-3 -> cm-3
-          EM(ixb^S)=(I0*(Ne(ixb^S))**2)*dV(ixb^S)*(unit_length*1.d2)**3 ! cm^-3
+          Ne(ixb^S)=Ne(ixb^S)*unit_numberdensity/1.d6
+          EM(ixb^S)=(I0*(Ne(ixb^S))**2)*dV(ixb^S) * &
+               (unit_length*1.d2)**3
         else
-          Ne(ixO^S)=Ne(ixO^S)*unit_numberdensity
-          EM(ixb^S)=(I0*(Ne(ixb^S))**2)*dV(ixb^S)*unit_length**3
+          Ne(ixb^S)=Ne(ixb^S)*unit_numberdensity
+          EM(ixb^S)=(I0*(Ne(ixb^S))**2)*dV(ixb^S) * &
+               unit_length**3
         endif
         kbT(ixb^S)=kb*Te(ixb^S)/keV
         eflux_grid=0.0d0
@@ -1101,7 +1110,7 @@ module mod_thermal_emission
 
       integer :: direction_LOS
       integer :: ixO^L,ixI^L,ix^D,ixOnew
-      double precision, allocatable :: flux(:^D&),v(:^D&),pth(:^D&),Te(:^D&),rho(:^D&)
+      double precision, allocatable :: flux(:^D&),v(:^D&),Te(:^D&),rho(:^D&)
       double precision :: wlc,wlwd
 
       integer :: mass
@@ -1126,7 +1135,7 @@ module mod_thermal_emission
       ^D&ixOmax^D=ixmhi^D\
       ^D&ixImin^D=ixglo^D\
       ^D&ixImax^D=ixghi^D\
-      allocate(flux(ixI^S),v(ixI^S),pth(ixI^S),Te(ixI^S),rho(ixI^S))
+      allocate(flux(ixI^S),v(ixI^S),Te(ixI^S),rho(ixI^S))
 
       ^D&ix^D=ixOmin^D;
       if (dir_loc==1) then
@@ -1162,9 +1171,7 @@ module mod_thermal_emission
       flux(ixO^S)=flux(ixO^S)/instrument_resolution_factor**2   ! adjust flux due to artifical change of resolution
       call fl%get_rho(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,rho)
       v(ixO^S)=-ps(igrid)%w(ixO^S,iw_mom(direction_LOS))/rho(ixO^S)
-      call fl%get_pthermal(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,pth)
-      call fl%get_var_Rfactor(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,Te)
-      Te(ixO^S)=pth(ixO^S)/(Te(ixO^S)*rho(ixO^S))
+      call fl%get_temperature(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,Te)
 
       ! grid parameters
       levelg=ps(igrid)%level
@@ -1212,7 +1219,7 @@ module mod_thermal_emission
         endif
       {enddo\}
 
-      deallocate(flux,v,pth,Te,rho)
+      deallocate(flux,v,Te,rho)
 
     end subroutine integrate_spectra_datresol
 
@@ -1382,7 +1389,7 @@ module mod_thermal_emission
       type(te_fluid), intent(in) :: fl
 
       integer :: ixO^L,ixI^L,ix^D,ixOnew,j
-      double precision, allocatable :: flux(:^D&),v(:^D&),pth(:^D&),Te(:^D&),rho(:^D&)
+      double precision, allocatable :: flux(:^D&),v(:^D&),Te(:^D&),rho(:^D&)
       double precision :: wlc,wlwd,res,dst_slit,xslit,arcsec
       double precision :: vloc(1:3),xloc(1:3),dxloc(1:3),xIloc(1:2),dxIloc(1:2)
       integer :: nSubC^D,iSubC^D,iwL,ixS,ixSmin,ixSmax,iwLmin,iwLmax,nwL
@@ -1412,14 +1419,12 @@ module mod_thermal_emission
       ^D&ixOmax^D=ixmhi^D\
       ^D&ixImin^D=ixglo^D\
       ^D&ixImax^D=ixghi^D\
-      allocate(flux(ixI^S),v(ixI^S),pth(ixI^S),Te(ixI^S),rho(ixI^S))
+      allocate(flux(ixI^S),v(ixI^S),Te(ixI^S),rho(ixI^S))
       ! get local EUV flux and velocity
       call get_EUV(spectrum_wl,ixI^L,ixO^L,ps(igrid)%w,ps(igrid)%x,fl,flux)
       flux(ixO^S)=flux(ixO^S)/instrument_resolution_factor**2   ! adjust flux due to artifical change of resolution
-      call fl%get_pthermal(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,pth)
       call fl%get_rho(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,rho)
-      call fl%get_var_Rfactor(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,Te)
-      Te(ixO^S)=pth(ixO^S)/(Te(ixO^S)*rho(ixO^S))
+      call fl%get_temperature(ps(igrid)%w,ps(igrid)%x,ixI^L,ixO^L,Te)
       {do ix^D=ixOmin^D,ixOmax^D\}
         do j=1,3
           vloc(j)=ps(igrid)%w(ix^D,iw_mom(j))/rho(ix^D)
@@ -1487,7 +1492,7 @@ module mod_thermal_emission
         endif
       {enddo\}
 
-      deallocate(flux,v,pth,Te)
+      deallocate(flux,v,Te)
     end subroutine integrate_spectra_cartesian
   }
 

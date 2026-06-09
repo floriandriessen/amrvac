@@ -64,9 +64,6 @@ module mod_ffhd_phys
   !> Index of the gas pressure (-1 if not present) should equal e_
   integer, public, protected              :: p_
 
-  !> Indices of temperature
-  integer, public, protected :: Te_
-
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
   integer, public, protected              :: Tweight_
@@ -183,7 +180,8 @@ contains
     use mod_gravity, only: gravity_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
-    use mod_ionization_degree
+    use mod_ionization_degree, only: ionization_degree_init,&
+        ionization_get_Rfactor_from_temperature
     use mod_usr_methods, only: usr_Rfactor
     integer :: itr, idir
 
@@ -276,13 +274,6 @@ contains
     ! set the index of the last flux variable for species 1
     stop_indices(1)=nwflux
 
-    !  set temperature as an auxiliary variable to get ionization degree
-    if(ffhd_partial_ionization) then
-      Te_ = var_set_auxvar('Te','Te')
-    else
-      Te_ = -1
-    end if
-
     ! set cutoff temperature when using the TRAC method, as well as an auxiliary weight
     Tweight_ = -1
     if(ffhd_trac) then
@@ -326,7 +317,7 @@ contains
     phys_handle_small_values => ffhd_handle_small_values_origin
     ffhd_handle_small_values => ffhd_handle_small_values_origin
     phys_check_w             => ffhd_check_w_origin
- 
+
     if(.not.ffhd_energy) then
       phys_get_pthermal      => ffhd_get_pthermal_iso
       ffhd_get_pthermal      => ffhd_get_pthermal_iso
@@ -337,19 +328,14 @@ contains
 
     ! choose Rfactor in ideal gas law
     if(ffhd_partial_ionization) then
-      ffhd_get_Rfactor=>Rfactor_from_temperature_ionization
-      phys_update_temperature => ffhd_update_temperature
+      ffhd_get_Rfactor => Rfactor_from_current_state_ionization
     else if(associated(usr_Rfactor)) then
       ffhd_get_Rfactor=>usr_Rfactor
     else
       ffhd_get_Rfactor=>Rfactor_from_constant_ionization
     end if
 
-    if(ffhd_partial_ionization) then
-      ffhd_get_temperature => ffhd_get_temperature_from_Te
-    else
-      ffhd_get_temperature => ffhd_get_temperature_from_etot
-    end if
+    ffhd_get_temperature => ffhd_get_temperature_from_etot
 
     ! derive units from basic units
     call ffhd_physical_units()
@@ -397,7 +383,11 @@ contains
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%get_rho => ffhd_get_rho
       rc_fl%get_pthermal => ffhd_get_pthermal
+      rc_fl%get_temperature => ffhd_get_temperature
       rc_fl%get_var_Rfactor => ffhd_get_Rfactor
+      if (ffhd_partial_ionization) then
+        rc_fl%get_Rfactor_from_temperature => ionization_get_Rfactor_from_temperature
+      end if
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
       rc_fl%has_equi = .false.
@@ -407,8 +397,7 @@ contains
 {^IFTHREED
     allocate(te_fl_ffhd)
     te_fl_ffhd%get_rho=> ffhd_get_rho
-    te_fl_ffhd%get_pthermal=> ffhd_get_pthermal
-    te_fl_ffhd%get_var_Rfactor => ffhd_get_Rfactor
+    te_fl_ffhd%get_temperature => ffhd_get_temperature
     phys_te_images => ffhd_te_images
 }
 
@@ -418,7 +407,11 @@ contains
     end if
 
     ! initialize ionization degree table
-    if(ffhd_partial_ionization) call ionization_degree_init()
+    if (ffhd_partial_ionization) then
+      call ionization_degree_init(He_abundance, &
+           1.d0 + H_ion_fr + He_abundance * &
+           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)))
+    end if
   end subroutine ffhd_phys_init
 
 {^IFTHREED
@@ -459,7 +452,7 @@ contains
     !and                        T=p/rho
     use mod_global_parameters
     use mod_thermal_conduction, only: get_tc_dt_mhd
- 
+
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: dx^D, x(ixI^S,1:ndim)
     double precision, intent(in) :: w(ixI^S,1:nw)
@@ -526,16 +519,16 @@ contains
     type(rc_fluid), intent(inout) :: fl
     integer                      :: n
     integer :: ncool = 4000
-  
+
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
-  
+
     !> Fixed temperature not lower than tlow
     logical    :: Tfix=.false.
-  
+
     !> Lower limit of temperature
     double precision   :: tlow=bigdouble
-  
+
     !> Add cooling source in a split way (.true.) or un-split way (.false.)
     logical    :: rc_split=.false.
     logical    :: rad_damp=.false.
@@ -862,9 +855,9 @@ contains
     double precision, intent(inout) :: cmax(ixI^S)
 
     if(ffhd_energy) then
-      cmax(ixO^S)=dsqrt(ffhd_gamma*wprim(ixO^S,p_)/wprim(ixO^S,rho_)) 
+      cmax(ixO^S)=dsqrt(ffhd_gamma*wprim(ixO^S,p_)/wprim(ixO^S,rho_))
     else
-      cmax(ixO^S)=dsqrt(ffhd_gamma*ffhd_adiab*wprim(ixO^S,rho_)**gamma_1) 
+      cmax(ixO^S)=dsqrt(ffhd_gamma*ffhd_adiab*wprim(ixO^S,rho_)**gamma_1)
     end if
     cmax(ixO^S)=dabs(wprim(ixO^S,mom(1))*block%B0(ixO^S,idim,0))+cmax(ixO^S)
 
@@ -993,7 +986,7 @@ contains
         lts(ix^D)=min(^D&block%ds({ix^D},^D))*lts(ix^D)
         lts(ix^D)=max(one,(exp(lts(ix^D))/ltrc)**ltrp)
      {end do\}
-  
+
       ! need one ghost layer for thermal conductivity
       ixP^L=ixO^L^LADD1;
      {do ix^DB=ixPmin^DB,ixPmax^DB\}
@@ -1055,7 +1048,7 @@ contains
       wmean(ixO^S,1:nwflux)=0.5d0*(wLC(ixO^S,1:nwflux)+wRC(ixO^S,1:nwflux))
       tmp1(ixO^S)=wmean(ixO^S,mom(1))*block%B0(ixO^S,idim,idim)/wmean(ixO^S,rho_)
       call ffhd_get_csound2(wmean,x,ixI^L,ixO^L,csoundR)
-      csoundR(ixO^S) = dsqrt(csoundR(ixO^S)) 
+      csoundR(ixO^S) = dsqrt(csoundR(ixO^S))
       if(present(cmin)) then
         cmax(ixO^S,1)=max(tmp1(ixO^S)+csoundR(ixO^S),zero)
         cmin(ixO^S,1)=min(tmp1(ixO^S)-csoundR(ixO^S),zero)
@@ -1127,15 +1120,22 @@ contains
     end if
   end subroutine ffhd_get_pthermal_origin
 
-  subroutine ffhd_get_temperature_from_Te(w, x, ixI^L, ixO^L, res)
+  subroutine Rfactor_from_current_state_ionization( &
+       w, x, ixI^L, ixO^L, Rfactor)
     use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
 
-    res(ixO^S) = w(ixO^S, Te_)
-  end subroutine ffhd_get_temperature_from_Te
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S,1:nw)
+    double precision, intent(in) :: x(ixI^S,1:ndim)
+    double precision, intent(out) :: Rfactor(ixI^S)
+
+    double precision :: rho(ixI^S), pth(ixI^S), T(ixI^S)
+
+    call ffhd_get_rho(w, x, ixI^L, ixO^L, rho)
+    call ffhd_get_pthermal(w, x, ixI^L, ixO^L, pth)
+    call ffhd_get_ionization_state_from_prho( &
+         ixI^L, ixO^L, rho, pth, T, Rfactor)
+  end subroutine Rfactor_from_current_state_ionization
 
   subroutine ffhd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
@@ -1143,11 +1143,28 @@ contains
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
-    double precision :: R(ixI^S)
+    double precision :: R(ixI^S), pth(ixI^S)
 
-    call ffhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+    if(ffhd_partial_ionization) then
+      pth(ixO^S) = gamma_1 * w(ixO^S, e_)
+      call ffhd_get_ionization_state_from_prho(ixI^L, ixO^L, &
+           w(ixI^S,rho_), pth, res, R)
+    else
+      call ffhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+    end if
   end subroutine ffhd_get_temperature_from_eint
+
+  subroutine ffhd_get_ionization_state_from_prho(ixI^L, ixO^L, rho, pth, T, Rfactor)
+    use mod_global_parameters
+    use mod_ionization_degree, only: ionization_get_state
+
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: rho(ixI^S), pth(ixI^S)
+    double precision, intent(out) :: T(ixI^S), Rfactor(ixI^S)
+
+    call ionization_get_state(ixI^L, ixO^L, rho, pth, T, Rfactor)
+  end subroutine ffhd_get_ionization_state_from_prho
 
   subroutine ffhd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
@@ -1155,12 +1172,17 @@ contains
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
+    double precision :: R(ixI^S), pth(ixI^S)
 
-    double precision :: R(ixI^S)
+    call ffhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
 
-    call ffhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    call ffhd_get_pthermal(w,x,ixI^L,ixO^L,res)
-    res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+    if(ffhd_partial_ionization) then
+      call ffhd_get_ionization_state_from_prho(ixI^L, ixO^L, &
+           w(ixI^S,rho_), pth, res, R)
+    else
+      call ffhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S)=pth(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+    end if
   end subroutine ffhd_get_temperature_from_etot
 
   subroutine ffhd_get_csound2(w,x,ixI^L,ixO^L,csound2)
@@ -1170,7 +1192,7 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(out)   :: csound2(ixI^S)
     double precision    :: rho(ixI^S)
-    
+
     call ffhd_get_rho(w,x,ixI^L,ixO^L,rho)
     if(ffhd_energy) then
       call ffhd_get_pthermal(w,x,ixI^L,ixO^L,csound2)
@@ -1242,13 +1264,6 @@ contains
            w,x,ffhd_energy,qsourcesplit,active)
     end if
 
-    ! update temperature from new pressure, density, and old ionization degree
-    if(ffhd_partial_ionization) then
-      if(.not.qsourcesplit) then
-        active = .true.
-        call ffhd_update_temperature(ixI^L,ixO^L,wCT,w,x)
-      end if
-    end if
   end subroutine ffhd_add_source
 
   subroutine add_punitb(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
@@ -1313,20 +1328,6 @@ contains
     end if
   end subroutine ffhd_handle_small_ei
 
-  subroutine ffhd_update_temperature(ixI^L,ixO^L,wCT,w,x)
-    use mod_global_parameters
-    use mod_ionization_degree
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: w(ixI^S,1:nw)
-    double precision :: iz_H(ixO^S),iz_He(ixO^S), pth(ixI^S)
-
-    call ionization_degree_from_temperature(ixI^L,ixO^L,wCT(ixI^S,Te_),iz_H,iz_He)
-    call ffhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
-    w(ixO^S,Te_)=(2.d0+3.d0*He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
-      He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
-  end subroutine ffhd_update_temperature
-
   subroutine ffhd_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
     use mod_usr_methods
@@ -1367,19 +1368,6 @@ contains
     end if
   end function ffhd_kin_en_origin
 
-  subroutine Rfactor_from_temperature_ionization(w,x,ixI^L,ixO^L,Rfactor)
-    use mod_global_parameters
-    use mod_ionization_degree
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,1:nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: Rfactor(ixI^S)
-    double precision :: iz_H(ixO^S),iz_He(ixO^S)
-
-    call ionization_degree_from_temperature(ixI^L,ixO^L,w(ixI^S,Te_),iz_H,iz_He)
-    Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/(2.d0+3.d0*He_abundance)
-  end subroutine Rfactor_from_temperature_ionization
-
   subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
@@ -1392,7 +1380,6 @@ contains
 
   subroutine add_hyperbolic_tc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
-
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: qdt
     double precision, dimension(ixI^S,1:ndim), intent(in) :: x
@@ -1403,7 +1390,7 @@ contains
     double precision :: sigma_T5,sigma_T7,sigmaT5_bgradT,f_sat,tau
     integer :: ix^D
 
-    Te(ixI^S)=wCTprim(ixI^S,p_)/wCT(ixI^S,rho_)
+    call ffhd_get_temperature(wCT, x, ixI^L, ixI^L, Te)
     ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
     ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
    {^IFTWOD

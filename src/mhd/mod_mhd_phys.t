@@ -82,8 +82,6 @@ module mod_mhd_phys
   integer, public, protected :: psi_
   !> Index of the radiation energy
   integer, public, protected :: r_e
-  !> Indices of temperature
-  integer, public, protected :: Te_
   !> Index of the FIP passive scalar rho*fip in conserved form, fip in primitive form
   integer, public, protected :: fip_ = -1
   !> Whether FIP passive scalar is enabled
@@ -131,6 +129,13 @@ module mod_mhd_phys
   double precision, public, protected     :: mhd_hyperbolic_tc_kappa_perp_factor = 0.d0
   !> Field-strength transition scale for perpendicular closure
   double precision, public, protected     :: mhd_hyperbolic_tc_Bmin = 0.d0
+  !> Optional fourth-order hyperdiffusion coefficient for qpar_, per full timestep
+  !> Hyperbolic-TC relaxation cmax selection:
+  !> .false. = local: use local maxval(cmax(:)); default, unchanged behavior
+  !> .true.  = global: use existing cmax_global
+  logical, public, protected              :: mhd_hyperbolic_tc_use_global_cmax = .false.
+  double precision, public, protected     :: mhd_hyperbolic_tc_q_hypdiff_eps = 0.d0
+  double precision, public, protected     :: mhd_hyperbolic_tc_cmax_floor = 0.25d0
   !> Whether viscosity is added
   logical, public, protected              :: mhd_viscosity = .false.
   !> Whether gravity is added
@@ -295,6 +300,7 @@ contains
       mhd_hyperbolic_tc, mhd_hyperbolic_tc_sat, mhd_hyperbolic_tc_kappa, &
       mhd_hyperbolic_tc_use_perp, mhd_hyperbolic_tc_perp_mode, &
       mhd_hyperbolic_tc_kappa_perp_factor, mhd_hyperbolic_tc_Bmin, &
+      mhd_hyperbolic_tc_q_hypdiff_eps, mhd_hyperbolic_tc_use_global_cmax, &
       mhd_radiation_fld, mhd_fip
 
     do n = 1, size(files)
@@ -335,7 +341,8 @@ contains
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_cak_force, only: cak_init
-    use mod_ionization_degree
+    use mod_ionization_degree, only: ionization_degree_init,&
+            ionization_get_Rfactor_from_temperature
     use mod_geometry
     use mod_usr_methods, only: usr_Rfactor
     {^NOONED
@@ -404,6 +411,9 @@ contains
       if(mhd_hyperbolic_tc) then
         mhd_hyperbolic_tc=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_hyperbolic_tc=F when mhd_energy=F'
+      end if
+      if(mhd_hyperbolic_tc_q_hypdiff_eps > 0.d0 .and. coordinate /= Cartesian) then
+        call mpistop("mhd_hyperbolic_tc_q_hypdiff_eps is only supported for Cartesian geometry")
       end if
       if(mhd_radiative_cooling) then
         mhd_radiative_cooling=.false.
@@ -565,7 +575,7 @@ contains
       else
         qperp_ = -1
       end if
-      need_global_cmax=.true.
+      if(mhd_hyperbolic_tc_use_global_cmax) need_global_cmax=.true.
     else
       qpar_ = -1
       qperp_ = -1
@@ -617,13 +627,6 @@ contains
     else
       r_e=-1
     endif
-
-    !  set temperature as an auxiliary variable to get ionization degree
-    if(mhd_partial_ionization) then
-      Te_ = var_set_auxvar('Te','Te')
-    else
-      Te_ = -1
-    end if
 
     ! set number of variables which need update ghostcells
     nwgc=nwflux+nwaux
@@ -833,8 +836,7 @@ contains
 
     ! choose Rfactor in ideal gas law
     if(mhd_partial_ionization) then
-      mhd_get_Rfactor=>Rfactor_from_temperature_ionization
-      phys_update_temperature => mhd_update_temperature
+      mhd_get_Rfactor => Rfactor_from_current_state_ionization
     else if(associated(usr_Rfactor)) then
       mhd_get_Rfactor=>usr_Rfactor
     else
@@ -843,18 +845,14 @@ contains
 
     phys_get_Rfactor=>mhd_get_Rfactor
 
-    if(mhd_partial_ionization) then
-      mhd_get_temperature => mhd_get_temperature_from_Te
-    else
-      if(mhd_internal_e) then
-        if(has_equi_rho_and_p) then
-          mhd_get_temperature => mhd_get_temperature_from_eint_with_equi
-        else
-          mhd_get_temperature => mhd_get_temperature_from_eint
-        end if
+    if(mhd_internal_e) then
+      if(has_equi_rho_and_p) then
+        mhd_get_temperature => mhd_get_temperature_from_eint_with_equi
       else
-        mhd_get_temperature => mhd_get_temperature_from_etot
+        mhd_get_temperature => mhd_get_temperature_from_eint
       end if
+    else
+      mhd_get_temperature => mhd_get_temperature_from_etot
     end if
 
     ! if using ct stagger grid, boundary divb=0 is not done here
@@ -1001,7 +999,11 @@ contains
       call radiative_cooling_init(rc_fl,rc_params_read)
       rc_fl%get_rho => mhd_get_rho
       rc_fl%get_pthermal => mhd_get_pthermal
+      rc_fl%get_temperature => mhd_get_temperature
       rc_fl%get_var_Rfactor => mhd_get_Rfactor
+      if (mhd_partial_ionization) then
+        rc_fl%get_Rfactor_from_temperature => ionization_get_Rfactor_from_temperature
+      end if
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
       rc_fl%has_equi = has_equi_rho_and_p
@@ -1018,9 +1020,8 @@ contains
 {^IFTHREED
     ! for thermal emission images
     allocate(te_fl_mhd)
-    te_fl_mhd%get_rho=> mhd_get_rho
-    te_fl_mhd%get_pthermal=> mhd_get_pthermal
-    te_fl_mhd%get_var_Rfactor => mhd_get_Rfactor
+    te_fl_mhd%get_rho => mhd_get_rho
+    te_fl_mhd%get_temperature => mhd_get_temperature
     phys_te_images => mhd_te_images
 }
 
@@ -1097,7 +1098,11 @@ contains
     end if
 
     ! initialize ionization degree table
-    if(mhd_partial_ionization) call ionization_degree_init()
+    if (mhd_partial_ionization) then
+      call ionization_degree_init(He_abundance, &
+           1.d0 + H_ion_fr + He_abundance * &
+           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)))
+    end if
 
     ! Initialize CAK radiation force module
     if (mhd_cak_force) then
@@ -1268,6 +1273,7 @@ contains
     logical :: Tfix=.false.
     !> Add cooling source in a split way (.true.) or un-split way (.false.)
     logical :: rc_split=.false.
+    logical :: rc_is_1d_loop = .false.
     logical :: rad_damp=.false.
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
@@ -1278,7 +1284,7 @@ contains
 
     namelist /rc_list/ coolcurve, ncool, tlow, Tfix, rc_split, &
                        rad_newton, rad_newton_trad, rad_newton_rhosurf, &
-                       rad_newton_pthick, rad_damp, rad_damp_height, rad_damp_scale
+                       rad_newton_pthick, rad_damp, rad_damp_height, rad_damp_scale, rc_is_1d_loop
 
     do n = 1, size(par_files)
       open(unitpar, file=trim(par_files(n)), status="old")
@@ -1291,6 +1297,7 @@ contains
     fl%tlow=tlow
     fl%Tfix=Tfix
     fl%rc_split=rc_split
+    fl%rc_is_1d_loop = rc_is_1d_loop
     fl%rad_damp=rad_damp
     fl%rad_damp_height=rad_damp_height
     fl%rad_damp_scale=rad_damp_scale
@@ -3093,12 +3100,7 @@ contains
     integer :: idims,ix^D,jxO^L,hxO^L,ixA^D,ixB^D
     integer :: jxP^L,hxP^L,ixP^L,ixQ^L
 
-    if(mhd_partial_ionization) then
-      call mhd_get_temperature_from_Te(w,x,ixI^L,ixI^L,Te)
-    else
-      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,Te)
-      Te(ixI^S)=w(ixI^S,p_)/(Te(ixI^S)*w(ixI^S,rho_))
-    end if
+    call mhd_get_temperature_from_prim(w,x,ixI^L,ixI^L,Te)
     Tco_local=zero
     Tmax_local=maxval(Te(ixO^S))
 
@@ -4165,17 +4167,7 @@ contains
 
   end subroutine mhd_get_pthermal_hde
 
-  !> copy temperature from stored Te variable
-  subroutine mhd_get_temperature_from_Te(w, x, ixI^L, ixO^L, res)
-    use mod_global_parameters
-    integer, intent(in)          :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S, 1:nw)
-    double precision, intent(in) :: x(ixI^S, 1:ndim)
-    double precision, intent(out):: res(ixI^S)
-    res(ixO^S) = w(ixO^S, Te_)
-  end subroutine mhd_get_temperature_from_Te
-
-  !> Calculate temperature=p/rho when in e_ the internal energy is stored
+  !> recover temperature from rho and pthermal using active EOS
   subroutine mhd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
     integer, intent(in)          :: ixI^L, ixO^L
@@ -4183,13 +4175,18 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S)
+    double precision :: R(ixI^S), pth(ixI^S)
 
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+    if(mhd_partial_ionization) then
+      pth(ixO^S) = gamma_1 * w(ixO^S, e_)
+      call mhd_get_ionization_state_from_prho(ixI^L, ixO^L, w(ixI^S,rho_), &
+           pth, res, R)
+    else
+      call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
+    end if
   end subroutine mhd_get_temperature_from_eint
 
-  !> Calculate temperature=p/rho when in e_ the pressure p_ (primitive) is stored
   subroutine mhd_get_temperature_from_prim(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
     integer, intent(in)          :: ixI^L, ixO^L
@@ -4199,11 +4196,15 @@ contains
 
     double precision :: R(ixI^S)
 
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S) =  w(ixO^S, p_)/(w(ixO^S,rho_)*R(ixO^S))
+    if(mhd_partial_ionization) then
+      call mhd_get_ionization_state_from_prho(ixI^L, ixO^L, w(ixI^S,rho_), &
+           w(ixI^S,p_), res, R)
+    else
+      call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S) =  w(ixO^S, p_)/(w(ixO^S,rho_)*R(ixO^S))
+    end if
   end subroutine mhd_get_temperature_from_prim
 
-  !> Calculate temperature=p/rho from total energy 
   subroutine mhd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
     integer, intent(in)          :: ixI^L, ixO^L
@@ -4213,11 +4214,15 @@ contains
 
     double precision :: R(ixI^S),rho(ixI^S),pth(ixI^S)
 
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
     call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
     call mhd_get_rho(w,x,ixI^L,ixO^L,rho)
-    res(ixO^S)=pth(ixO^S)/(R(ixO^S)*rho(ixO^S))
 
+    if(mhd_partial_ionization) then
+      call mhd_get_ionization_state_from_prho(ixI^L, ixO^L, rho, pth, res, R)
+    else
+      call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S)=pth(ixO^S)/(R(ixO^S)*rho(ixO^S))
+    end if
   end subroutine mhd_get_temperature_from_etot
 
   subroutine mhd_get_temperature_from_eint_with_equi(w, x, ixI^L, ixO^L, res)
@@ -4227,12 +4232,17 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S)
+    double precision :: R(ixI^S), rho(ixI^S), pth(ixI^S)
 
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S) = (gamma_1 * w(ixO^S, e_) + block%equi_vars(ixO^S,equi_pe0_,b0i)) /&
-                ((w(ixO^S,rho_) +block%equi_vars(ixO^S,equi_rho0_,b0i))*R(ixO^S))
-
+    if(mhd_partial_ionization) then
+      rho(ixO^S) = w(ixO^S,rho_) + block%equi_vars(ixO^S,equi_rho0_,b0i)
+      pth(ixO^S) = gamma_1 * w(ixO^S,e_) + block%equi_vars(ixO^S,equi_pe0_,b0i)
+      call mhd_get_ionization_state_from_prho(ixI^L, ixO^L, rho, pth, res, R)
+    else
+      call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S) = (gamma_1 * w(ixO^S, e_) + block%equi_vars(ixO^S,equi_pe0_,b0i)) /&
+                  ((w(ixO^S,rho_) +block%equi_vars(ixO^S,equi_rho0_,b0i))*R(ixO^S))
+    end if
   end subroutine mhd_get_temperature_from_eint_with_equi
 
   subroutine mhd_get_temperature_equi(w,x, ixI^L, ixO^L, res)
@@ -4242,12 +4252,16 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
 
-    double precision :: R(ixI^S)
+    double precision :: R(ixI^S), rho(ixI^S), pth(ixI^S)
 
-    !!! somewhat inconsistent: R from w itself, while only equilibrium needed !!!
-    call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-    res(ixO^S)= block%equi_vars(ixO^S,equi_pe0_,b0i)/(block%equi_vars(ixO^S,equi_rho0_,b0i)*R(ixO^S))
-
+    if(mhd_partial_ionization) then
+      rho(ixO^S) = block%equi_vars(ixO^S,equi_rho0_,b0i)
+      pth(ixO^S) = block%equi_vars(ixO^S,equi_pe0_,b0i)
+      call mhd_get_ionization_state_from_prho(ixI^L, ixO^L, rho, pth, res, R)
+    else
+      call mhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+      res(ixO^S)= block%equi_vars(ixO^S,equi_pe0_,b0i)/(block%equi_vars(ixO^S,equi_rho0_,b0i)*R(ixO^S))
+    end if
   end subroutine mhd_get_temperature_equi
 
   subroutine mhd_get_rho_equi(w, x, ixI^L, ixO^L, res)
@@ -4332,7 +4346,7 @@ contains
 
     double precision             :: vHall(ixI^S,1:ndir)
     double precision             :: ptotal
-    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: rho_loc(ixI^S),Te(ixI^S)
     double precision             :: Bvec(ixI^S,1:ndir)
     double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
     double precision             :: nperp(ixI^S,1:ndir)
@@ -4408,9 +4422,7 @@ contains
 
     use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
     if(use_perp_flux) then
-      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
-      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
-      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      call mhd_get_temperature_from_prim(w,x,ixI^L,ixI^L,Te)
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
         do idir=1,ndir
           Bvec(ix^D,idir)=w(ix^D,mag(idir))
@@ -4509,7 +4521,7 @@ contains
     double precision,intent(out) :: f(ixI^S,nwflux)
 
     double precision             :: vHall(ixI^S,1:ndir)
-    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: rho_loc(ixI^S),Te(ixI^S)
     double precision             :: Bvec(ixI^S,1:ndir)
     double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
     double precision             :: nperp(ixI^S,1:ndir)
@@ -4553,9 +4565,7 @@ contains
     end do
     use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
     if(use_perp_flux) then
-      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
-      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
-      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      call mhd_get_temperature_from_prim(w,x,ixI^L,ixI^L,Te)
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
         do idir=1,ndir
           Bvec(ix^D,idir)=w(ix^D,mag(idir))
@@ -4594,7 +4604,7 @@ contains
 
     double precision             :: vHall(ixI^S,1:ndir)
     double precision             :: ptotal, Btotal(ixO^S,1:ndir)
-    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S), pth_loc(ixI^S)
     double precision             :: Bvec(ixI^S,1:ndir)
     double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
     double precision             :: nperp(ixI^S,1:ndir)
@@ -4677,8 +4687,17 @@ contains
     use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
     if(use_perp_flux) then
       call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
-      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
-      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      if (mhd_partial_ionization) then
+        if (has_equi_rho_and_p) then
+          pth_loc(ixI^S) = w(ixI^S,p_) + block%equi_vars(ixI^S,equi_pe0_,b0i)
+        else
+          pth_loc(ixI^S) = w(ixI^S,p_)
+        end if
+        call mhd_get_ionization_state_from_prho(ixI^L,ixI^L,rho_loc,pth_loc,Te,R)
+      else
+        call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
+        Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      end if
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
         do idir=1,ndir
           Bvec(ix^D,idir)=Btotal(ix^D,idir)
@@ -4711,7 +4730,7 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision,intent(out) :: f(ixI^S,nwflux)
     double precision             :: SA(ixO^S,1:ndir),E(ixO^S,1:ndir),e2
-    double precision             :: R(ixI^S), Te(ixI^S), rho_loc(ixI^S)
+    double precision             :: rho_loc(ixI^S),Te(ixI^S)
     double precision             :: Bvec(ixI^S,1:ndir)
     double precision             :: bgradT(ixI^S), gradTperp_mag(ixI^S)
     double precision             :: nperp(ixI^S,1:ndir)
@@ -4787,9 +4806,7 @@ contains
     end do
     use_perp_flux = mhd_hyperbolic_tc .and. mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
     if(use_perp_flux) then
-      call mhd_get_rho(w,x,ixI^L,ixI^L,rho_loc)
-      call mhd_get_Rfactor(w,x,ixI^L,ixI^L,R)
-      Te(ixI^S)=w(ixI^S,p_)/(R(ixI^S)*rho_loc(ixI^S))
+      call mhd_get_temperature_from_prim(w,x,ixI^L,ixI^L,Te)
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
         do idir=1,ndir
           Bvec(ix^D,idir)=w(ix^D,mag(idir))
@@ -5401,15 +5418,6 @@ contains
     if (mhd_radiation_fld) then
        call mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     endif
-
-    ! update temperature from new pressure, density, and old ionization degree
-    if(mhd_partial_ionization) then
-      if(.not.qsourcesplit) then
-        active = .true.
-        call mhd_update_temperature(ixI^L,ixO^L,wCT,w,x)
-      end if
-    end if
-
   end subroutine mhd_add_source
 
   subroutine mhd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
@@ -5502,6 +5510,73 @@ contains
       endif
     endif
   end subroutine add_equi_terms
+
+  subroutine add_hyperbolic_tc_q_hypdiff(qdt,ixI^L,ixO^L,wCT,w)
+    use mod_global_parameters
+    integer, intent(in) :: ixI^L,ixO^L
+    double precision, intent(in) :: qdt
+    double precision, intent(in) :: wCT(ixI^S,1:nw)
+    double precision, intent(inout) :: w(ixI^S,1:nw)
+
+    double precision :: qold(ixI^S)
+    double precision :: eps_stage, delta4
+    integer :: ix^D
+    integer :: ixH^L
+
+    if(mhd_hyperbolic_tc_q_hypdiff_eps <= zero) return
+    if(dt > zero) then
+      eps_stage = mhd_hyperbolic_tc_q_hypdiff_eps*qdt/dt
+    else
+      eps_stage = zero
+    end if
+    if(eps_stage <= zero) return
+
+    ixH^L=ixO^L;
+    {^D&ixHmin^D=max(ixOmin^D,ixImin^D+2);
+        ixHmax^D=min(ixOmax^D,ixImax^D-2);\}
+
+    if(ixHmin1 > ixHmax1) return
+    {^NOONED
+    if(ixHmin2 > ixHmax2) return
+    }
+    {^IFTHREED
+    if(ixHmin3 > ixHmax3) return
+    }
+    qold(ixI^S)=wCT(ixI^S,qpar_)
+    {^IFONED
+     do ix1=ixHmin1,ixHmax1
+       delta4 = qold(ix1+2)-4.d0*qold(ix1+1)+6.d0*qold(ix1) &
+               -4.d0*qold(ix1-1)+qold(ix1-2)
+       w(ix1,qpar_)=w(ix1,qpar_)-eps_stage*delta4
+     end do
+    }
+    {^IFTWOD
+     do ix2=ixHmin2,ixHmax2
+       do ix1=ixHmin1,ixHmax1
+         delta4 = qold(ix1+2,ix2)-4.d0*qold(ix1+1,ix2)+6.d0*qold(ix1,ix2) &
+                 -4.d0*qold(ix1-1,ix2)+qold(ix1-2,ix2) &
+                 +qold(ix1,ix2+2)-4.d0*qold(ix1,ix2+1)+6.d0*qold(ix1,ix2) &
+                 -4.d0*qold(ix1,ix2-1)+qold(ix1,ix2-2)
+         w(ix^D,qpar_)=w(ix^D,qpar_)-eps_stage*delta4
+       end do
+     end do
+    }
+    {^IFTHREED
+     do ix3=ixHmin3,ixHmax3
+       do ix2=ixHmin2,ixHmax2
+         do ix1=ixHmin1,ixHmax1
+           delta4 = qold(ix1+2,ix2,ix3)-4.d0*qold(ix1+1,ix2,ix3)+6.d0*qold(ix1,ix2,ix3) &
+                   -4.d0*qold(ix1-1,ix2,ix3)+qold(ix1-2,ix2,ix3) &
+                   +qold(ix1,ix2+2,ix3)-4.d0*qold(ix1,ix2+1,ix3)+6.d0*qold(ix1,ix2,ix3) &
+                   -4.d0*qold(ix1,ix2-1,ix3)+qold(ix1,ix2-2,ix3) &
+                   +qold(ix1,ix2,ix3+2)-4.d0*qold(ix1,ix2,ix3+1)+6.d0*qold(ix1,ix2,ix3) &
+                   -4.d0*qold(ix1,ix2,ix3-1)+qold(ix1,ix2,ix3-2)
+           w(ix^D,qpar_)=w(ix^D,qpar_)-eps_stage*delta4
+         end do
+       end do
+     end do
+    }
+  end subroutine add_hyperbolic_tc_q_hypdiff
 
   subroutine mhd_get_hyperbolic_tc_geometry(ixI^L,ixO^L,Te,Bvec,bgradT,gradTperp_mag,nperp)
     use mod_global_parameters
@@ -5650,12 +5725,13 @@ contains
     double precision :: kappa_T7,f_sat,kappaT5_bgradT,kappaT5_gradTperp,tau,B2,fB,gradT1
     double precision :: Bmag_loc,Tloc,Tcond,nloc_code,Cchi,chi
     double precision :: cmax(ndim),c2,cfast2,avMinCs2(ndim),inv_rho
+    double precision :: c_eff
     logical :: use_perp_source
     integer :: ix^D,idir
 
     Cchi = 0.823d0*(xe_prefac_cgs/lnLambda_perp) * &
            unit_magneticfield*unit_temperature**1.5d0/unit_numberdensity
-    call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
+
     {do ix^DB=ixImin^DB,ixImax^DB\}
       if(has_equi_rho_and_p) then
         rho_loc(ix^D)=wCTprim(ix^D,rho_)+block%equi_vars(ix^D,equi_rho0_,0)
@@ -5664,8 +5740,15 @@ contains
         rho_loc(ix^D)=wCTprim(ix^D,rho_)
         pth_loc(ix^D)=wCTprim(ix^D,p_)
       end if
-      Te(ix^D)=pth_loc(ix^D)/(R(ix^D)*rho_loc(ix^D))
     {end do\}
+
+    if (mhd_partial_ionization) then
+      call mhd_get_ionization_state_from_prho(ixI^L,ixI^L,rho_loc,pth_loc,Te,R)
+    else
+      call mhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
+      Te(ixI^S)=pth_loc(ixI^S)/(R(ixI^S)*rho_loc(ixI^S))
+    end if
+
     use_perp_source = mhd_hyperbolic_tc_use_perp .and. mhd_hyperbolic_tc_perp_mode > 0
     if(B0field) then
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -5715,18 +5798,22 @@ contains
         bgradT(ix1)=zero
       end if
       kappaT5_bgradT=kappa_T5*bgradT(ix1)
-      inv_rho=1.d0/rho_loc(ix1)
-      c2=mhd_gamma*pth_loc(ix1)*inv_rho
-      cfast2 = B2*inv_rho + c2
-      avMinCs2(1) = cfast2**2 - 4.0d0*c2*Bvec(ix1,1)**2*inv_rho
-      cmax(1) = sqrt(half*(cfast2 + sqrt(dabs(avMinCs2(1)))))
+      if(mhd_hyperbolic_tc_use_global_cmax) then
+        c_eff = cmax_global
+      else
+        inv_rho=1.d0/rho_loc(ix1)
+        c2=mhd_gamma*pth_loc(ix1)*inv_rho
+        cfast2 = B2*inv_rho + c2
+        avMinCs2(1) = cfast2**2 - 4.0d0*c2*Bvec(ix1,1)**2*inv_rho
+        c_eff = sqrt(half*(cfast2 + sqrt(dabs(avMinCs2(1)))))
+      end if
       if(mhd_hyperbolic_tc_sat) then
         f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-        tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax(1)**2))
+        tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*c_eff**2))
         w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
       else
-        w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/&
-         max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*cmax(1)**2))
+        tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*c_eff**2))
+        w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/tau
       end if
     end do
    }
@@ -5773,22 +5860,27 @@ contains
           end select
           kappaT5_gradTperp=kappa_T5_perp*gradTperp_mag(ix^D)
         end if
-        inv_rho=1.d0/rho_loc(ix^D)
-        c2=mhd_gamma*pth_loc(ix^D)*inv_rho
-        cfast2 = B2*inv_rho + c2
-        do idir=1,ndim
-          avMinCs2(idir)=cfast2**2-4.0d0*c2*Bvec(ix^D,idir)**2*inv_rho
-          cmax(idir)=sqrt(half*(cfast2+sqrt(dabs(avMinCs2(idir)))))\
-        end do
+        if(mhd_hyperbolic_tc_use_global_cmax) then
+          c_eff = cmax_global
+        else
+          inv_rho=1.d0/rho_loc(ix^D)
+          c2=mhd_gamma*pth_loc(ix^D)*inv_rho
+          cfast2 = B2*inv_rho + c2
+          do idir=1,ndim
+            avMinCs2(idir)=cfast2**2-4.0d0*c2*Bvec(ix^D,idir)**2*inv_rho
+            cmax(idir)=sqrt(half*(cfast2+sqrt(dabs(avMinCs2(idir)))))\
+          end do
+          c_eff = maxval(cmax(:))
+        end if
         if(mhd_hyperbolic_tc_sat) then
           f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-          tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+          tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*c_eff**2))
           w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
           if(use_perp_source) then
             w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(f_sat*kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
           end if
         else
-          tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+          tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*c_eff**2))
           w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/tau
           if(use_perp_source) then
             w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
@@ -5841,22 +5933,27 @@ contains
             end select
             kappaT5_gradTperp=kappa_T5_perp*gradTperp_mag(ix^D)
           end if
-          inv_rho=1.d0/rho_loc(ix^D)
-          c2=mhd_gamma*pth_loc(ix^D)*inv_rho
-          cfast2 = B2*inv_rho + c2
-          do idir = 1, ndim
-            avMinCs2(idir)=cfast2**2-4.0d0*c2*Bvec(ix^D,idir)**2*inv_rho
-            cmax(idir)=sqrt(half*(cfast2+sqrt(dabs(avMinCs2(idir)))))\
-          end do
+          if(mhd_hyperbolic_tc_use_global_cmax) then
+            c_eff = cmax_global
+          else
+            inv_rho=1.d0/rho_loc(ix^D)
+            c2=mhd_gamma*pth_loc(ix^D)*inv_rho
+            cfast2 = B2*inv_rho + c2
+            do idir=1,ndim
+              avMinCs2(idir)=cfast2**2-4.0d0*c2*Bvec(ix^D,idir)**2*inv_rho
+              cmax(idir)=sqrt(half*(cfast2+sqrt(dabs(avMinCs2(idir)))))\
+            end do
+            c_eff = maxval(cmax(:))
+          end if
           if(mhd_hyperbolic_tc_sat) then
             f_sat=one/(one+dabs(kappaT5_bgradT)/(1.5d0*rho_loc(ix^D)*(pth_loc(ix^D)/rho_loc(ix^D))**1.5d0))
-            tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+            tau=max(4.d0*dt, f_sat*kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*c_eff**2))
             w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(f_sat*kappaT5_bgradT+wCT(ix^D,qpar_))/tau
             if(use_perp_source) then
               w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(f_sat*kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
             end if
           else
-            tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*maxval(cmax(:))**2))
+            tau=max(4.d0*dt, kappa_T7*courantpar**2/(pth_loc(ix^D)*inv_gamma_1*c_eff**2))
             w(ix^D,qpar_)=w(ix^D,qpar_)-qdt*(kappaT5_bgradT+wCT(ix^D,qpar_))/tau
             if(use_perp_source) then
               w(ix^D,qperp_)=w(ix^D,qperp_)-qdt*(kappaT5_gradTperp+wCT(ix^D,qperp_))/tau
@@ -5866,6 +5963,7 @@ contains
       end do
     end do
    }
+    call add_hyperbolic_tc_q_hypdiff(qdt,ixI^L,ixO^L,wCT,w)
   end subroutine add_hyperbolic_tc_source
 
   !> Compute the Lorentz force (JxB) Note: Unused subroutine
@@ -5959,25 +6057,6 @@ contains
     end if
 
   end subroutine mhd_handle_small_ei
-
-  subroutine mhd_update_temperature(ixI^L,ixO^L,wCT,w,x)
-    use mod_global_parameters
-    use mod_ionization_degree
-
-    integer, intent(in)             :: ixI^L, ixO^L
-    double precision, intent(in)    :: wCT(ixI^S,1:nw), x(ixI^S,1:ndim)
-    double precision, intent(inout) :: w(ixI^S,1:nw)
-
-    double precision :: iz_H(ixO^S),iz_He(ixO^S), pth(ixI^S)
-
-    call ionization_degree_from_temperature(ixI^L,ixO^L,wCT(ixI^S,Te_),iz_H,iz_He)
-
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
-
-    w(ixO^S,Te_)=(2.d0+3.d0*He_abundance)*pth(ixO^S)/(w(ixO^S,rho_)*(1.d0+iz_H(ixO^S)+&
-     He_abundance*(iz_He(ixO^S)*(iz_He(ixO^S)+1.d0)+1.d0)))
-
-  end subroutine mhd_update_temperature
 
   !> Source terms after split off time-independent magnetic field
   subroutine add_source_B0split(qdt,dtfactor,ixI^L,ixO^L,wCT,w,x,wCTprim)
@@ -8789,21 +8868,26 @@ contains
 
   end subroutine b_from_vector_potential
 
-  subroutine Rfactor_from_temperature_ionization(w,x,ixI^L,ixO^L,Rfactor)
+  subroutine Rfactor_from_current_state_ionization( &
+       w, x, ixI^L, ixO^L, Rfactor)
     use mod_global_parameters
-    use mod_ionization_degree
+
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out):: Rfactor(ixI^S)
+    double precision, intent(out) :: Rfactor(ixI^S)
 
-    double precision :: iz_H(ixO^S),iz_He(ixO^S)
+    double precision :: rho(ixI^S), pth(ixI^S), T(ixI^S)
 
-    call ionization_degree_from_temperature(ixI^L,ixO^L,w(ixI^S,Te_),iz_H,iz_He)
-    ! assume the first and second ionization of Helium have the same degree
-    Rfactor(ixO^S)=(1.d0+iz_H(ixO^S)+0.1d0*(1.d0+iz_He(ixO^S)*(1.d0+iz_He(ixO^S))))/(2.d0+3.d0*He_abundance)
-
-  end subroutine Rfactor_from_temperature_ionization
+    call mhd_get_rho(w, x, ixI^L, ixO^L, rho)
+    call mhd_get_pthermal(w, x, ixI^L, ixO^L, pth)
+    if(mhd_internal_e .and. has_equi_rho_and_p) then
+      pth(ixO^S) = pth(ixO^S) + &
+           block%equi_vars(ixO^S,equi_pe0_,b0i)
+    end if
+    call mhd_get_ionization_state_from_prho( &
+       ixI^L, ixO^L, rho, pth, T, Rfactor)
+  end subroutine Rfactor_from_current_state_ionization
 
   subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
     use mod_global_parameters
@@ -8815,4 +8899,16 @@ contains
     Rfactor(ixO^S)=RR
 
   end subroutine Rfactor_from_constant_ionization
+
+
+  subroutine mhd_get_ionization_state_from_prho(ixI^L, ixO^L, rho, pth, T, Rfactor)
+    use mod_global_parameters
+    use mod_ionization_degree, only: ionization_get_state
+
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: rho(ixI^S), pth(ixI^S)
+    double precision, intent(out) :: T(ixI^S), Rfactor(ixI^S)
+
+    call ionization_get_state(ixI^L, ixO^L, rho, pth, T, Rfactor)
+  end subroutine mhd_get_ionization_state_from_prho
 end module mod_mhd_phys

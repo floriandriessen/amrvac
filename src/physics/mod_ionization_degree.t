@@ -5,8 +5,18 @@ module mod_ionization_degree
   double precision, private :: iz_H_CL(1:100)
   double precision, dimension(:), allocatable :: Te_H_table
   double precision, dimension(:), allocatable :: iz_H_table
-  double precision :: Te_table_min, Te_table_max, Te_table_step, inv_Te_table_step
+  double precision :: Te_table_min, Te_table_max, inv_Te_table_step
   double precision :: Te_low_iz_He=5413.d0
+  double precision, dimension(:), allocatable :: Rfactor_table
+  double precision, dimension(:), allocatable :: Y_table
+  double precision :: Y_table_min, Y_table_max
+  public :: ionization_get_state
+  public :: ionization_get_state_scalar
+  public :: ionization_state_from_temperature_scalar
+  public :: ionization_get_Rfactor_from_temperature
+  double precision, private :: ionization_He_abundance = 0.1d0
+  double precision, private :: ionization_Rfactor_norm = 2.3d0
+  private :: ionization_Rfactor_from_degrees
   ! Carlsson, M., & Leenaarts, J. 2012, A&A, 539, A39
   data Te_H_CL /2.1000005d+03, 2.2349495d+03, 2.3785708d+03, 2.5314199d+03, 2.6940928d+03, &
                 2.8672190d+03, 3.0514692d+03, 3.2475613d+03, 3.4562544d+03, 3.6783584d+03, &
@@ -52,79 +62,92 @@ module mod_ionization_degree
                 4.4888207d-08, 4.0317172d-08, 3.6192560d-08, 3.2330732d-08, 2.9387850d-08  /
   contains
 
-    subroutine ionization_degree_init()
+    subroutine ionization_degree_init(He_abundance, Rfactor_norm)
       use mod_global_parameters
-  
-      double precision :: fact1, fact2, fact3, dL1, dL2
+      use mod_comm_lib, only: mpistop
+
+      double precision, intent(in) :: He_abundance, Rfactor_norm
+      double precision :: fact1, fact2, fact3, dL1, dL2, Te_table_step
       integer :: i, j, ntable, n_interpolated_table
       logical :: jump
+
+      if (allocated(Te_H_table) .or. allocated(iz_H_table) .or. &
+          allocated(Rfactor_table) .or. allocated(Y_table)) then
+        call mpistop("ionization_degree_init called more than once")
+      end if
+
+      if (He_abundance < 0.d0) call mpistop("negative He abundance")
+      if (Rfactor_norm <= 0.d0) call mpistop("invalid Rfactor normalization")
+
+      ionization_He_abundance = He_abundance
+      ionization_Rfactor_norm = Rfactor_norm
 
       ntable=100
       n_interpolated_table=4000
 
       ! change neutral fraction to ionization degree
       iz_H_CL=1.d0-iz_H_CL
-      
+
       allocate(Te_H_table(1:n_interpolated_table))
       allocate(iz_H_table(1:n_interpolated_table))
       Te_H_table=zero
       iz_H_table=zero
-    
+
       ! create cooling table(s) for use in amrvac
       Te_table_step = (Te_H_CL(ntable)-Te_H_CL(1))/dble(n_interpolated_table-1)
 
       Te_H_table(1) = Te_H_CL(1)
       iz_H_table(1) = iz_H_CL(1)
-      
+
       Te_H_table(n_interpolated_table) = Te_H_CL(ntable)
       iz_H_table(n_interpolated_table) = iz_H_CL(ntable)
-      
+
       do i=2,n_interpolated_table        ! loop to create one table
         Te_H_table(i) = Te_H_table(i-1)+Te_table_step
         do j=1,ntable-1   ! loop to create one spot on a table
-        ! Second order polynomial interpolation, except at the outer edge, 
+        ! Second order polynomial interpolation, except at the outer edge,
         ! or in case of a large jump.
           if(Te_H_table(i) < Te_H_CL(j+1)) then
              if(j.eq. ntable-1 )then
                fact1 = (Te_H_table(i)-Te_H_CL(j+1))     &
-                     /(Te_H_CL(j)-Te_H_CL(j+1)) 
-      
+                     /(Te_H_CL(j)-Te_H_CL(j+1))
+
                fact2 = (Te_H_table(i)-Te_H_CL(j))       &
-                     /(Te_H_CL(j+1)-Te_H_CL(j)) 
-      
-               iz_H_table(i) = iz_H_CL(j)*fact1 + iz_H_CL(j+1)*fact2 
+                     /(Te_H_CL(j+1)-Te_H_CL(j))
+
+               iz_H_table(i) = iz_H_CL(j)*fact1 + iz_H_CL(j+1)*fact2
                exit
-             else 
+             else
                dL1 = iz_H_CL(j+1)-iz_H_CL(j)
                dL2 = iz_H_CL(j+2)-iz_H_CL(j+1)
                jump =(max(dabs(dL1),dabs(dL2)) > 2.d0*min(dabs(dL1),dabs(dL2)))
              end if
-               
+
              if( jump ) then
                fact1 = (Te_H_table(i)-Te_H_CL(j+1))     &
-                     /(Te_H_CL(j)-Te_H_CL(j+1)) 
-      
+                     /(Te_H_CL(j)-Te_H_CL(j+1))
+
                fact2 = (Te_H_table(i)-Te_H_CL(j))       &
-                     /(Te_H_CL(j+1)-Te_H_CL(j)) 
-                      
+                     /(Te_H_CL(j+1)-Te_H_CL(j))
+
                iz_H_table(i) = iz_H_CL(j)*fact1 + iz_H_CL(j+1)*fact2
-               exit          
+               exit
              else
                fact1 = ((Te_H_table(i)-Te_H_CL(j+1))     &
                      * (Te_H_table(i)-Te_H_CL(j+2)))   &
                      / ((Te_H_CL(j)-Te_H_CL(j+1)) &
                      * (Te_H_CL(j)-Te_H_CL(j+2)))
-    
+
                fact2 = ((Te_H_table(i)-Te_H_CL(j))       &
                      * (Te_H_table(i)-Te_H_CL(j+2)))   &
                      / ((Te_H_CL(j+1)-Te_H_CL(j)) &
                      * (Te_H_CL(j+1)-Te_H_CL(j+2)))
-    
+
                fact3 = ((Te_H_table(i)-Te_H_CL(j))       &
                      * (Te_H_table(i)-Te_H_CL(j+1)))   &
                      / ((Te_H_CL(j+2)-Te_H_CL(j)) &
                      * (Te_H_CL(j+2)-Te_H_CL(j+1)))
-      
+
                iz_H_table(i) = iz_H_CL(j)*fact1 + iz_H_CL(j+1)*fact2 &
                         + iz_H_CL(j+2)*fact3
                exit
@@ -141,65 +164,237 @@ module mod_ionization_degree
 
       ! transition temperature
       Te_low_iz_He=Te_low_iz_He/unit_temperature
-  
+
+      call ionization_build_eos_table()
     end subroutine ionization_degree_init
 
+    !> Legacy array interface for T -> ionization degrees.
+    !> Not used anymore; kept for compatibility and may be removed later.
     subroutine ionization_degree_from_temperature(ixI^L,ixO^L,Te,iz_H,iz_He)
       use mod_global_parameters
       integer, intent(in) :: ixI^L, ixO^L
       double precision, intent(in) :: Te(ixI^S)
-      double precision, intent(out) :: iz_H(ixO^S),iz_He(ixO^S)
-
-      integer :: ix^D, i
+      double precision, intent(out) :: iz_H(ixO^S), iz_He(ixO^S)
+      integer :: ix^D
+      double precision :: Rtmp
 
       {do ix^DB=ixOmin^DB,ixOmax^DB\}
-        if(Te(ix^D)<Te_table_min) then
-          iz_H(ix^D)=0.d0
-        else if (Te(ix^D)>=Te_table_max) then
-          iz_H(ix^D)=1.d0
-        else
-          i=int((Te(ix^D)-Te_table_min)*inv_Te_table_step)+1
-          iz_H(ix^D)=iz_H_table(i)+(Te(ix^D)-Te_H_table(i))&
-           *(iz_H_table(i+1)-iz_H_table(i))*inv_Te_table_step
-        end if
-        ! Ni, L. et al. A&A, 665, A116
-        if(Te(ix^D)<Te_low_iz_He) then
-          iz_He(ix^D)=1.0084814d-4
-        else
-          iz_He(ix^D)=1.d0-10**(0.322571d0-5.96d-5*Te(ix^D)*unit_temperature)
-        end if
+        call ionization_state_from_temperature_scalar( &
+             Te(ix^D), Rtmp, iz_H(ix^D), iz_He(ix^D))
       {end do\}
-
     end subroutine ionization_degree_from_temperature
 
-    ! gas constant R in ideal gas law for solar plasma
-    function R_ideal_gas_law_partial_ionization(Te)
-      use mod_global_parameters
-      double precision, intent(in) :: Te
-      double precision :: R_ideal_gas_law_partial_ionization
+    subroutine ionization_get_state_scalar(rho, p, T, Rfactor, iz_H, iz_He)
+      use mod_comm_lib, only: mpistop
+      double precision, intent(in) :: rho, p
+      double precision, intent(out) :: T, Rfactor
+      double precision, intent(out), optional :: iz_H, iz_He
 
-      double precision :: iz_H, iz_He
+      double precision :: y
+      double precision :: iz_H_loc, iz_He_loc
+
+      if (.not. allocated(Te_H_table) .or. .not. allocated(Y_table)) then
+        call mpistop("ionization_get_state_scalar: ionization tables are not initialized")
+      end if
+
+      ! p is the thermal pressure in code units.
+      if (rho <= 0.d0 .or. p <= 0.d0) then
+        T = Te_H_table(1)
+      else
+        y = p/rho
+        call ionization_invert_y_scalar(y, T)
+      end if
+
+      call ionization_state_from_temperature_scalar(T, Rfactor, iz_H_loc, iz_He_loc)
+
+      if (present(iz_H)) iz_H = iz_H_loc
+      if (present(iz_He)) iz_He = iz_He_loc
+    end subroutine ionization_get_state_scalar
+
+    subroutine ionization_get_state(ixI^L, ixO^L, rho, p, T, Rfactor, iz_H, iz_He)
+      integer, intent(in) :: ixI^L, ixO^L
+      double precision, intent(in) :: rho(ixI^S), p(ixI^S)
+      double precision, intent(out) :: T(ixI^S), Rfactor(ixI^S)
+      double precision, intent(out), optional :: iz_H(ixI^S), iz_He(ixI^S)
+
+      double precision :: iz_H_loc, iz_He_loc
+      integer :: ix^D
+
+      {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        call ionization_get_state_scalar(rho(ix^D), p(ix^D), T(ix^D), &
+             Rfactor(ix^D), iz_H_loc, iz_He_loc)
+
+        if (present(iz_H)) iz_H(ix^D) = iz_H_loc
+        if (present(iz_He)) iz_He(ix^D) = iz_He_loc
+      {end do\}
+    end subroutine ionization_get_state
+
+    subroutine ionization_invert_y_scalar(y, T)
+      use mod_comm_lib, only: mpistop
+      double precision, intent(in) :: y
+      double precision, intent(out) :: T
+
+      integer :: ilo, ihi, imid, n
+      double precision :: denom
+
+      if (.not. allocated(Y_table) .or. .not. allocated(Rfactor_table)) then
+        call mpistop("ionization_invert_y_scalar: EOS tables are not initialized")
+      end if
+
+      n = size(Y_table)
+
+      if (n < 2) then
+        call mpistop("ionization_invert_y_scalar: EOS table has fewer than 2 points")
+      end if
+
+      if (y <= 0.d0) then
+        T = Te_H_table(1)
+        return
+      end if
+
+      if (y < Y_table_min) then
+        if (Rfactor_table(1) > 0.d0) then
+          T = max(tiny(1.d0), y/Rfactor_table(1))
+        else
+          T = Te_H_table(1)
+        end if
+        return
+      end if
+
+      if (y >= Y_table_max) then
+        if (Rfactor_table(n) > 0.d0) then
+          T = y/Rfactor_table(n)
+        else
+          T = Te_H_table(n)
+        end if
+        return
+      end if
+
+      ilo = 1
+      ihi = n
+
+      do while (ihi - ilo > 1)
+        imid = (ilo + ihi)/2
+        if (y >= Y_table(imid)) then
+          ilo = imid
+        else
+          ihi = imid
+        end if
+      end do
+
+      denom = Y_table(ilo+1) - Y_table(ilo)
+
+      if (denom <= max(tiny(denom), 1.d-12*dabs(Y_table(ilo)))) then
+        call mpistop("ionization_invert_y_scalar: non-increasing Y_table interval")
+      end if
+
+      T = Te_H_table(ilo) + (y - Y_table(ilo)) * &
+          (Te_H_table(ilo+1) - Te_H_table(ilo))/denom
+    end subroutine ionization_invert_y_scalar
+
+    subroutine ionization_state_from_temperature_scalar(T, Rfactor, iz_H, iz_He)
+      use mod_global_parameters, only: unit_temperature
+      use mod_comm_lib, only: mpistop
+      double precision, intent(in) :: T
+      double precision, intent(out) :: Rfactor
+      double precision, intent(out), optional :: iz_H, iz_He
+
+      integer :: i
+      double precision :: iz_H_loc, iz_He_loc
+
+      if (.not. allocated(Te_H_table) .or. .not. allocated(iz_H_table)) then
+        call mpistop("ionization_state_from_temperature_scalar: tables missing")
+      end if
+
+      if (T < Te_table_min) then
+        iz_H_loc = 0.d0
+      else if (T >= Te_table_max) then
+        iz_H_loc = 1.d0
+      else
+        i = int((T - Te_table_min)*inv_Te_table_step) + 1
+        i = max(1, min(size(Te_H_table)-1, i))
+
+        iz_H_loc = iz_H_table(i) + (T - Te_H_table(i)) * &
+             (iz_H_table(i+1) - iz_H_table(i))*inv_Te_table_step
+      end if
+
+      if (T < Te_low_iz_He) then
+        iz_He_loc = 1.0084814d-4
+      else
+        iz_He_loc = 1.d0 - 10.d0**(0.322571d0 - 5.96d-5*T*unit_temperature)
+      end if
+      iz_H_loc = min(1.d0, max(0.d0, iz_H_loc))
+      iz_He_loc = min(1.d0, max(0.d0, iz_He_loc))
+      Rfactor = ionization_Rfactor_from_degrees(iz_H_loc, iz_He_loc)
+
+      if (present(iz_H)) iz_H = iz_H_loc
+      if (present(iz_He)) iz_He = iz_He_loc
+    end subroutine ionization_state_from_temperature_scalar
+
+    subroutine ionization_build_eos_table()
+      use mod_comm_lib, only: mpistop
+      integer :: i, n
+
+      if (.not. allocated(Te_H_table) .or. .not. allocated(iz_H_table)) then
+        call mpistop("ionization_build_eos_table: ionization tables are not initialized")
+      end if
+
+      if (allocated(Rfactor_table)) deallocate(Rfactor_table)
+      if (allocated(Y_table)) deallocate(Y_table)
+
+      n = size(Te_H_table)
+
+      if (n < 2) then
+        call mpistop("ionization_build_eos_table: Te_H_table has fewer than 2 points")
+      end if
+
+      allocate(Rfactor_table(1:n))
+      allocate(Y_table(1:n))
+
+      do i = 1, n
+        call ionization_state_from_temperature_scalar( &
+             Te_H_table(i), Rfactor_table(i))
+        Y_table(i) = Rfactor_table(i)*Te_H_table(i)
+      end do
+
+      Y_table_min = Y_table(1)
+      Y_table_max = Y_table(n)
+
+      call ionization_check_y_table()
+    end subroutine ionization_build_eos_table
+
+    subroutine ionization_check_y_table()
+      use mod_comm_lib, only: mpistop
       integer :: i
 
-      if(Te<Te_table_min) then
-        iz_H=0.d0
-      else if (Te>=Te_table_max) then
-        iz_H=1.d0
-      else
-        i=int((Te-Te_table_min)*inv_Te_table_step)+1
-        iz_H=iz_H_table(i)+(Te-Te_H_table(i))&
-         *(iz_H_table(i+1)-iz_H_table(i))*inv_Te_table_step
+      if (.not. allocated(Y_table)) then
+        call mpistop("ionization_check_y_table: Y_table is not allocated")
       end if
-      if(Te<Te_low_iz_He) then
-        iz_He=1.0084814d-4
-      else
-        iz_He=1.d0-10**(0.322571d0-5.96d-5*Te*unit_temperature)
-      end if
-      ! dimensionless: kB and mp are included in units 
-      ! assume the first and second ionization of Helium have the same degree
-      R_ideal_gas_law_partial_ionization=(1.d0+iz_H+0.1d0*(1.d0+iz_He*(1.d0+iz_He)))/2.3d0
-      return
 
-    end function R_ideal_gas_law_partial_ionization
+      if (size(Y_table) < 2) then
+        call mpistop("ionization_check_y_table: Y_table has fewer than 2 points")
+      end if
+
+      do i = 1, size(Y_table)-1
+        if (Y_table(i+1) <= Y_table(i)) then
+          call mpistop("ionization_check_y_table: Y(T)=Rfactor(T)*T is not strictly increasing")
+        end if
+      end do
+    end subroutine ionization_check_y_table
+
+    double precision function ionization_Rfactor_from_degrees(iz_H, iz_He)
+      double precision, intent(in) :: iz_H, iz_He
+
+      ionization_Rfactor_from_degrees = &
+           (1.d0 + iz_H + ionization_He_abundance * &
+           (1.d0 + iz_He*(1.d0 + iz_He))) / ionization_Rfactor_norm
+    end function ionization_Rfactor_from_degrees
+
+    subroutine ionization_get_Rfactor_from_temperature(T, Rfactor)
+      double precision, intent(in)  :: T
+      double precision, intent(out) :: Rfactor
+
+      call ionization_state_from_temperature_scalar(T, Rfactor)
+    end subroutine ionization_get_Rfactor_from_temperature
 
 end module mod_ionization_degree
