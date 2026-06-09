@@ -1230,8 +1230,7 @@ region below 'R_opt_thick' (in solar radius, default value is 1) is assumed as n
 set 
 ```
 
-        has_equi_pe0 = .true.
-        has_equi_rho0 = .true.
+        has_equi_rho_and_p = .true.
 
 ```
 to true in ***mhd\_list***
