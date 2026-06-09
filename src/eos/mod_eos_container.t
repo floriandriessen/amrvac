@@ -5,6 +5,10 @@ module mod_eos_container
 
     public :: eos_container, eos_table_container
 
+    !> LTE method selector, decoded once from eos%method into eos%method_id so
+    !> the runtime kernels dispatch on an integer rather than a string compare.
+    integer, parameter, public :: EOS_TABLES = 1, EOS_ANALYTIC = 2, EOS_ENTROPY = 3
+
     abstract interface
         subroutine convert_condition(ixI^L, ixO^L, w, x)
             use mod_global_parameters
@@ -19,13 +23,6 @@ module mod_eos_container
             double precision, intent(inout) :: w(ixI^S, nw)
             double precision, intent(in)    :: x(ixI^S, 1:ndim)
         end subroutine update_eos_spaces
-
-        subroutine update_eos_spaces_alt(ixI^L, ixO^L, wCT, w, x)
-            use mod_global_parameters
-            integer, intent(in)             :: ixI^L, ixO^L
-            double precision, intent(inout) :: w(ixI^S, nw)
-            double precision, intent(in)    :: wCT(ixI^S, nw), x(ixI^S, 1:ndim)
-        end subroutine update_eos_spaces_alt
 
         subroutine get_eos_variable(ixI^L, ixO^L, w, x, res)
             use mod_global_parameters
@@ -94,7 +91,8 @@ module mod_eos_container
     type eos_container
 
         character(len=std_len) :: eos_type
-        character(len=20)     :: method = 'tables'        !> 'tables' or 'analytic'
+        character(len=20)     :: method = 'tables'        !> 'tables', 'analytic' or 'entropy'
+        integer               :: method_id = EOS_TABLES   !> integer form of method (set at init)
         character(len=20)     :: gamma1_method = 'exact'   !> 'exact' or 'effective'
         character(len=20)     :: p2eint_method = 'table'   !> 'table' (fast) or 'bisect' (accurate)
         character(len=20)     :: inversion = 'bisect'      !> 'bisect' or 'newton' (analytic only)
@@ -131,6 +129,57 @@ module mod_eos_container
         type(eos_table_container) :: eint_from_T  !> Inverse T table: eint/nH(nH, T)
         type(eos_table_container) :: log_p        !> Merged log10(p/nH)(nH, eint/nH) for WB bisection
         type(eos_table_container) :: p_over_nH   !> (1+He+y)*T for direct p lookup in to_primitive
+
+        !> Entropy-method tables (eos%method == 'entropy'). Each quantity Q is
+        !> stored as four containers -- Q, Q_x, Q_y, Q_xy (value plus the two
+        !> first derivatives and the cross derivative) -- fully determining the
+        !> bicubic Hermite polynomial in each cell (mod_eos_entropy). Five
+        !> quantities:
+        !>   Forward (log_nH, log_eint/nH): Tfwd, pfwd, neOnH.
+        !>   Inverse (log_nH, log_p/nH):    eintP, g1p (= Gamma_1).
+        !>   Inverse (log_nH, log_T):       eintT.
+        !> The inverse tables are bisected against the analytic Saha solver at
+        !> build time and frozen to disk, so every runtime query is one lookup.
+        !
+        !> Forward (lr, le): ionisation fraction. The neOnH value container
+        !> is the existing neOnH field above; add three derivative tables.
+        type(eos_table_container) :: neOnH_x  !> d(ne/nH)/dx
+        type(eos_table_container) :: neOnH_y  !> d(ne/nH)/dy
+        type(eos_table_container) :: neOnH_xy !> d2(ne/nH)/(dx dy)
+        !
+        !> Forward (lr, le): direct T and p tables. We do NOT derive T from
+        !> ds/dy of the s polynomial at runtime; the bicubic Hermite gives
+        !> O(h^3) error in derivatives vs O(h^4) in values. Storing T and p
+        !> as their own bicubic Hermite tables (built from the same Saha
+        !> call as s) keeps O(h^4) accuracy and preserves Maxwell consistency
+        !> at every node (T, p, s, gamma1 all from one Saha state).
+        type(eos_table_container) :: Tfwd     !> T [K] (CGS-stored) at (lr, le)
+        type(eos_table_container) :: Tfwd_x   !> dT/dx
+        type(eos_table_container) :: Tfwd_y   !> dT/dy
+        type(eos_table_container) :: Tfwd_xy  !> d2T/(dx dy)
+        type(eos_table_container) :: pfwd     !> p [erg/cm^3] (CGS-stored) at (lr, le)
+        type(eos_table_container) :: pfwd_x   !> dp/dx
+        type(eos_table_container) :: pfwd_y   !> dp/dy
+        type(eos_table_container) :: pfwd_xy  !> d2p/(dx dy)
+        !
+        !> Inverse (lr, lp): eint from (rho, p), replaces p2eint bisection
+        !> at runtime. Stored as log10(eint/nH), CGS axis units before shift.
+        type(eos_table_container) :: eintP    !> log10(eint/nH) [CGS log10]
+        type(eos_table_container) :: eintP_x  !> d(eintP)/dx    x = log10(nH)
+        type(eos_table_container) :: eintP_y  !> d(eintP)/dy    y = log10(p/nH)
+        type(eos_table_container) :: eintP_xy !> d2(eintP)/(dx dy)
+        !
+        !> Inverse (lr, lp): gamma_1 at (rho, p) for csound2-from-pressure paths
+        type(eos_table_container) :: g1p      !> Gamma_1(rho, p) dimensionless
+        type(eos_table_container) :: g1p_x    !> dGamma_1/dx
+        type(eos_table_container) :: g1p_y    !> dGamma_1/dy    y = log10(p/nH)
+        type(eos_table_container) :: g1p_xy   !> d2Gamma_1/(dx dy)
+        !
+        !> Inverse (lr, lT): eint from (rho, T). Used by IC, HSE BC, cooling.
+        type(eos_table_container) :: eintT    !> log10(eint/nH) [CGS log10]
+        type(eos_table_container) :: eintT_x  !> d(eintT)/dx   x = log10(nH)
+        type(eos_table_container) :: eintT_y  !> d(eintT)/dy   y = log10(T)
+        type(eos_table_container) :: eintT_xy !> d2(eintT)/(dx dy)
         !> Interleaved Group A table: T, neOnH, p_over_nH at same (nH, eint/nH) grid
         double precision, allocatable :: table_eint_il(:,:,:)  !> (3, dim1, dim2)
         integer :: il_nq = 3  !> number of interleaved quantities
@@ -139,21 +188,52 @@ module mod_eos_container
         procedure (convert_condition), pointer, nopass :: to_primitive => null()
         procedure (convert_condition), pointer, nopass :: p_to_e => null()
         procedure (update_eos_spaces), pointer, nopass :: update_eos => null()
-        procedure (update_eos_spaces_alt), pointer, nopass :: update_PI_temperature => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_thermal_pressure => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_temperature_from_eint => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_temperature_from_etot => null()
+        procedure (get_eos_variable_alt), pointer, nopass :: get_temperature_from_pressure => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_Rfactor => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_rho => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_nH => null()
         procedure (get_ne_nH_iface), pointer, nopass :: get_ne_nH => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_Te => null()
         procedure (get_eos_variable_alt), pointer, nopass :: get_csound2 => null()
-        procedure (get_eos_variable_alt), pointer, nopass :: get_gamma1 => null()
-        procedure (convert_condition), pointer, nopass :: to_prolong => null()
-        procedure (convert_condition), pointer, nopass :: from_prolong => null()
+
+    contains
+
+        !> Internal setter for gamma: updates gamma + the three derived cached
+        !> values (gamma_minus_1, inv_gamma, inv_gamma_minus_1) atomically.
+        !> PRIVATE on purpose: gamma is set ONLY via the parfile (&eos_list gamma=),
+        !> read once at eos_init, so the derived constants can never go stale.
+        !> User code must not set gamma; assigning eos%gamma directly is caught by
+        !> the consistency check in (m)hd_check_params.
+        procedure, private :: set_gamma => eos_set_gamma
 
     end type eos_container
+
+    !> The single EoS state object, allocated in eos_init and shared (read-mostly)
+    !> across all EoS sub-modules and the physics layer.
+    type(eos_container), allocatable, public :: eos
+
+    !> wextra index for the cached log10(nH) used during STS substeps
+    !> (-1 = not allocated). Set by the physics module that owns the wextra slot.
+    integer, public :: iw_log_nH = -1
+
+contains
+
+    subroutine eos_set_gamma(this, gamma_new)
+        class(eos_container), intent(inout) :: this
+        double precision, intent(in)        :: gamma_new
+
+        this%gamma = gamma_new
+        this%gamma_minus_1 = this%gamma - 1.0d0
+        this%inv_gamma = 1.0d0 / this%gamma
+        if (abs(this%gamma_minus_1) > 1.0d-12) then
+            this%inv_gamma_minus_1 = 1.0d0 / this%gamma_minus_1
+        else
+            this%inv_gamma_minus_1 = 0.0d0
+        end if
+    end subroutine eos_set_gamma
 
 end module mod_eos_container
 !> Needs a line after to pass the preprocesor
