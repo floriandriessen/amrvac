@@ -366,6 +366,9 @@ contains
         B2max = B2max_recv
         B3max = B3max_recv
 
+        if (B2max == -bigdouble) B2max = 0.d0
+        if (B3max == -bigdouble) B3max = 0.d0
+
     end subroutine get_max_B
 
 end module mod_gimli
