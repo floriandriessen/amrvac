@@ -7,18 +7,20 @@
 !> Public entry points take and return CODE units; CGS conversion is internal.
 !> T(nH, eint/nH) is found by bisection (default) or Newton; p(nH, T) closes
 !> the state. build_gamma1_analytic_table tabulates Gamma_1(nH, T) once for the
-!> 'exact' gamma1 path; gamma1_from_nH_T_analytic reads it back.
+!> 'exact' gamma1 path; saha_gamma1_from_nH_T reads it back.
 !=============================================================================
-module mod_eos_saha
+module mod_eos_LTE_saha
     use mod_global_parameters
-    use mod_eos_container, only: eos
+    use mod_eos_container, only: eos, EOS_ANALYTIC
     use mod_eos_interp,    only: bicubic_lookup, precompute_step_inv
+    use mod_comm_lib,      only: mpistop
+    use mod_eos_LTE_tables, only: precompute_FI_bypass_constants
     implicit none
     private
 
-    public :: saha_y_from_nH_T, saha_eint_from_nH_T, saha_p_to_T
-    public :: saha_T_from_nH_eint
-    public :: build_gamma1_analytic_table, gamma1_from_nH_T_analytic
+    public :: saha_eint_from_nH_T, saha_state_from_nH_p
+    public :: saha_T_from_nH_eint, saha_gamma1_from_nH_T
+    public :: load_analytic_LTE, finalise_analytic_LTE
 
     ! Analytical H-only Saha constants (module-level parameters)
     ! Prefactor: (2*pi*m_e*k_B/h^2)^{3/2} in CGS (cm^-3)
@@ -28,7 +30,31 @@ module mod_eos_saha
     double precision, parameter :: saha_kB_cgs = 1.380649d-16
     double precision, parameter :: saha_chi_H_cgs = 2.178710282685096d-11
 
+    !> One-shot guard: a bisection that exhausts max_iter without meeting the
+    !> tolerance warns once (rank 0) rather than silently returning an
+    !> under-converged T every offending cell.
+    logical :: saha_nonconv_warned = .false.
+
 contains
+
+    !> Analytic-method load: no binary tables (on-the-fly Saha solve); just
+    !> announce the method.
+    subroutine load_analytic_LTE()
+        if (mype == 0) then
+            write(*,*) 'EoS method: analytic (H-only Saha)'
+            write(*,*) '  gamma1_method: ', trim(eos%gamma1_method)
+        end if
+    end subroutine load_analytic_LTE
+
+    !> Analytic-method finalise (H-only Saha): no table unit conversion needed;
+    !> build the Gamma1 table only for 'exact' mode, then the shared FI-bypass
+    !> constants.
+    subroutine finalise_analytic_LTE()
+        if (eos%gamma1_method == 'exact') then
+            call build_gamma1_analytic_table()
+        end if
+        call precompute_FI_bypass_constants()
+    end subroutine finalise_analytic_LTE
 
     !> Ionization fraction from Saha in CGS (no unit conversions).
     !> Use this inside bisection loops where nH_cgs is constant.
@@ -59,6 +85,7 @@ contains
         double precision, intent(in) :: nH_code, T_code
         double precision :: y, T_cgs, eint_nH_cgs
 
+        if (eos%method_id /= EOS_ANALYTIC) call mpistop("saha_eint_from_nH_T requires eos_method=analytic")
         y = saha_y_from_nH_T(nH_code, T_code)
         T_cgs = T_code * unit_temperature
 
@@ -76,7 +103,7 @@ contains
     !> Given (nH, p) in CODE UNITS, find T, y, and eint/nH.
     !> Bisects on p = nH*(1+y(T))*T_code, then computes eint from final T,y.
     !> Returns eint_nH in code units (avoids redundant Saha re-evaluation).
-    subroutine saha_p_to_T(nH_code, p_code, T_out, y_out, eint_nH_out)
+    subroutine saha_state_from_nH_p(nH_code, p_code, T_out, y_out, eint_nH_out)
         double precision, intent(in)  :: nH_code, p_code
         double precision, intent(out) :: T_out, y_out
         double precision, intent(out), optional :: eint_nH_out
@@ -88,6 +115,7 @@ contains
         double precision, parameter :: tol = 1.0d-8
 
         ! Hoist CGS conversion out of loop
+        if (eos%method_id /= EOS_ANALYTIC) call mpistop("saha_state_from_nH_p requires eos_method=analytic")
         nH_cgs = nH_code * unit_numberdensity
         uT = unit_temperature
 
@@ -110,6 +138,12 @@ contains
             if (dabs(T_hi - T_lo) < tol * T_mid) exit
         end do
 
+        if (iter > max_iter .and. .not. saha_nonconv_warned .and. mype == 0) then
+            saha_nonconv_warned = .true.
+            write(*,*) "WARNING: saha_state_from_nH_p bisection reached max_iter ", &
+                 "without converging; using last iterate. Not reported again."
+        end if
+
         T_out = T_mid
         y_out = y_mid
 
@@ -120,22 +154,16 @@ contains
             eint_nH_out = eint_nH_cgs * unit_numberdensity / unit_pressure
         end if
 
-    end subroutine saha_p_to_T
+    end subroutine saha_state_from_nH_p
 
-    !> Temperature inversion: given (nH, eint/nH) in CODE UNITS, find T in CODE UNITS.
-    !> Dispatches to bisection or Newton based on eos%inversion.
+    !> Temperature inversion: given (nH, eint/nH) in CODE UNITS, find T in CODE UNITS,
+    !> by bisection (guaranteed convergence).
     subroutine saha_T_from_nH_eint(nH_code, eint_nH_code, T_out, y_out)
         double precision, intent(in)  :: nH_code, eint_nH_code
         double precision, intent(out) :: T_out, y_out
 
-        select case (trim(eos%inversion))
-        case ('bisect')
-            call saha_T_bisection(nH_code, eint_nH_code, T_out, y_out)
-        case ('newton')
-            call saha_T_newton(nH_code, eint_nH_code, T_out, y_out)
-        case default
-            call saha_T_bisection(nH_code, eint_nH_code, T_out, y_out)
-        end select
+        if (eos%method_id /= EOS_ANALYTIC) call mpistop("saha_T_from_nH_eint requires eos_method=analytic")
+        call saha_T_bisection(nH_code, eint_nH_code, T_out, y_out)
 
     end subroutine saha_T_from_nH_eint
 
@@ -205,96 +233,16 @@ contains
             if (dabs(T_hi - T_lo) < tol * T_mid) exit
         end do
 
+        if (iter > max_iter .and. .not. saha_nonconv_warned .and. mype == 0) then
+            saha_nonconv_warned = .true.
+            write(*,*) "WARNING: saha_T_bisection reached max_iter without ", &
+                 "converging; using last iterate. Not reported again."
+        end if
+
         T_out = T_mid / unit_temperature
         y_out = y_mid
 
     end subroutine saha_T_bisection
-
-    !> Newton-Raphson solver for T(nH, eint/nH).
-    !> Uses analytical d(eint)/d(T) from the Saha equation.
-    subroutine saha_T_newton(nH_code, eint_nH_code, T_out, y_out)
-        double precision, intent(in)  :: nH_code, eint_nH_code
-        double precision, intent(out) :: T_out, y_out
-
-        double precision :: eint_nH_cgs, nH_cgs, T_cgs, X_saha, y
-        double precision :: eint_eval, f_val, df_dT
-        double precision :: dX_dT, dy_dT, denom
-        double precision :: T_lo, T_hi
-        integer :: iter
-        integer, parameter :: max_iter = 15
-        double precision, parameter :: tol = 1.0d-8
-        logical :: converged
-
-        eint_nH_cgs = eint_nH_code * unit_pressure / unit_numberdensity
-        nH_cgs = nH_code * unit_numberdensity
-
-        ! Bracket bounds for safety clamping
-        if (eos%ionE) then
-            T_lo = max((eint_nH_cgs - saha_chi_H_cgs) &
-                / (3.0d0 * saha_kB_cgs), 100.0d0)
-        else
-            T_lo = eint_nH_cgs / (3.0d0 * saha_kB_cgs)
-        end if
-        T_hi = eint_nH_cgs / (1.5d0 * saha_kB_cgs)
-        T_lo = max(T_lo, 100.0d0)
-        T_hi = max(T_hi, T_lo + 1.0d0)
-
-        ! Initial guess: midpoint of bracket
-        T_cgs = 0.5d0 * (T_lo + T_hi)
-        converged = .false.
-
-        do iter = 1, max_iter
-            ! Saha RHS and ionization fraction
-            X_saha = saha_pf * T_cgs * dsqrt(T_cgs) * dexp(-saha_chi_kB / T_cgs)
-            denom = dsqrt(X_saha * X_saha + 4.0d0 * nH_cgs * X_saha)
-            y = 2.0d0 * X_saha / (X_saha + denom)
-
-            ! dX/dT = X * (1.5/T + chi_kB/T^2)
-            dX_dT = X_saha * (1.5d0 / T_cgs + saha_chi_kB / (T_cgs * T_cgs))
-
-            ! dy/dT from differentiating the quadratic solution
-            ! y = [-X + sqrt(X^2 + 4*nH*X)] / (2*nH)
-            ! dy/dT = dX/dT * [(-1 + (X + 2*nH) / sqrt(X^2 + 4*nH*X))] / (2*nH)
-            if (denom > 0.0d0) then
-                dy_dT = dX_dT * (-1.0d0 + (X_saha + 2.0d0 * nH_cgs) / denom) &
-                        / (2.0d0 * nH_cgs)
-            else
-                dy_dT = 0.0d0
-            end if
-
-            ! f(T) = eint(T) - eint_target
-            eint_eval = 1.5d0 * (1.0d0 + y) * saha_kB_cgs * T_cgs
-            if (eos%ionE) eint_eval = eint_eval + y * saha_chi_H_cgs
-            f_val = eint_eval - eint_nH_cgs
-
-            ! df/dT = 1.5*(1+y)*kB + (1.5*kB*T + chi_H*ionE_flag) * dy/dT
-            df_dT = 1.5d0 * (1.0d0 + y) * saha_kB_cgs &
-                  + (1.5d0 * saha_kB_cgs * T_cgs) * dy_dT
-            if (eos%ionE) df_dT = df_dT + saha_chi_H_cgs * dy_dT
-
-            if (dabs(df_dT) < 1.0d-30) exit
-
-            T_cgs = T_cgs - f_val / df_dT
-            ! Clamp to bracket to prevent divergence
-            T_cgs = max(T_cgs, T_lo)
-            T_cgs = min(T_cgs, T_hi)
-
-            if (dabs(f_val) < tol * eint_nH_cgs) then
-                converged = .true.
-                exit
-            end if
-        end do
-
-        ! Fallback to bisection if Newton didn't converge
-        if (.not. converged) then
-            call saha_T_bisection(nH_code, eint_nH_code, T_out, y_out)
-            return
-        end if
-
-        T_out = T_cgs / unit_temperature
-        y_out = saha_y_cgs(nH_cgs, T_cgs)
-
-    end subroutine saha_T_newton
 
     !> Build 2D Gamma1(nH, T) table from analytical Saha for the 'analytic' EoS method.
     !> Grid: uniform in (log10 nH, log10 T) with 256x256 points.
@@ -384,16 +332,17 @@ contains
 
     !> Look up Gamma1 from the analytical 2D table (nH, T axes in code units).
     !> For use when eos%method == 'analytic' and gamma1_method == 'exact'.
-    double precision function gamma1_from_nH_T_analytic(nH_code, T_code) result(g1)
+    double precision function saha_gamma1_from_nH_T(nH_code, T_code) result(g1)
         double precision, intent(in) :: nH_code, T_code
         double precision :: log_nH, log_T
 
+        if (eos%method_id /= EOS_ANALYTIC) call mpistop("saha_gamma1_from_nH_T requires eos_method=analytic")
         log_nH = dlog10(nH_code)
         log_T  = dlog10(T_code)
 
         g1 = bicubic_lookup(log_nH, log_T, eos%gamma1_p)
 
-    end function gamma1_from_nH_T_analytic
+    end function saha_gamma1_from_nH_T
 
-end module mod_eos_saha
+end module mod_eos_LTE_saha
 !> Needs a line after to pass the preprocessor

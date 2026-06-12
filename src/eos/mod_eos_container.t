@@ -1,3 +1,18 @@
+!=============================================================================
+!> EoS state container -- the single thermodynamic authority for AMRVAC.
+!>
+!> Defines the eos_container derived type: its scalar fields (gamma, He_abundance,
+!> eos_type, method_id, ionE, the unit-normalisation factors) and its
+!> procedure-pointer slots -- to_conserved/to_primitive, p_to_e,
+!> get_thermal_pressure, get_csound2, get_Rfactor, get_temperature_from_{eint,
+!> etot,pressure}, get_Te, get_ne_nH, get_rho/get_nH, update_eos -- which ARE the
+!> EoS public API the physics modules call. Also defines eos_table_container (one
+!> lookup table + its axes/guards) and the global `eos` instance plus the
+!> cached-log10(nH) wextra index iw_log_nH.
+!>
+!> Pure declarations -- no logic. The routines bound to these pointers live in
+!> the EoS sub-modules (mod_eos*) and the physics seams (mod_(m)hd_eos).
+!=============================================================================
 module mod_eos_container
     use mod_global_parameters
     implicit none
@@ -7,7 +22,12 @@ module mod_eos_container
 
     !> LTE method selector, decoded once from eos%method into eos%method_id so
     !> the runtime kernels dispatch on an integer rather than a string compare.
-    integer, parameter, public :: EOS_TABLES = 1, EOS_ANALYTIC = 2, EOS_ENTROPY = 3
+    integer, parameter, public :: EOS_STATE = 1, EOS_ANALYTIC = 2, EOS_ENTROPY = 3
+
+    !> EoS-type selector, decoded once from eos%eos_type into eos%type_id. Used by
+    !> the mode-specific kernels to mpistop if called under the wrong eos_type
+    !> (e.g. an LTE table kernel invoked while running FI or PI).
+    integer, parameter, public :: EOS_TYPE_FI = 1, EOS_TYPE_LTE = 2, EOS_TYPE_PI = 3
 
     abstract interface
         subroutine convert_condition(ixI^L, ixO^L, w, x)
@@ -47,7 +67,7 @@ module mod_eos_container
             double precision, intent(out)   :: ne(ixI^S), nH(ixI^S)
         end subroutine get_ne_nH_iface
     end interface
-    
+
     type eos_table_container
 
         character(len=std_len) :: filename
@@ -91,14 +111,14 @@ module mod_eos_container
     type eos_container
 
         character(len=std_len) :: eos_type
-        character(len=20)     :: method = 'tables'        !> 'tables', 'analytic' or 'entropy'
-        integer               :: method_id = EOS_TABLES   !> integer form of method (set at init)
+        character(len=20)     :: method = 'state'         !> 'state', 'analytic' or 'entropy' ('tables' = legacy alias for 'state')
+        integer               :: method_id = EOS_STATE   !> integer form of method (set at init)
+        integer               :: type_id   = EOS_TYPE_FI  !> integer form of eos_type (set at init)
         character(len=20)     :: gamma1_method = 'exact'   !> 'exact' or 'effective'
         character(len=20)     :: p2eint_method = 'table'   !> 'table' (fast) or 'bisect' (accurate)
-        character(len=20)     :: inversion = 'bisect'      !> 'bisect' or 'newton' (analytic only)
+        character(len=20)     :: pi_table = 'chromosphere'  !> PI backend table: 'chromosphere'|'flare'|'prominence'
         logical :: ionE
         character(len=std_len) :: table_location
-        logical :: table_check
         double precision :: He_abundance
         double precision :: gamma
         double precision :: gamma_minus_1
@@ -114,10 +134,9 @@ module mod_eos_container
         double precision :: p_rho_FI_threshold    !> p/rho above which gas is fully ionised [code units]
         double precision :: n_per_nH_FI          !> Total particles per nH when FI = 2 + 3*A_He
         double precision :: neOnH_FI             !> ne/nH when fully ionised = 1 + 2*A_He
-        logical :: disable_FI_bypass = .false.  !> Set .true. to force all cells through table path
 
         !>Leaving a comment here to remind me that it's a bad idea to have anything outside
-        !> of the w() array if one wants to /ensure/ the fields are consistent 
+        !> of the w() array if one wants to /ensure/ the fields are consistent
         !> given OMP directives and load balancing
 
         ! Expected components of the EoS
@@ -133,7 +152,7 @@ module mod_eos_container
         !> Entropy-method tables (eos%method == 'entropy'). Each quantity Q is
         !> stored as four containers -- Q, Q_x, Q_y, Q_xy (value plus the two
         !> first derivatives and the cross derivative) -- fully determining the
-        !> bicubic Hermite polynomial in each cell (mod_eos_entropy). Five
+        !> bicubic Hermite polynomial in each cell (mod_eos_LTE_entropy). Five
         !> quantities:
         !>   Forward (log_nH, log_eint/nH): Tfwd, pfwd, neOnH.
         !>   Inverse (log_nH, log_p/nH):    eintP, g1p (= Gamma_1).

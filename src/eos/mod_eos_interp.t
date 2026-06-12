@@ -23,6 +23,59 @@ module mod_eos_interp
 
 contains
 
+    !> The single monotone cubic Hermite (PCHIP-style) interval kernel for this
+    !> module. Interpolates on [p1,p2] (t in [0,1]) from 4 uniformly spaced
+    !> samples p0..p3: secant slopes d0,d1,d2; interior derivatives by harmonic
+    !> mean with a monotonicity sign-clamp and a Hyman magnitude clamp (no
+    !> overshoot on the interval). EVERY PCHIP slice in this module -- the
+    !> uniform/non-uniform bicubic routines and both interleaved evaluators --
+    !> routes through here, so the limiter exists in exactly one place.
+    pure double precision function pchip_interval(p0, p1, p2, p3, t) result(v)
+        double precision, intent(in) :: p0, p1, p2, p3, t
+        double precision :: d0, d1, d2, m1, m2
+        double precision :: tt, ttt, h00, h10, h01, h11
+        double precision :: s, a1, a2, lim
+
+        d0 = p1 - p0
+        d1 = p2 - p1
+        d2 = p3 - p2
+
+        if (d1 == 0.0d0) then
+            m1 = 0.0d0
+            m2 = 0.0d0
+        else
+            if (d0*d1 <= 0.0d0) then
+                m1 = 0.0d0
+            else
+                m1 = 2.0d0*d0*d1 / (d0 + d1)
+            end if
+            if (d1*d2 <= 0.0d0) then
+                m2 = 0.0d0
+            else
+                m2 = 2.0d0*d1*d2 / (d1 + d2)
+            end if
+            s = sign(1.0d0, d1)
+            a1 = s*m1
+            a2 = s*m2
+            if (a1 < 0.0d0) a1 = 0.0d0
+            if (a2 < 0.0d0) a2 = 0.0d0
+            lim = 3.0d0*abs(d1)
+            if (a1 > lim) a1 = lim
+            if (a2 > lim) a2 = lim
+            m1 = s*a1
+            m2 = s*a2
+        end if
+
+        tt  = t*t
+        ttt = tt*t
+        h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
+        h10 = ttt - 2.0d0*tt + t
+        h01 = -2.0d0*ttt + 3.0d0*tt
+        h11 = ttt - tt
+
+        v = h00*p1 + h10*m1 + h01*p2 + h11*m2
+    end function pchip_interval
+
     !> Fast adaptive index lookup. Returns the smallest 1-based ii such that
     !> nodes(ii) >= val. Falls back to binary search if the guard array is
     !> not built (M = 0). Equivalent in result to find_index_bsearch but O(1)
@@ -31,7 +84,7 @@ contains
         use mod_lookup_table, only: find_index_bsearch
         double precision, intent(in) :: nodes(n), val, scale_M
         integer, intent(in) :: n, M
-        integer, intent(in) :: guard(*)
+        integer, intent(in) :: guard(M)
         integer :: k
         if (M > 0) then
             k = 1 + min(M-1, max(0, int(floor((val - nodes(1)) * scale_M))))
@@ -52,7 +105,7 @@ contains
 
         double precision :: fx, fy, tx, ty, rx, ry, xstep_inv, ystep_inv
         integer  :: ix, iy, ix1, iy1
-        
+
         xstep_inv = dble(nx-1) / (vmax_x - vmin_x)
         ystep_inv = dble(ny-1) / (vmax_y - vmin_y)
 
@@ -80,146 +133,83 @@ contains
     pure double precision function interp_clamped_monotone_bicubic_table( &
     vary, varx, table, nx, ny, vmin_y, vmax_y, vmin_x, vmax_x) result(z)
 
-    !> Monotone bicubic (practical tensor-product variant):
-    !>   - Do a *monotone* cubic Hermite (PCHIP-style) interpolation in x on 4 points
-    !>     for each of 4 surrounding y-rows (j-1..j+2) -> gives 4 intermediate values.
-    !>   - Then do the same monotone cubic Hermite interpolation in y on those 4 values.
-    !>
-    !> This construction is monotone along x-lines and y-lines (no overshoot on each 1D slice)
-    !> https://jacobwilliams.github.io/PCHIP/
-    !> https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.PchipInterpolator.html
-
-    double precision, intent(in) :: vary, varx
-    integer, intent(in)          :: nx, ny
-    double precision, intent(in) :: table(ny, nx)
-    double precision, intent(in) :: vmin_y, vmax_y, vmin_x, vmax_x
-
-    double precision :: fx, fy, rx, ry, tx, ty, xstep_inv, ystep_inv
-    integer :: ix, iy
-
-    double precision :: g0, g1, g2, g3
-
-    xstep_inv = dble(nx-1) / (vmax_x - vmin_x)
-    ystep_inv = dble(ny-1) / (vmax_y - vmin_y)
-
-    fx = (varx - vmin_x) * xstep_inv
-    fy = (vary - vmin_y) * ystep_inv
-
-    rx = max(0.0d0, min(fx, dble(nx-1)))
-    ry = max(0.0d0, min(fy, dble(ny-1)))
-
-    ix = int(rx)
-    iy = int(ry)
-
-    tx = rx - dble(ix)
-    ty = ry - dble(iy)
-
-    !> Four rows around iy: (iy-1, iy, iy+1, iy+2)
-    g0 = x_interp_row(iy-1, ix, tx)
-    g1 = x_interp_row(iy  , ix, tx)
-    g2 = x_interp_row(iy+1, ix, tx)
-    g3 = x_interp_row(iy+2, ix, tx)
-
-    !> Now monotone cubic in y between g1 and g2 with neighbors g0,g3
-    z = y_interp_from4(g0, g1, g2, g3, ty)
-
-contains
-
-    pure integer function clampi(i, lo, hi) result(o)
-        integer, intent(in) :: i, lo, hi
-        o = max(lo, min(hi, i))
-    end function clampi
-
-    pure double precision function pchip_interval_uniform(p0, p1, p2, p3, t) result(v)
-        !> Monotone cubic Hermite on the interval between p1 and p2 with t in [0,1]
-        !> using local PCHIP-style derivatives computed from 4 uniformly spaced samples.
+        !> Monotone bicubic (practical tensor-product variant):
+        !>   - Do a *monotone* cubic Hermite (PCHIP-style) interpolation in x on 4 points
+        !>     for each of 4 surrounding y-rows (j-1..j+2) -> gives 4 intermediate values.
+        !>   - Then do the same monotone cubic Hermite interpolation in y on those 4 values.
         !>
-        !> Secant slopes (h=1): d0=p1-p0, d1=p2-p1, d2=p3-p2.
-        !> Derivatives m1 at p1 from (d0,d1), m2 at p2 from (d1,d2) using harmonic mean
-        !> with monotonicity guards + Hyman-style clamp to avoid overshoot on [p1,p2].
+        !> This construction is monotone along x-lines and y-lines (no overshoot on each 1D slice)
+        !> https://jacobwilliams.github.io/PCHIP/
+        !> https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.PchipInterpolator.html
 
-        double precision, intent(in) :: p0, p1, p2, p3, t
-        double precision :: d0, d1, d2, m1, m2
-        double precision :: tt, ttt, h00, h10, h01, h11
-        double precision :: s, a1, a2, lim
+        double precision, intent(in) :: vary, varx
+        integer, intent(in)          :: nx, ny
+        double precision, intent(in) :: table(ny, nx)
+        double precision, intent(in) :: vmin_y, vmax_y, vmin_x, vmax_x
 
-        d0 = p1 - p0
-        d1 = p2 - p1
-        d2 = p3 - p2
+        double precision :: fx, fy, rx, ry, tx, ty, xstep_inv, ystep_inv
+        integer :: ix, iy
 
-        !> If the interval is flat, force linear-flat
-        if (d1 == 0.0d0) then
-            m1 = 0.0d0
-            m2 = 0.0d0
-        else
-            !> PCHIP interior derivative at p1 from (d0,d1)
-            if (d0*d1 <= 0.0d0) then
-                m1 = 0.0d0
-            else
-                m1 = 2.0d0*d0*d1 / (d0 + d1)   !> harmonic mean
-            end if
+        double precision :: g0, g1, g2, g3
 
-            !> PCHIP interior derivative at p2 from (d1,d2)
-            if (d1*d2 <= 0.0d0) then
-                m2 = 0.0d0
-            else
-                m2 = 2.0d0*d1*d2 / (d1 + d2)
-            end if
+        xstep_inv = dble(nx-1) / (vmax_x - vmin_x)
+        ystep_inv = dble(ny-1) / (vmax_y - vmin_y)
 
-            !> Monotonicity clamp on the interval [p1,p2]:
-            !> enforce m1, m2 have the same sign as d1 and magnitude not too large.
-            s = sign(1.0d0, d1)      
-            a1 = s*m1
-            a2 = s*m2
-            if (a1 < 0.0d0) a1 = 0.0d0
-            if (a2 < 0.0d0) a2 = 0.0d0
+        fx = (varx - vmin_x) * xstep_inv
+        fy = (vary - vmin_y) * ystep_inv
 
-            lim = 3.0d0*abs(d1)      !> Hyman-style upper bound on derivatives for no-overshoot
-            if (a1 > lim) a1 = lim
-            if (a2 > lim) a2 = lim
+        rx = max(0.0d0, min(fx, dble(nx-1)))
+        ry = max(0.0d0, min(fy, dble(ny-1)))
 
-            m1 = s*a1
-            m2 = s*a2
-        end if
+        ix = int(rx)
+        iy = int(ry)
 
-        !> Cubic Hermite basis on [0,1] (h=1)
-        tt  = t*t
-        ttt = tt*t
-        h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
-        h10 = ttt - 2.0d0*tt + t
-        h01 = -2.0d0*ttt + 3.0d0*tt
-        h11 = ttt - tt
+        tx = rx - dble(ix)
+        ty = ry - dble(iy)
 
-        v = h00*p1 + h10*m1 + h01*p2 + h11*m2
-    end function pchip_interval_uniform
+        !> Four rows around iy: (iy-1, iy, iy+1, iy+2)
+        g0 = x_interp_row(iy-1, ix, tx)
+        g1 = x_interp_row(iy  , ix, tx)
+        g2 = x_interp_row(iy+1, ix, tx)
+        g3 = x_interp_row(iy+2, ix, tx)
 
-    pure double precision function x_interp_row(j, i, t) result(v)
-        !> Interpolate in x for fixed row j at cell starting index i (0-based),
-        !> using points i-1, i, i+1, i+2 with clamped indexing.
-        integer, intent(in) :: j, i
-        double precision, intent(in) :: t
-        integer :: i0, i1, i2, i3, jj
-        double precision :: p0, p1, p2, p3
+        !> Now monotone cubic in y between g1 and g2 with neighbors g0,g3
+        z = y_interp_from4(g0, g1, g2, g3, ty)
 
-        jj = clampi(j, 0, ny-1)
-        i0 = clampi(i-1, 0, nx-1)
-        i1 = clampi(i  , 0, nx-1)
-        i2 = clampi(i+1, 0, nx-1)
-        i3 = clampi(i+2, 0, nx-1)
+    contains
 
-        p0 = table(jj+1, i0+1)
-        p1 = table(jj+1, i1+1)
-        p2 = table(jj+1, i2+1)
-        p3 = table(jj+1, i3+1)
+        pure integer function clampi(i, lo, hi) result(o)
+            integer, intent(in) :: i, lo, hi
+            o = max(lo, min(hi, i))
+        end function clampi
 
-        v = pchip_interval_uniform(p0, p1, p2, p3, t)
-    end function x_interp_row
+        pure double precision function x_interp_row(j, i, t) result(v)
+            !> Interpolate in x for fixed row j at cell starting index i (0-based),
+            !> using points i-1, i, i+1, i+2 with clamped indexing.
+            integer, intent(in) :: j, i
+            double precision, intent(in) :: t
+            integer :: i0, i1, i2, i3, jj
+            double precision :: p0, p1, p2, p3
 
-    pure double precision function y_interp_from4(v0, v1, v2, v3, t) result(v)
-        !> Interpolate in y between v1 and v2 using surrounding v0..v3, t in [0,1]
-        double precision, intent(in) :: v0, v1, v2, v3, t
-        v = pchip_interval_uniform(v0, v1, v2, v3, t)
-    end function y_interp_from4
+            jj = clampi(j, 0, ny-1)
+            i0 = clampi(i-1, 0, nx-1)
+            i1 = clampi(i  , 0, nx-1)
+            i2 = clampi(i+1, 0, nx-1)
+            i3 = clampi(i+2, 0, nx-1)
+
+            p0 = table(jj+1, i0+1)
+            p1 = table(jj+1, i1+1)
+            p2 = table(jj+1, i2+1)
+            p3 = table(jj+1, i3+1)
+
+            v = pchip_interval(p0, p1, p2, p3, t)
+        end function x_interp_row
+
+        pure double precision function y_interp_from4(v0, v1, v2, v3, t) result(v)
+            !> Interpolate in y between v1 and v2 using surrounding v0..v3, t in [0,1]
+            double precision, intent(in) :: v0, v1, v2, v3, t
+            v = pchip_interval(v0, v1, v2, v3, t)
+        end function y_interp_from4
 
     end function interp_clamped_monotone_bicubic_table
 
@@ -285,7 +275,7 @@ contains
         double precision, intent(in) :: var1_nodes(dim1), var2_nodes(dim2)
         integer, intent(in)          :: M_1, M_2
         double precision, intent(in) :: scale_1, scale_2
-        integer, intent(in)          :: guard_1(*), guard_2(*)
+        integer, intent(in)          :: guard_1(M_1), guard_2(M_2)
 
         integer          :: i1, i2, i1p, i2p, ii
         double precision :: t1, t2
@@ -338,7 +328,7 @@ contains
         double precision, intent(in) :: var1_nodes(dim1), var2_nodes(dim2)
         integer, intent(in)          :: M_1, M_2
         double precision, intent(in) :: scale_1, scale_2
-        integer, intent(in)          :: guard_1(*), guard_2(*)
+        integer, intent(in)          :: guard_1(M_1), guard_2(M_2)
 
         integer          :: i1, i2, ii
         double precision :: t1, t2
@@ -375,7 +365,7 @@ contains
         g2 = ax1_interp_col_nu(i2+1, i1, t1)
         g3 = ax1_interp_col_nu(i2+2, i1, t1)
 
-        z = pchip_interval_uniform_local(g0, g1, g2, g3, t2)
+        z = pchip_interval(g0, g1, g2, g3, t2)
 
     contains
 
@@ -383,55 +373,6 @@ contains
             integer, intent(in) :: i, lo, hi
             o = max(lo, min(hi, i))
         end function clampi_nu
-
-        pure double precision function pchip_interval_uniform_local(p0, p1, p2, p3, t) result(v)
-            !> Identical to pchip_interval_uniform in the uniform routine.
-            !> Duplicated here because pure functions cannot reference
-            !> contained functions of a sibling routine in standard Fortran.
-            double precision, intent(in) :: p0, p1, p2, p3, t
-            double precision :: d0, d1, d2, m1, m2
-            double precision :: tt, ttt, h00, h10, h01, h11
-            double precision :: s, a1, a2, lim
-
-            d0 = p1 - p0
-            d1 = p2 - p1
-            d2 = p3 - p2
-
-            if (d1 == 0.0d0) then
-                m1 = 0.0d0
-                m2 = 0.0d0
-            else
-                if (d0*d1 <= 0.0d0) then
-                    m1 = 0.0d0
-                else
-                    m1 = 2.0d0*d0*d1 / (d0 + d1)
-                end if
-                if (d1*d2 <= 0.0d0) then
-                    m2 = 0.0d0
-                else
-                    m2 = 2.0d0*d1*d2 / (d1 + d2)
-                end if
-                s = sign(1.0d0, d1)
-                a1 = s*m1
-                a2 = s*m2
-                if (a1 < 0.0d0) a1 = 0.0d0
-                if (a2 < 0.0d0) a2 = 0.0d0
-                lim = 3.0d0*abs(d1)
-                if (a1 > lim) a1 = lim
-                if (a2 > lim) a2 = lim
-                m1 = s*a1
-                m2 = s*a2
-            end if
-
-            tt  = t*t
-            ttt = tt*t
-            h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
-            h10 = ttt - 2.0d0*tt + t
-            h01 = -2.0d0*ttt + 3.0d0*tt
-            h11 = ttt - tt
-
-            v = h00*p1 + h10*m1 + h01*p2 + h11*m2
-        end function pchip_interval_uniform_local
 
         pure double precision function ax1_interp_col_nu(j2, i1_cell, t) result(v)
             !> Interpolate in axis-1 at fixed axis-2 column j2 (0-based,
@@ -453,7 +394,7 @@ contains
             p2 = table(a2+1, b+1)
             p3 = table(a3+1, b+1)
 
-            v = pchip_interval_uniform_local(p0, p1, p2, p3, t)
+            v = pchip_interval(p0, p1, p2, p3, t)
         end function ax1_interp_col_nu
 
     end function interp_clamped_monotone_bicubic_table_nu
@@ -474,8 +415,6 @@ contains
         integer :: i0, i1, i2, i3, j0, j1, j2, j3
         double precision :: g0(nq), g1(nq), g2(nq), g3(nq)
         double precision :: p0, p1, p2, p3
-        double precision :: d0, d1, d2, m1, m2, s, a1, a2, lim
-        double precision :: tt, ttt, h00, h10, h01, h11
 
         xstep_inv = dble(nx-1) / (vmax_x - vmin_x)
         ystep_inv = dble(ny-1) / (vmax_y - vmin_y)
@@ -503,76 +442,18 @@ contains
                 p1 = table_il(q, j1+1, i1+1)
                 p2 = table_il(q, j1+1, i2+1)
                 p3 = table_il(q, j1+1, i3+1)
-
-                ! Inline PCHIP
-                d0 = p1 - p0; d1 = p2 - p1; d2 = p3 - p2
-                if (d1 == 0.0d0) then
-                    m1 = 0.0d0; m2 = 0.0d0
-                else
-                    if (d0*d1 <= 0.0d0) then
-                        m1 = 0.0d0
-                    else
-                        m1 = 2.0d0*d0*d1/(d0+d1)
-                    end if
-                    if (d1*d2 <= 0.0d0) then
-                        m2 = 0.0d0
-                    else
-                        m2 = 2.0d0*d1*d2/(d1+d2)
-                    end if
-                    s = sign(1.0d0, d1)
-                    a1 = s*m1; a2 = s*m2
-                    if (a1 < 0.0d0) a1 = 0.0d0
-                    if (a2 < 0.0d0) a2 = 0.0d0
-                    lim = 3.0d0*abs(d1)
-                    if (a1 > lim) a1 = lim
-                    if (a2 > lim) a2 = lim
-                    m1 = s*a1; m2 = s*a2
-                end if
-                tt = tx*tx; ttt = tt*tx
-                h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
-                h10 = ttt - 2.0d0*tt + tx
-                h01 = -2.0d0*ttt + 3.0d0*tt
-                h11 = ttt - tt
                 select case(j0)
-                case(0); g0(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
-                case(1); g1(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
-                case(2); g2(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
-                case(3); g3(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                case(0); g0(q) = pchip_interval(p0, p1, p2, p3, tx)
+                case(1); g1(q) = pchip_interval(p0, p1, p2, p3, tx)
+                case(2); g2(q) = pchip_interval(p0, p1, p2, p3, tx)
+                case(3); g3(q) = pchip_interval(p0, p1, p2, p3, tx)
                 end select
             end do
         end do
 
         ! Final PCHIP interpolation in y for each quantity
         do q = 1, nq
-            d0 = g1(q) - g0(q); d1 = g2(q) - g1(q); d2 = g3(q) - g2(q)
-            if (d1 == 0.0d0) then
-                m1 = 0.0d0; m2 = 0.0d0
-            else
-                if (d0*d1 <= 0.0d0) then
-                    m1 = 0.0d0
-                else
-                    m1 = 2.0d0*d0*d1/(d0+d1)
-                end if
-                if (d1*d2 <= 0.0d0) then
-                    m2 = 0.0d0
-                else
-                    m2 = 2.0d0*d1*d2/(d1+d2)
-                end if
-                s = sign(1.0d0, d1)
-                a1 = s*m1; a2 = s*m2
-                if (a1 < 0.0d0) a1 = 0.0d0
-                if (a2 < 0.0d0) a2 = 0.0d0
-                lim = 3.0d0*abs(d1)
-                if (a1 > lim) a1 = lim
-                if (a2 > lim) a2 = lim
-                m1 = s*a1; m2 = s*a2
-            end if
-            tt = ty*ty; ttt = tt*ty
-            h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
-            h10 = ttt - 2.0d0*tt + ty
-            h01 = -2.0d0*ttt + 3.0d0*tt
-            h11 = ttt - tt
-            results(q) = h00*g1(q) + h10*m1 + h01*g2(q) + h11*m2
+            results(q) = pchip_interval(g0(q), g1(q), g2(q), g3(q), ty)
         end do
 
     end subroutine interp_pchip_interleaved
@@ -594,7 +475,7 @@ contains
         double precision, intent(in) :: var1_nodes(ny), var2_nodes(nx)
         integer, intent(in)          :: M_1, M_2
         double precision, intent(in) :: scale_1, scale_2
-        integer, intent(in)          :: guard_1(*), guard_2(*)
+        integer, intent(in)          :: guard_1(M_1), guard_2(M_2)
         double precision, intent(out) :: results(nq)
 
         double precision :: tx, ty
@@ -602,8 +483,6 @@ contains
         integer :: i0, i1, i2, i3, j0, j1, j2, j3
         double precision :: g0(nq), g1(nq), g2(nq), g3(nq)
         double precision :: p0, p1, p2, p3
-        double precision :: d0, d1, d2, m1, m2, s, a1, a2, lim
-        double precision :: tt, ttt, h00, h10, h01, h11
 
         ! Axis-1 (vary) cell index + local fractional coordinate
         if (vary <= var1_nodes(1)) then
@@ -644,66 +523,17 @@ contains
                 p1 = table_il(q, j1+1, i1+1)
                 p2 = table_il(q, j1+1, i2+1)
                 p3 = table_il(q, j1+1, i3+1)
-
-                d0 = p1 - p0; d1 = p2 - p1; d2 = p3 - p2
-                if (d1 == 0.0d0) then
-                    m1 = 0.0d0; m2 = 0.0d0
-                else
-                    if (d0*d1 <= 0.0d0) then; m1 = 0.0d0
-                    else; m1 = 2.0d0*d0*d1/(d0+d1)
-                    end if
-                    if (d1*d2 <= 0.0d0) then; m2 = 0.0d0
-                    else; m2 = 2.0d0*d1*d2/(d1+d2)
-                    end if
-                    s = sign(1.0d0, d1)
-                    a1 = s*m1; a2 = s*m2
-                    if (a1 < 0.0d0) a1 = 0.0d0
-                    if (a2 < 0.0d0) a2 = 0.0d0
-                    lim = 3.0d0*abs(d1)
-                    if (a1 > lim) a1 = lim
-                    if (a2 > lim) a2 = lim
-                    m1 = s*a1; m2 = s*a2
-                end if
-                tt = tx*tx; ttt = tt*tx
-                h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
-                h10 = ttt - 2.0d0*tt + tx
-                h01 = -2.0d0*ttt + 3.0d0*tt
-                h11 = ttt - tt
                 select case(j0)
-                case(0); g0(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
-                case(1); g1(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
-                case(2); g2(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
-                case(3); g3(q) = h00*p1 + h10*m1 + h01*p2 + h11*m2
+                case(0); g0(q) = pchip_interval(p0, p1, p2, p3, tx)
+                case(1); g1(q) = pchip_interval(p0, p1, p2, p3, tx)
+                case(2); g2(q) = pchip_interval(p0, p1, p2, p3, tx)
+                case(3); g3(q) = pchip_interval(p0, p1, p2, p3, tx)
                 end select
             end do
         end do
 
         do q = 1, nq
-            d0 = g1(q) - g0(q); d1 = g2(q) - g1(q); d2 = g3(q) - g2(q)
-            if (d1 == 0.0d0) then
-                m1 = 0.0d0; m2 = 0.0d0
-            else
-                if (d0*d1 <= 0.0d0) then; m1 = 0.0d0
-                else; m1 = 2.0d0*d0*d1/(d0+d1)
-                end if
-                if (d1*d2 <= 0.0d0) then; m2 = 0.0d0
-                else; m2 = 2.0d0*d1*d2/(d1+d2)
-                end if
-                s = sign(1.0d0, d1)
-                a1 = s*m1; a2 = s*m2
-                if (a1 < 0.0d0) a1 = 0.0d0
-                if (a2 < 0.0d0) a2 = 0.0d0
-                lim = 3.0d0*abs(d1)
-                if (a1 > lim) a1 = lim
-                if (a2 > lim) a2 = lim
-                m1 = s*a1; m2 = s*a2
-            end if
-            tt = ty*ty; ttt = tt*ty
-            h00 = 2.0d0*ttt - 3.0d0*tt + 1.0d0
-            h10 = ttt - 2.0d0*tt + ty
-            h01 = -2.0d0*ttt + 3.0d0*tt
-            h11 = ttt - tt
-            results(q) = h00*g1(q) + h10*m1 + h01*g2(q) + h11*m2
+            results(q) = pchip_interval(g0(q), g1(q), g2(q), g3(q), ty)
         end do
 
     end subroutine interp_pchip_interleaved_nu
