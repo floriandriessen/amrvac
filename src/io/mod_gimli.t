@@ -214,36 +214,38 @@ contains
 
         filename = trim(base_filename) // "_c.log"
 
-        if (.not. visited) then
-        ! Delete the log when not doing a restart run
-            if (restart_from_file == undefined .or. reset_time) then
-                open(unit=my_unit,file=trim(filename),form='formatted',status='replace')
-                write(my_unit,'(a)') ''
+        if (mype == 0) then
+
+            if (.not. visited) then
+            ! Delete the log when not doing a restart run
+                if (restart_from_file == undefined .or. reset_time) then
+                    open(unit=my_unit,file=trim(filename),form='formatted',status='replace')
+                end if
+                visited = .true.
                 if (mhd_bool == 1) then
-                    write(my_unit,'(a)') '#Global_time Tmax Tmin vmax B1max B2max B3max mag_avg'
+                    write(my_unit,'(a)') 'global_time Tmax Tmin vmax B1max B2max B3max mag_avg'
                 else
-                    write(my_unit,'(a)') '#Global_time Tmax Tmin vmax'
+                    write(my_unit,'(a)') 'global_time Tmax Tmin vmax'
                 end if
             end if
-            visited = .true.
-        end if
 
-        if (mype == 0) then
-        write(filename,"(a)") filename
-        inquire(file=filename,exist=alive)
-        if(alive) then
-            open(unit=my_unit,file=filename,form='formatted',status='old',access='append')
-        else
-            open(unit=my_unit,file=filename,form='formatted',status='new')
-        endif
+            if (mype == 0) then
+                write(filename,"(a)") filename
+                inquire(file=filename,exist=alive)
+                if(alive) then
+                    open(unit=my_unit,file=filename,form='formatted',status='old',access='append')
+                else
+                    open(unit=my_unit,file=filename,form='formatted',status='new')
+                end if
+            end if
 
-        ! if number of output doubles is increase, don't forget to change the fmt_string above
-        if (mhd_bool == 1) then
-            write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax, B1max, B2max, B3max, magn_avg
-        else
-            write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax
-        end if
-        close(my_unit)
+            ! if number of output doubles is increase, don't forget to change the fmt_string above
+            if (mhd_bool == 1) then
+                write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax, B1max, B2max, B3max, magn_avg
+            else
+                write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax
+            end if
+            close(my_unit)
         end if
     end subroutine analytics_log
 
