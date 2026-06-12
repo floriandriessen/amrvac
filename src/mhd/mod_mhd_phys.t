@@ -174,6 +174,7 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_semirelativistic = .false.
   !> Whether plasma is partially ionized
   logical, public, protected              :: mhd_partial_ionization = .false.
+  character(len=32), public, protected    :: mhd_ionization_table = "carlsson2012"
   !> Whether CAK radiation line force is activated
   logical, public, protected              :: mhd_cak_force = .false.
   !> Whether radiation-gas interaction is handled using flux limited diffusion
@@ -293,7 +294,7 @@ contains
       typedivbdiff, type_ct, divbwave, He_abundance, &
       H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
       B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
-      particles_eta, particles_etah,has_equi_rho_and_p,mhd_equi_thermal,&
+      mhd_ionization_table, particles_eta, particles_etah,has_equi_rho_and_p,mhd_equi_thermal,&
       boundary_divbfix, boundary_divbfix_skip, mhd_divb_nth, mhd_semirelativistic,&
       mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
       mhd_hydrodynamic_e, mhd_trac, mhd_trac_type, mhd_trac_mask, mhd_trac_finegrid, mhd_cak_force, &
@@ -342,7 +343,7 @@ contains
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_cak_force, only: cak_init
     use mod_ionization_degree, only: ionization_degree_init,&
-            ionization_get_Rfactor_from_temperature
+            ionization_get_Rfactor_from_temperature, ionization_is_temperature_only, ionization_solve_p_Rfactor
     use mod_geometry
     use mod_usr_methods, only: usr_Rfactor
     {^NOONED
@@ -845,6 +846,8 @@ contains
 
     phys_get_Rfactor=>mhd_get_Rfactor
 
+
+
     if(mhd_internal_e) then
       if(has_equi_rho_and_p) then
         mhd_get_temperature => mhd_get_temperature_from_eint_with_equi
@@ -888,6 +891,14 @@ contains
 
     ! derive units from basic units
     call mhd_physical_units()
+
+    ! initialize ionization degree table
+    if (mhd_partial_ionization) then
+      call ionization_degree_init(He_abundance, &
+           1.d0 + H_ion_fr + He_abundance * &
+           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)), &
+           mhd_ionization_table)
+    end if
 
     if(mhd_hyperbolic_tc) then
       if(mhd_hyperbolic_tc_kappa==0.d0) then
@@ -1002,7 +1013,13 @@ contains
       rc_fl%get_temperature => mhd_get_temperature
       rc_fl%get_var_Rfactor => mhd_get_Rfactor
       if (mhd_partial_ionization) then
-        rc_fl%get_Rfactor_from_temperature => ionization_get_Rfactor_from_temperature
+        rc_fl%get_pthermal_Rfactor_from_rho_T => &
+            ionization_solve_p_Rfactor
+
+        if (ionization_is_temperature_only()) then
+          rc_fl%get_Rfactor_from_temperature => &
+              ionization_get_Rfactor_from_temperature
+        end if
       end if
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
@@ -1095,13 +1112,6 @@ contains
         ! in mhd_get_flux: assuming one additional ghost layer added in nghostcells.
         phys_wider_stencil = 1
       end if
-    end if
-
-    ! initialize ionization degree table
-    if (mhd_partial_ionization) then
-      call ionization_degree_init(He_abundance, &
-           1.d0 + H_ion_fr + He_abundance * &
-           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)))
     end if
 
     ! Initialize CAK radiation force module

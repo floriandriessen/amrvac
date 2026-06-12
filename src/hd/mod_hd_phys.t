@@ -49,7 +49,9 @@ module mod_hd_phys
 
   !> Whether plasma is partially ionized
   logical, public, protected              :: hd_partial_ionization = .false.
-
+  character(len=32), public, protected    :: hd_ionization_table = "carlsson2012"
+  !> Include hydrogen ionization energy in the HD internal energy
+  logical, public, protected              :: hd_include_ionization_energy = .false.
   !> Index of the density (in the w array)
   integer, public, protected              :: rho_
 
@@ -143,6 +145,7 @@ module mod_hd_phys
   public :: hd_get_temperature_from_prim
   ! End: following relevant for radiative hydro using FLD
   public :: hd_get_temperature_from_etot
+  public :: hd_get_p_eint_Rfactor_from_rho_T
 
 contains
 
@@ -157,6 +160,7 @@ contains
     hd_gravity, He_abundance,H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
     hd_trac_type, hd_cak_force, hd_partial_ionization, &
+    hd_ionization_table, hd_include_ionization_energy, &
     hd_radiation_fld, hd_fip
 
     do n = 1, size(files)
@@ -198,7 +202,8 @@ contains
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_ionization_degree, only: ionization_degree_init, &
-        ionization_get_Rfactor_from_temperature
+        ionization_get_Rfactor_from_temperature, ionization_is_temperature_only, &
+        ionization_solve_p_Rfactor, ionization_get_eps_derivative_T
     use mod_usr_methods, only: usr_Rfactor
     use mod_fld
 
@@ -354,7 +359,14 @@ contains
     end if
 
     phys_get_Rfactor             => hd_get_Rfactor
-
+    ! initialize ionization degree table
+    if (hd_partial_ionization) then
+      call ionization_degree_init(He_abundance, &
+           1.d0 + H_ion_fr + He_abundance * &
+           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)), &
+           hd_ionization_table, &
+           include_energy=hd_include_ionization_energy)
+    end if
     ! initialize thermal conduction module
     if (hd_thermal_conduction) then
       if (.not. hd_energy) &
@@ -386,11 +398,26 @@ contains
       rc_fl%get_temperature => hd_get_temperature_from_etot
       rc_fl%get_pthermal => hd_get_pthermal
       rc_fl%get_var_Rfactor => hd_get_Rfactor
+      if (hd_include_ionization_energy) then
+        rc_fl%get_eint => hd_get_eint
+        rc_fl%get_pthermal_eint_Rfactor_from_rho_T => &
+             hd_get_p_eint_Rfactor_from_rho_T
+        rc_fl%get_eps_derivative_from_T => &
+             ionization_get_eps_derivative_T
+      end if
       if (hd_partial_ionization) then
-        rc_fl%get_Rfactor_from_temperature => ionization_get_Rfactor_from_temperature
+        rc_fl%get_pthermal_Rfactor_from_rho_T => &
+            ionization_solve_p_Rfactor
+        if (ionization_is_temperature_only()) then
+          rc_fl%get_Rfactor_from_temperature => &
+              ionization_get_Rfactor_from_temperature
+        end if
       end if
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
+      if (hd_include_ionization_energy) then
+        call radiative_cooling_build_eion_table(rc_fl)
+      end if
     end if
     allocate(te_fl_hd)
     te_fl_hd%get_rho=> hd_get_rho
@@ -422,13 +449,6 @@ contains
     nvector      = 1 ! No. vector vars
     allocate(iw_vector(nvector))
     iw_vector(1) = mom(1) - 1
-    ! initialize ionization degree table
-    if (hd_partial_ionization) then
-      call ionization_degree_init(He_abundance, &
-           1.d0 + H_ion_fr + He_abundance * &
-           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)))
-    end if
-
   end subroutine hd_phys_init
 
 {^IFTHREED
@@ -488,21 +508,54 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     integer, intent(in)    :: step
 
-    integer :: idir
+    integer :: idir, ix^D
     logical :: flag(ixI^S,1:nw)
     character(len=140) :: error_msg
+    double precision :: eint_floor(ixI^S)
+    double precision :: T, pthermal, Rfactor
 
     flag=.false.
-    where(w(ixO^S,e_)<small_e) flag(ixO^S,e_)=.true.
+    if (hd_include_ionization_energy) then
+      {do ix^DB = ixO^LIM^DB\}
+        call hd_get_eint_from_rho_p_scalar( &
+             max(w(ix^D,rho_), small_density), small_pressure, &
+             eint_floor(ix^D))
+        if (w(ix^D,e_) < eint_floor(ix^D)) flag(ix^D,e_)=.true.
+      {end do\}
+    else
+      where(w(ixO^S,e_)<small_e) flag(ixO^S,e_)=.true.
+    end if
     if(any(flag(ixO^S,e_))) then
       select case (small_values_method)
       case ("replace")
-        where(flag(ixO^S,e_)) w(ixO^S,e_)=small_e
+        if (hd_include_ionization_energy) then
+          where(flag(ixO^S,e_)) w(ixO^S,e_)=eint_floor(ixO^S)
+        else
+          where(flag(ixO^S,e_)) w(ixO^S,e_)=small_e
+        end if
       case ("average")
         call small_values_average(ixI^L, ixO^L, w, x, flag, e_)
+        if (hd_include_ionization_energy) then
+          where(flag(ixO^S,e_) .and. &
+                w(ixO^S,e_) < eint_floor(ixO^S))
+            w(ixO^S,e_) = eint_floor(ixO^S)
+          end where
+        end if
       case default
         ! small values error shows primitive variables
-        w(ixO^S,e_)=w(ixO^S,e_)*(hd_gamma - 1.0d0)
+        if (hd_include_ionization_energy) then
+          {do ix^DB = ixO^LIM^DB\}
+            if (w(ix^D,rho_) > zero .and. w(ix^D,e_) > zero) then
+              call hd_get_state_from_eint_scalar( &
+                   w(ix^D,rho_), w(ix^D,e_), T, pthermal, Rfactor)
+              w(ix^D,e_) = pthermal
+            else
+              w(ix^D,e_) = -bigdouble
+            end if
+          {end do\}
+        else
+          w(ixO^S,e_)=w(ixO^S,e_)*(hd_gamma - 1.0d0)
+        end if
         do idir = 1, ndir
            w(ixO^S, iw_mom(idir)) = w(ixO^S, iw_mom(idir))/w(ixO^S,rho_)
         end do
@@ -541,6 +594,17 @@ contains
     rho(ixO^S) = w(ixO^S,rho_)
 
   end subroutine hd_get_rho
+
+  subroutine hd_get_eint(w,x,ixI^L,ixO^L,eint)
+    use mod_global_parameters
+
+    integer, intent(in) :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S,1:nw)
+    double precision, intent(in) :: x(ixI^S,1:ndim)
+    double precision, intent(out) :: eint(ixI^S)
+
+    eint(ixO^S) = w(ixO^S,e_) - hd_kin_en(w,ixI^L,ixO^L)
+  end subroutine hd_get_eint
 
 !!end th cond
 !!rad cool
@@ -604,6 +668,8 @@ contains
   subroutine hd_check_params
     use mod_global_parameters
     use mod_geometry, only: coordinate
+    use mod_ionization_degree, only: ionization_is_temperature_only, &
+         ionization_check_eint_table
     use mod_dust, only: dust_check_params, dust_implicit_update, dust_evaluate_implicit
     use mod_particles, only: particles_init
     use mod_particles, only: npayload,nusrpayload,ngridvars,num_particles,physics_type_particles
@@ -626,6 +692,31 @@ contains
        small_e = small_pressure/(hd_gamma - 1.0d0)
        inv_gamma_1=1.d0/(hd_gamma-1.d0)
        small_r_e = small_pressure/(hd_gamma - 1.0d0)
+    end if
+
+    if (hd_include_ionization_energy) then
+      if (.not. hd_partial_ionization) then
+        call mpistop("hd_include_ionization_energy requires partial ionization")
+      end if
+      if (.not. hd_energy) then
+        call mpistop("hd_include_ionization_energy requires hd_energy")
+      end if
+      if (.not. ionization_is_temperature_only()) then
+        call mpistop("HD ionization energy requires a T-only ionization table")
+      end if
+      call ionization_check_eint_table(inv_gamma_1)
+      if (allocated(flux_method)) then
+        if (any(flux_method == fs_tvd) .or. &
+            any(flux_method == fs_tvdmu)) then
+          call mpistop("HD ionization energy forbids Roe/TVD schemes")
+        end if
+      end if
+      if (allocated(typepred1)) then
+        if (any(typepred1 == fs_tvd) .or. &
+            any(typepred1 == fs_tvdmu)) then
+          call mpistop("HD ionization energy forbids Roe/TVD predictors")
+        end if
+      end if
     end if
 
     if (hd_dust) call dust_check_params()
@@ -700,6 +791,8 @@ contains
            write(*,*)'    hd_gravity=',hd_gravity
            write(*,*)'    hd_viscosity=',hd_viscosity
            write(*,*)'    hd_radiative_cooling=',hd_radiative_cooling
+           write(*,*)'    hd_include_ionization_energy=', &
+                hd_include_ionization_energy
            write(*,*)'    hd_cak_force=',hd_cak_force
            write(*,*)'    hd_radiation_fld=',hd_radiation_fld
            write(*,*)'    hd_thermal_conduction=',hd_thermal_conduction
@@ -895,6 +988,8 @@ contains
     double precision, intent(in) :: w(ixI^S, nw)
     logical, intent(inout)       :: flag(ixI^S,1:nw)
     double precision             :: tmp(ixI^S)
+    double precision :: eint, T, pthermal, Rfactor
+    integer :: ix^D
 
     flag=.false.
 
@@ -902,8 +997,26 @@ contains
        if (primitive) then
           where(w(ixO^S, e_) < small_pressure) flag(ixO^S,e_) = .true.
        else
-          tmp(ixO^S)=(hd_gamma-1.0d0)*(w(ixO^S,e_)-&
-           half*(^C&w(ixO^S,m^C_)**2+)/w(ixO^S,rho_))
+          if (hd_include_ionization_energy) then
+            {do ix^DB = ixO^LIM^DB\}
+              if (w(ix^D,rho_) <= zero) then
+                tmp(ix^D) = -bigdouble
+                cycle
+              end if
+              eint = w(ix^D,e_) - &
+                   half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+              if (eint > zero) then
+                call hd_get_state_from_eint_scalar( &
+                     w(ix^D,rho_), eint, T, pthermal, Rfactor)
+                tmp(ix^D) = pthermal
+              else
+                tmp(ix^D) = -bigdouble
+              end if
+            {end do\}
+          else
+            tmp(ixO^S)=(hd_gamma-1.0d0)*(w(ixO^S,e_)-&
+             half*(^C&w(ixO^S,m^C_)**2+)/w(ixO^S,rho_))
+          end if
           where(tmp(ixO^S) < small_pressure) flag(ixO^S,e_) = .true.
        endif
        if(hd_radiation_fld)then
@@ -941,19 +1054,30 @@ contains
   subroutine hd_to_conserved(ixI^L, ixO^L, w, x)
     use mod_global_parameters
     use mod_dust, only: dust_to_conserved
+    use mod_ionization_degree, only: ionization_get_state_scalar
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
     integer :: ix^D
+    double precision :: T, pcheck, eint, Rfactor
 
     if (hd_fip) call hd_bound_fip(.true., ixI^L, ixO^L, w)
 
     {do ix^DB=ixOmin^DB,ixOmax^DB\}
       if (hd_energy) then
          ! Calculate total energy from pressure and kinetic energy
-         w(ix^D,e_)=w(ix^D, e_)*inv_gamma_1+&
-          half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+         if (hd_include_ionization_energy) then
+           call ionization_get_state_scalar( &
+                w(ix^D,rho_), w(ix^D,p_), T, Rfactor)
+           call hd_get_p_eint_Rfactor_from_rho_T( &
+                w(ix^D,rho_), T, pcheck, eint, Rfactor)
+           w(ix^D,e_) = eint + &
+                half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+         else
+           w(ix^D,e_)=w(ix^D, e_)*inv_gamma_1+&
+            half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+         end if
       end if
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
@@ -975,6 +1099,7 @@ contains
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
     double precision                :: inv_rho
+    double precision                :: eint, T, pthermal, Rfactor
     integer :: ix^D
 
     if (fix_small_values) then
@@ -989,8 +1114,16 @@ contains
       ! Calculate pressure = (gamma-1) * (e-ek)
       if(hd_energy) then
          ! Compute pressure
-        w(ix^D,p_)=(hd_gamma-1.d0)*(w(ix^D,e_)&
-                  -half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
+        if (hd_include_ionization_energy) then
+          eint = w(ix^D,e_) - &
+               half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)
+          call hd_get_state_from_eint_scalar( &
+               w(ix^D,rho_), eint, T, pthermal, Rfactor)
+          w(ix^D,p_) = pthermal
+        else
+          w(ix^D,p_)=(hd_gamma-1.d0)*(w(ix^D,e_)&
+                    -half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
+        end if
       end if
    {end do\}
 
@@ -1063,9 +1196,11 @@ contains
     ! w in primitive form
     double precision, intent(in)              :: w(ixI^S, nw), x(ixI^S, 1:ndim)
     double precision, intent(inout)           :: cmax(ixI^S)
+    double precision :: csound2(ixI^S)
 
     if(hd_energy) then
-      cmax(ixO^S)=dabs(w(ixO^S,mom(idim)))+dsqrt(hd_gamma*w(ixO^S,p_)/w(ixO^S,rho_))
+      call hd_get_csound2_prim(w, x, ixI^L, ixO^L, csound2)
+      cmax(ixO^S)=dabs(w(ixO^S,mom(idim)))+dsqrt(csound2(ixO^S))
     else
       if (.not. associated(usr_set_pthermal)) then
         cmax(ixO^S) = hd_adiab * w(ixO^S, rho_)**hd_gamma
@@ -1166,8 +1301,8 @@ contains
 
       if(hd_energy) then
          ! note usage of primitives here
-         csoundL(ixO^S)=hd_gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
-         csoundR(ixO^S)=hd_gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+         call hd_get_csound2_prim(wLp, x, ixI^L, ixO^L, csoundL)
+         call hd_get_csound2_prim(wRp, x, ixI^L, ixO^L, csoundR)
       else
          ! note usage of conservatives here
          call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
@@ -1231,8 +1366,8 @@ contains
       ! Miyoshi 2005 JCP 208, 315 equation (67)
       if(hd_energy) then
          ! note usage of primitives here
-         csoundL(ixO^S)=hd_gamma*wLp(ixO^S,p_)/wLp(ixO^S,rho_)
-         csoundR(ixO^S)=hd_gamma*wRp(ixO^S,p_)/wRp(ixO^S,rho_)
+         call hd_get_csound2_prim(wLp, x, ixI^L, ixO^L, csoundL)
+         call hd_get_csound2_prim(wRp, x, ixI^L, ixO^L, csoundR)
       else
          ! note usage of conservatives here
          call hd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
@@ -1263,15 +1398,50 @@ contains
   !> csound2=gamma*p/rho
   subroutine hd_get_csound2(w,x,ixI^L,ixO^L,csound2)
     use mod_global_parameters
+    use mod_ionization_degree, only: ionization_get_csound2_T
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(out)   :: csound2(ixI^S)
 
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,csound2)
-    csound2(ixO^S)=hd_gamma*csound2(ixO^S)/w(ixO^S,rho_)
+    double precision :: temperature(ixI^S)
+    integer :: ix^D
+
+    if (hd_include_ionization_energy) then
+      call hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, temperature)
+      {do ix^DB = ixO^LIM^DB\}
+        call ionization_get_csound2_T( &
+             temperature(ix^D), inv_gamma_1, csound2(ix^D))
+      {end do\}
+    else
+      call hd_get_pthermal(w,x,ixI^L,ixO^L,csound2)
+      csound2(ixO^S)=hd_gamma*csound2(ixO^S)/w(ixO^S,rho_)
+    end if
 
   end subroutine hd_get_csound2
+
+  subroutine hd_get_csound2_prim(w,x,ixI^L,ixO^L,csound2)
+    use mod_global_parameters
+    use mod_ionization_degree, only: ionization_get_csound2_T
+
+    integer, intent(in)             :: ixI^L, ixO^L
+    double precision, intent(in)    :: w(ixI^S,nw)
+    double precision, intent(in)    :: x(ixI^S,1:ndim)
+    double precision, intent(out)   :: csound2(ixI^S)
+
+    double precision :: temperature(ixI^S)
+    integer :: ix^D
+
+    if (hd_include_ionization_energy) then
+      call hd_get_temperature_from_prim(w, x, ixI^L, ixO^L, temperature)
+      {do ix^DB = ixO^LIM^DB\}
+        call ionization_get_csound2_T( &
+             temperature(ix^D), inv_gamma_1, csound2(ix^D))
+      {end do\}
+    else
+      csound2(ixO^S)=hd_gamma*w(ixO^S,p_)/w(ixO^S,rho_)
+    end if
+  end subroutine hd_get_csound2_prim
 
   !> Calculate thermal pressure=(gamma-1)*(e-0.5*m**2/rho) within ixO^L
   subroutine hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
@@ -1284,10 +1454,24 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: pth(ixI^S)
     integer                      :: iw, ix^D
+    double precision :: eint, T, Rfactor
 
     if (hd_energy) then
-       pth(ixO^S) = (hd_gamma - 1.0d0) * (w(ixO^S, e_) - &
-            hd_kin_en(w, ixI^L, ixO^L))
+       if (hd_include_ionization_energy) then
+         {do ix^DB = ixO^LIM^DB\}
+           eint = w(ix^D,e_) - &
+                half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+           if (w(ix^D,rho_) > zero .and. eint > zero) then
+             call hd_get_state_from_eint_scalar( &
+                  w(ix^D,rho_), eint, T, pth(ix^D), Rfactor)
+           else
+             pth(ix^D) = (hd_gamma-1.d0)*eint
+           end if
+         {end do\}
+       else
+         pth(ixO^S) = (hd_gamma - 1.0d0) * (w(ixO^S, e_) - &
+              hd_kin_en(w, ixI^L, ixO^L))
+       end if
     else
        if (.not. associated(usr_set_pthermal)) then
           pth(ixO^S) = hd_adiab * w(ixO^S, rho_)**hd_gamma
@@ -1356,11 +1540,12 @@ contains
     double precision :: prad_max(ixI^S)
 
     call hd_get_pradiation_from_prim(w, x, ixI^L, ixO^L, prad_tensor)
+    call hd_get_csound2_prim(w, x, ixI^L, ixO^L, csound)
 
    {do ix^DB=ixOmin^DB,ixOmax^DB \}
       inv_rho=1.d0/w(ix^D,rho_)
       prad_max(ix^D) = maxval(prad_tensor(ix^D,:,:))
-      csound(ix^D)=(hd_gamma*w(ix^D,p_)+prad_max(ix^D))*inv_rho
+      csound(ix^D)=csound(ix^D)+prad_max(ix^D)*inv_rho
    {end do\}
 
    if(minval(csound(ixO^S))<smalldouble)then
@@ -1433,15 +1618,29 @@ contains
     double precision, intent(out):: res(ixI^S)
 
     double precision :: R(ixI^S), pth(ixI^S)
+    double precision :: eint, Tcell, Rcell
+    integer :: ix^D
 
-    call hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
-
-    if(hd_partial_ionization) then
-      call hd_get_ionization_state_from_prho(ixI^L, ixO^L, w(ixI^S,rho_), &
-           pth, res, R)
+    if (hd_include_ionization_energy) then
+      {do ix^DB = ixO^LIM^DB\}
+        eint = w(ix^D,e_) - &
+             half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+        call hd_get_state_from_eint_scalar( &
+             w(ix^D,rho_), eint, Tcell, pth(ix^D), Rcell)
+        res(ix^D) = Tcell
+      {end do\}
     else
-      call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-      res(ixO^S)=pth(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+      call hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
+    end if
+
+    if (.not. hd_include_ionization_energy) then
+      if(hd_partial_ionization) then
+        call hd_get_ionization_state_from_prho(ixI^L, ixO^L, &
+             w(ixI^S,rho_), pth, res, R)
+      else
+        call hd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+        res(ixO^S)=pth(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
+      end if
     end if
   end subroutine hd_get_temperature_from_etot
 
@@ -1453,8 +1652,16 @@ contains
     double precision, intent(out):: res(ixI^S)
 
     double precision :: R(ixI^S), pth(ixI^S)
+    double precision :: Tcell, Rcell
+    integer :: ix^D
 
-    if(hd_partial_ionization) then
+    if (hd_include_ionization_energy) then
+      {do ix^DB = ixO^LIM^DB\}
+        call hd_get_state_from_eint_scalar( &
+             w(ix^D,rho_), w(ix^D,e_), Tcell, pth(ix^D), Rcell)
+        res(ix^D) = Tcell
+      {end do\}
+    else if(hd_partial_ionization) then
       pth(ixO^S) = (hd_gamma - 1.d0) * w(ixO^S, e_)
       call hd_get_ionization_state_from_prho(ixI^L, ixO^L, w(ixI^S,rho_), &
            pth, res, R)
@@ -1833,8 +2040,9 @@ contains
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     character(len=*), intent(in)    :: subname
 
-    integer :: n,idir
+    integer :: n,idir,ix^D
     logical :: flag(ixI^S,1:nw)
+    double precision :: eint, kinetic, T, pthermal, Rfactor
 
     call hd_check_w(primitive, ixI^L, ixO^L, w, flag)
 
@@ -1857,7 +2065,19 @@ contains
             if(primitive) then
               where(flag(ixO^S,rho_)) w(ixO^S, p_) = small_pressure
             else
-              where(flag(ixO^S,rho_)) w(ixO^S, e_) = small_e + hd_kin_en(w,ixI^L,ixO^L)
+              if (hd_include_ionization_energy) then
+                {do ix^DB = ixO^LIM^DB\}
+                  if (flag(ix^D,rho_)) then
+                    call hd_get_eint_from_rho_p_scalar( &
+                         w(ix^D,rho_), small_pressure, eint)
+                    kinetic = half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+                    w(ix^D,e_) = eint+kinetic
+                  end if
+                {end do\}
+              else
+                where(flag(ixO^S,rho_)) &
+                     w(ixO^S, e_) = small_e + hd_kin_en(w,ixI^L,ixO^L)
+              end if
             endif
           end if
         endif
@@ -1866,10 +2086,21 @@ contains
           if(primitive) then
             where(flag(ixO^S,e_)) w(ixO^S,p_) = small_pressure
           else
-            where(flag(ixO^S,e_))
-              ! Add kinetic energy
-              w(ixO^S,e_) = small_e + hd_kin_en(w,ixI^L,ixO^L)
-            end where
+            if (hd_include_ionization_energy) then
+              {do ix^DB = ixO^LIM^DB\}
+                if (flag(ix^D,e_)) then
+                  call hd_get_eint_from_rho_p_scalar( &
+                       w(ix^D,rho_), small_pressure, eint)
+                  kinetic = half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+                  w(ix^D,e_) = eint+kinetic
+                end if
+              {end do\}
+            else
+              where(flag(ixO^S,e_))
+                ! Add kinetic energy
+                w(ixO^S,e_) = small_e + hd_kin_en(w,ixI^L,ixO^L)
+              end where
+            end if
           end if
         end if
 
@@ -1890,11 +2121,34 @@ contains
            call small_values_average(ixI^L, ixO^L, w, x, flag, rho_)
            if(hd_energy) then
              ! do averaging of pressure
-             w(ixI^S,p_)=(hd_gamma-1.d0)*(w(ixI^S,e_) &
-              -0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_))
+             if (hd_include_ionization_energy) then
+               {do ix^DB = ixI^LIM^DB\}
+                 kinetic = half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+                 eint = w(ix^D,e_)-kinetic
+                 if (eint > zero) then
+                   call hd_get_state_from_eint_scalar( &
+                        w(ix^D,rho_), eint, T, pthermal, Rfactor)
+                   w(ix^D,p_) = pthermal
+                 else
+                   w(ix^D,p_) = small_pressure
+                 end if
+               {end do\}
+             else
+               w(ixI^S,p_)=(hd_gamma-1.d0)*(w(ixI^S,e_) &
+                -0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_))
+             end if
              call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
-             w(ixI^S,e_)=w(ixI^S,p_)/(hd_gamma-1.d0) &
-               +0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_)
+             if (hd_include_ionization_energy) then
+               {do ix^DB = ixI^LIM^DB\}
+                 call hd_get_eint_from_rho_p_scalar( &
+                      w(ix^D,rho_), w(ix^D,p_), eint)
+                 kinetic = half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+                 w(ix^D,e_) = eint+kinetic
+               {end do\}
+             else
+               w(ixI^S,e_)=w(ixI^S,p_)/(hd_gamma-1.d0) &
+                 +0.5d0*sum(w(ixI^S, mom(:))**2, dim=ndim+1)/w(ixI^S,rho_)
+             end if
            end if
            if(hd_radiation_fld) then
               ! do averaging of radiative energy density
@@ -1914,7 +2168,22 @@ contains
           !convert w to primitive
           ! Calculate pressure = (gamma-1) * (e-ek)
           if(hd_energy) then
-            w(ixO^S,p_)=(hd_gamma-1.d0)*(w(ixO^S,e_)-hd_kin_en(w,ixI^L,ixO^L))
+            if (hd_include_ionization_energy) then
+              {do ix^DB = ixO^LIM^DB\}
+                kinetic = half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+                eint = w(ix^D,e_)-kinetic
+                if (w(ix^D,rho_) > zero .and. eint > zero) then
+                  call hd_get_state_from_eint_scalar( &
+                       w(ix^D,rho_), eint, T, pthermal, Rfactor)
+                  w(ix^D,p_) = pthermal
+                else
+                  w(ix^D,p_) = -bigdouble
+                end if
+              {end do\}
+            else
+              w(ixO^S,p_)=(hd_gamma-1.d0)*(w(ixO^S,e_)- &
+                   hd_kin_en(w,ixI^L,ixO^L))
+            end if
           end if
           ! Convert gas momentum to velocity
           do idir = 1, ndir
@@ -1955,6 +2224,41 @@ contains
 
     call ionization_get_state(ixI^L, ixO^L, rho, pth, T, Rfactor)
   end subroutine hd_get_ionization_state_from_prho
+
+  subroutine hd_get_state_from_eint_scalar( &
+       rho, eint, T, pthermal, Rfactor, iz_H, iz_He)
+    use mod_ionization_degree, only: ionization_get_state_from_eint
+
+    double precision, intent(in) :: rho, eint
+    double precision, intent(out) :: T, pthermal, Rfactor
+    double precision, intent(out), optional :: iz_H, iz_He
+
+    call ionization_get_state_from_eint( &
+         rho, eint, inv_gamma_1, T, pthermal, Rfactor, iz_H, iz_He)
+  end subroutine hd_get_state_from_eint_scalar
+
+  subroutine hd_get_p_eint_Rfactor_from_rho_T( &
+       rho, T, pthermal, eint, Rfactor)
+    use mod_ionization_degree, only: ionization_get_p_eint_from_rho_T
+
+    double precision, intent(in) :: rho, T
+    double precision, intent(out) :: pthermal, eint, Rfactor
+
+    call ionization_get_p_eint_from_rho_T( &
+         rho, T, inv_gamma_1, pthermal, eint, Rfactor)
+  end subroutine hd_get_p_eint_Rfactor_from_rho_T
+
+  subroutine hd_get_eint_from_rho_p_scalar(rho, pthermal, eint)
+    use mod_ionization_degree, only: ionization_get_state_scalar
+
+    double precision, intent(in) :: rho, pthermal
+    double precision, intent(out) :: eint
+    double precision :: T, pcheck, Rfactor
+
+    call ionization_get_state_scalar(rho, pthermal, T, Rfactor)
+    call hd_get_p_eint_Rfactor_from_rho_T( &
+         rho, T, pcheck, eint, Rfactor)
+  end subroutine hd_get_eint_from_rho_p_scalar
 
   subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
     use mod_global_parameters

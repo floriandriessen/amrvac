@@ -1,22 +1,89 @@
 !> module ionization degree - get ionization degree for given temperature
 module mod_ionization_degree
   implicit none
-  double precision, private :: Te_H_CL(1:100)
-  double precision, private :: iz_H_CL(1:100)
-  double precision, dimension(:), allocatable :: Te_H_table
-  double precision, dimension(:), allocatable :: iz_H_table
+  private
+  double precision :: iz_H_CL(1:100)
+  double precision :: Te_H_CL(1:100)
+  double precision :: ionization_He_abundance = 0.1d0
+  double precision :: ionization_Rfactor_norm = 2.3d0
+  double precision, allocatable :: prom_T_table(:)
+  double precision, allocatable :: prom_p_table(:)
+  double precision, allocatable :: prom_T_eos_table(:)
+  double precision, allocatable :: prom_Y_eos_table(:,:)
   double precision :: Te_table_min, Te_table_max, inv_Te_table_step
   double precision :: Te_low_iz_He=5413.d0
+  double precision :: Y_table_min, Y_table_max
+  double precision :: ionization_H_energy_unit = 0.d0
   double precision, dimension(:), allocatable :: Rfactor_table
   double precision, dimension(:), allocatable :: Y_table
-  double precision :: Y_table_min, Y_table_max
+  double precision, dimension(:), allocatable :: eps_ion_H_table
+  double precision, dimension(:), allocatable :: Te_H_table
+  double precision, dimension(:), allocatable :: iz_H_table
+  integer, parameter :: ionization_mode_carlsson = 1
+  integer, parameter :: ionization_mode_gunar2025 = 2
+  integer, parameter :: n_prom_T = 10
+  integer, parameter :: n_prom_p = 7
+  integer, parameter :: n_prom_eos = 4000
+  integer :: ionization_table_mode = ionization_mode_carlsson
+  ! Initialize
+  public :: ionization_degree_init
+  ! Current rho,p -> complete EOS state
   public :: ionization_get_state
   public :: ionization_get_state_scalar
-  public :: ionization_state_from_temperature_scalar
+  ! Prescribed T,p -> Rfactor and optional ionization degrees
+  public :: ionization_state_Tp
+  ! Prescribed rho,T -> consistent pthermal and Rfactor
+  public :: ionization_solve_p_Rfactor
+  ! T-only cooling callback and mode query
   public :: ionization_get_Rfactor_from_temperature
-  double precision, private :: ionization_He_abundance = 0.1d0
-  double precision, private :: ionization_Rfactor_norm = 2.3d0
-  private :: ionization_Rfactor_from_degrees
+  public :: ionization_is_temperature_only
+  public :: ionization_includes_energy
+  public :: ionization_get_state_from_eint
+  public :: ionization_get_p_eint_from_rho_T
+  public :: ionization_get_eps_derivative_T
+  public :: ionization_get_csound2_T
+  public :: ionization_check_eint_table
+  ! Compatibility interfaces
+  public :: ionization_state_from_temperature_scalar
+  ! Legacy compatibility API
+  public :: ionization_degree_from_temperature
+  logical :: ionization_initialized = .false.
+  logical :: ionization_include_energy = .false.
+
+  double precision, parameter :: prom_T_K(n_prom_T) = (/ &
+       6000.d0, 7000.d0, 8000.d0, 9000.d0, 10000.d0, &
+       12000.d0, 15000.d0, 20000.d0, 25000.d0, 30000.d0 /)
+
+  double precision, parameter :: prom_p_cgs(n_prom_p) = (/ &
+        0.03d0, 0.05d0, 0.10d0, 0.30d0, 0.50d0, 0.70d0, 1.00d0 /)
+
+  ! First index: temperature. Second index: pressure.
+  ! Data are ordered one complete temperature column per pressure.
+  double precision, parameter :: &
+      prom_iz_H_data(n_prom_T,n_prom_p) = reshape((/ &
+      ! p = 0.03 dyn cm^-2
+      0.53d0, 0.59d0, 0.65d0, 0.73d0, 0.80d0, &
+      0.90d0, 0.95d0, 0.98d0, 0.99d0, 1.00d0, &
+      ! p = 0.05 dyn cm^-2
+      0.40d0, 0.47d0, 0.56d0, 0.69d0, 0.79d0, &
+      0.91d0, 0.96d0, 0.98d0, 0.99d0, 1.00d0, &
+      ! p = 0.10 dyn cm^-2
+      0.25d0, 0.32d0, 0.47d0, 0.67d0, 0.81d0, &
+      0.93d0, 0.97d0, 0.99d0, 0.99d0, 1.00d0, &
+      ! p = 0.30 dyn cm^-2
+      0.10d0, 0.17d0, 0.41d0, 0.69d0, 0.85d0, &
+      0.96d0, 0.98d0, 0.99d0, 1.00d0, 1.00d0, &
+      ! p = 0.50 dyn cm^-2
+      0.06d0, 0.14d0, 0.38d0, 0.70d0, 0.87d0, &
+      0.97d0, 0.99d0, 1.00d0, 1.00d0, 1.00d0, &
+      ! p = 0.70 dyn cm^-2
+      0.04d0, 0.12d0, 0.36d0, 0.70d0, 0.88d0, &
+      0.97d0, 0.99d0, 1.00d0, 1.00d0, 1.00d0, &
+      ! p = 1.00 dyn cm^-2
+      0.03d0, 0.10d0, 0.34d0, 0.71d0, 0.89d0, &
+      0.98d0, 0.99d0, 1.00d0, 1.00d0, 1.00d0 /), &
+      (/ n_prom_T, n_prom_p /))
+
   ! Carlsson, M., & Leenaarts, J. 2012, A&A, 539, A39
   data Te_H_CL /2.1000005d+03, 2.2349495d+03, 2.3785708d+03, 2.5314199d+03, 2.6940928d+03, &
                 2.8672190d+03, 3.0514692d+03, 3.2475613d+03, 3.4562544d+03, 3.6783584d+03, &
@@ -60,19 +127,21 @@ module mod_ionization_degree
                 1.4264889d-07, 1.2616209d-07, 1.1193421d-07, 9.9408616d-08, 8.8335305d-08, &
                 7.8593857d-08, 7.0042269d-08, 6.2532941d-08, 5.5898361d-08, 5.0049657d-08, &
                 4.4888207d-08, 4.0317172d-08, 3.6192560d-08, 3.2330732d-08, 2.9387850d-08  /
+
   contains
 
-    subroutine ionization_degree_init(He_abundance, Rfactor_norm)
-      use mod_global_parameters
+    subroutine ionization_degree_init(He_abundance, Rfactor_norm, table_name, include_energy)
+      use mod_global_parameters, only: unit_temperature, unit_numberdensity, &
+           unit_pressure, SI_unit
+      use mod_constants, only: const_eV
       use mod_comm_lib, only: mpistop
-
       double precision, intent(in) :: He_abundance, Rfactor_norm
-      double precision :: fact1, fact2, fact3, dL1, dL2, Te_table_step
-      integer :: i, j, ntable, n_interpolated_table
-      logical :: jump
+      character(len=*), intent(in), optional :: table_name
+      character(len=32) :: selected_table
+      logical, intent(in), optional :: include_energy
+      double precision, parameter :: erg_to_joule = 1.0d-7
 
-      if (allocated(Te_H_table) .or. allocated(iz_H_table) .or. &
-          allocated(Rfactor_table) .or. allocated(Y_table)) then
+      if (ionization_initialized) then
         call mpistop("ionization_degree_init called more than once")
       end if
 
@@ -81,6 +150,60 @@ module mod_ionization_degree
 
       ionization_He_abundance = He_abundance
       ionization_Rfactor_norm = Rfactor_norm
+      Te_low_iz_He = 5413.d0/unit_temperature
+      ionization_include_energy = .false.
+      if (present(include_energy)) ionization_include_energy = include_energy
+
+      selected_table = "carlsson2012"
+      if (present(table_name)) selected_table = trim(adjustl(table_name))
+
+      select case (trim(selected_table))
+      case ("carlsson2012")
+        ionization_table_mode = ionization_mode_carlsson
+      case ("gunar2025_a_l500")
+        ionization_table_mode = ionization_mode_gunar2025
+      case default
+        call mpistop("unknown partial-ionization table")
+      end select
+
+      if (ionization_include_energy .and. &
+          ionization_table_mode /= ionization_mode_carlsson) then
+        call mpistop("ionization energy requires a T-only ionization table")
+      end if
+
+      if (ionization_include_energy) then
+        if (unit_numberdensity <= 0.d0 .or. unit_pressure <= 0.d0) then
+          call mpistop("invalid units for hydrogen ionization energy")
+        end if
+        if (SI_unit) then
+          ! const_eV is in erg/eV; convert to joule for SI pressure units.
+          ionization_H_energy_unit = &
+               13.6d0*const_eV*erg_to_joule * &
+               unit_numberdensity/unit_pressure
+        else
+          ionization_H_energy_unit = &
+               13.6d0*const_eV*unit_numberdensity/unit_pressure
+        end if
+      else
+        ionization_H_energy_unit = 0.d0
+      end if
+
+      select case (ionization_table_mode)
+      case (ionization_mode_carlsson)
+        call ionization_build_carlsson_table()
+      case (ionization_mode_gunar2025)
+        call ionization_build_prominence_table()
+      end select
+      ionization_initialized = .true.
+    end subroutine ionization_degree_init
+
+    subroutine ionization_build_carlsson_table()
+      use mod_global_parameters, only: unit_temperature, zero
+
+      double precision :: fact1, fact2, fact3
+      double precision :: dL1, dL2, Te_table_step
+      integer :: i, j, ntable, n_interpolated_table
+      logical :: jump
 
       ntable=100
       n_interpolated_table=4000
@@ -162,11 +285,84 @@ module mod_ionization_degree
       Te_table_max=Te_H_table(n_interpolated_table)
       inv_Te_table_step=dble(n_interpolated_table-1)/(Te_table_max-Te_table_min)
 
-      ! transition temperature
-      Te_low_iz_He=Te_low_iz_He/unit_temperature
-
       call ionization_build_eos_table()
-    end subroutine ionization_degree_init
+    end subroutine ionization_build_carlsson_table
+
+    subroutine ionization_build_prominence_table()
+      use mod_global_parameters, only: unit_temperature, unit_pressure, SI_unit
+      use mod_comm_lib, only: mpistop
+
+      integer :: iT, ip
+      double precision :: pressure_unit_cgs
+      double precision :: dT, Rfactor
+
+      if (unit_temperature <= 0.d0 .or. unit_pressure <= 0.d0) then
+        call mpistop("invalid units for prominence ionization table")
+      end if
+
+      if (SI_unit) then
+        ! unit_pressure is Pa; 1 Pa = 10 dyn cm^-2.
+        pressure_unit_cgs = 10.d0*unit_pressure
+      else
+        ! In cgs mode unit_pressure is already dyn cm^-2.
+        pressure_unit_cgs = unit_pressure
+      end if
+
+      allocate(prom_T_table(n_prom_T))
+      allocate(prom_p_table(n_prom_p))
+      allocate(prom_T_eos_table(n_prom_eos))
+      allocate(prom_Y_eos_table(n_prom_eos,n_prom_p))
+
+      prom_T_table = prom_T_K/unit_temperature
+      prom_p_table = prom_p_cgs/pressure_unit_cgs
+
+      dT = (1.d6 - 2.1000005d3) / dble(n_prom_eos-1)
+      do iT = 1, n_prom_eos
+        prom_T_eos_table(iT) = &
+              (2.1000005d3 + dble(iT-1)*dT)/unit_temperature
+      end do
+
+      do ip = 1, n_prom_p
+        do iT = 1, n_prom_eos
+          call ionization_state_Tp(prom_T_eos_table(iT), prom_p_table(ip), Rfactor)
+          prom_Y_eos_table(iT,ip) = &
+                Rfactor*prom_T_eos_table(iT)
+        end do
+      end do
+
+      call ionization_check_prominence_y_table()
+    end subroutine ionization_build_prominence_table
+
+    subroutine ionization_prominence_pressure_bracket(p, ip, weight)
+      double precision, intent(in) :: p
+      integer, intent(out) :: ip
+      double precision, intent(out) :: weight
+
+      integer :: j
+      double precision :: p_use
+
+      p_use = min(prom_p_table(n_prom_p), &
+            max(prom_p_table(1), p))
+
+      if (p_use <= prom_p_table(1)) then
+        ip = 1
+        weight = 0.d0
+        return
+      else if (p_use >= prom_p_table(n_prom_p)) then
+        ip = n_prom_p-1
+        weight = 1.d0
+        return
+      end if
+
+      do j = 1, n_prom_p-1
+        if (p_use <= prom_p_table(j+1)) then
+          ip = j
+          weight = (p_use-prom_p_table(j)) / &
+                (prom_p_table(j+1)-prom_p_table(j))
+          return
+        end if
+      end do
+    end subroutine ionization_prominence_pressure_bracket
 
     !> Legacy array interface for T -> ionization degrees.
     !> Not used anymore; kept for compatibility and may be removed later.
@@ -184,6 +380,88 @@ module mod_ionization_degree
       {end do\}
     end subroutine ionization_degree_from_temperature
 
+    subroutine ionization_H_degree_carlsson_scalar(T, iz_H)
+      use mod_comm_lib, only: mpistop
+
+      double precision, intent(in) :: T
+      double precision, intent(out) :: iz_H
+
+      integer :: i
+
+      if (.not. allocated(Te_H_table) .or. &
+          .not. allocated(iz_H_table)) then
+        call mpistop("Carlsson ionization table is not initialized")
+      end if
+
+      if (T < Te_table_min) then
+        iz_H = 0.d0
+      else if (T >= Te_table_max) then
+        iz_H = 1.d0
+      else
+        i = int((T-Te_table_min)*inv_Te_table_step) + 1
+        i = max(1, min(size(Te_H_table)-1, i))
+
+        iz_H = iz_H_table(i) + &
+              (T-Te_H_table(i)) * &
+              (iz_H_table(i+1)-iz_H_table(i)) * &
+              inv_Te_table_step
+      end if
+
+      iz_H = min(1.d0, max(0.d0, iz_H))
+    end subroutine ionization_H_degree_carlsson_scalar
+
+    subroutine ionization_H_degree_prominence_scalar(T, p, iz_H)
+      use mod_comm_lib, only: mpistop
+
+      double precision, intent(in) :: T, p
+      double precision, intent(out) :: iz_H
+
+      integer :: iT, ip, j
+      double precision :: weight_T, weight_p
+      double precision :: iz_low, iz_high
+
+      if (.not. allocated(prom_T_table) .or. &
+          .not. allocated(prom_p_table)) then
+        call mpistop("prominence ionization table is not initialized")
+      end if
+
+      call ionization_prominence_pressure_bracket(p, ip, weight_p)
+
+      if (T <= prom_T_table(1)) then
+        iT = 1
+        weight_T = 0.d0
+      else if (T >= prom_T_table(n_prom_T)) then
+        iz_H = 1.d0
+        return
+      else
+        iT = 1
+        do j = 1, n_prom_T-1
+          if (T <= prom_T_table(j+1)) then
+            iT = j
+            exit
+          end if
+        end do
+
+        weight_T = (T-prom_T_table(iT)) / &
+              (prom_T_table(iT+1)-prom_T_table(iT))
+      end if
+
+      if (iT == 1 .and. weight_T == 0.d0) then
+        iz_H = (1.d0-weight_p)*prom_iz_H_data(1,ip) + &
+              weight_p*prom_iz_H_data(1,ip+1)
+      else
+        iz_low = (1.d0-weight_p)*prom_iz_H_data(iT,ip) + &
+              weight_p*prom_iz_H_data(iT,ip+1)
+
+        iz_high = (1.d0-weight_p)*prom_iz_H_data(iT+1,ip) + &
+              weight_p*prom_iz_H_data(iT+1,ip+1)
+
+        iz_H = (1.d0-weight_T)*iz_low + weight_T*iz_high
+      end if
+
+      iz_H = min(1.d0, max(0.d0, iz_H))
+    end subroutine ionization_H_degree_prominence_scalar
+
     subroutine ionization_get_state_scalar(rho, p, T, Rfactor, iz_H, iz_He)
       use mod_comm_lib, only: mpistop
       double precision, intent(in) :: rho, p
@@ -193,23 +471,152 @@ module mod_ionization_degree
       double precision :: y
       double precision :: iz_H_loc, iz_He_loc
 
-      if (.not. allocated(Te_H_table) .or. .not. allocated(Y_table)) then
-        call mpistop("ionization_get_state_scalar: ionization tables are not initialized")
+      if (.not. ionization_initialized) then
+        call mpistop("ionization tables are not initialized")
       end if
 
-      ! p is the thermal pressure in code units.
       if (rho <= 0.d0 .or. p <= 0.d0) then
-        T = Te_H_table(1)
+        select case (ionization_table_mode)
+        case (ionization_mode_carlsson)
+          T = Te_H_table(1)
+        case (ionization_mode_gunar2025)
+          T = prom_T_eos_table(1)
+        end select
       else
         y = p/rho
-        call ionization_invert_y_scalar(y, T)
+
+        select case (ionization_table_mode)
+        case (ionization_mode_carlsson)
+          call ionization_invert_y_scalar(y, T)
+
+        case (ionization_mode_gunar2025)
+          call ionization_invert_y_prominence_scalar(y, p, T)
+
+        case default
+          call mpistop("invalid ionization table mode")
+        end select
       end if
 
-      call ionization_state_from_temperature_scalar(T, Rfactor, iz_H_loc, iz_He_loc)
+      call ionization_state_Tp( T, p, Rfactor, iz_H_loc, iz_He_loc)
 
       if (present(iz_H)) iz_H = iz_H_loc
       if (present(iz_He)) iz_He = iz_He_loc
     end subroutine ionization_get_state_scalar
+
+    subroutine ionization_He_degree_scalar(T, iz_He)
+      use mod_global_parameters, only: unit_temperature
+
+      double precision, intent(in) :: T
+      double precision, intent(out) :: iz_He
+
+      if (T < Te_low_iz_He) then
+        iz_He = 1.0084814d-4
+      else
+        iz_He = 1.d0 - &
+              10.d0**(0.322571d0-5.96d-5*T*unit_temperature)
+      end if
+
+      iz_He = min(1.d0, max(0.d0, iz_He))
+    end subroutine ionization_He_degree_scalar
+
+    subroutine ionization_state_Tp(T, p, Rfactor, iz_H, iz_He)
+      use mod_comm_lib, only: mpistop
+
+      double precision, intent(in) :: T, p
+      double precision, intent(out) :: Rfactor
+      double precision, intent(out), optional :: iz_H, iz_He
+
+      double precision :: iz_H_loc, iz_He_loc
+
+      select case (ionization_table_mode)
+      case (ionization_mode_carlsson)
+        call ionization_H_degree_carlsson_scalar(T, iz_H_loc)
+
+      case (ionization_mode_gunar2025)
+        call ionization_H_degree_prominence_scalar( &
+              T, p, iz_H_loc)
+
+      case default
+        call mpistop("invalid ionization table mode")
+      end select
+
+      call ionization_He_degree_scalar(T, iz_He_loc)
+
+      iz_H_loc = min(1.d0, max(0.d0, iz_H_loc))
+      iz_He_loc = min(1.d0, max(0.d0, iz_He_loc))
+
+      Rfactor = ionization_Rfactor_from_degrees( &
+            iz_H_loc, iz_He_loc)
+
+      if (present(iz_H)) iz_H = iz_H_loc
+      if (present(iz_He)) iz_He = iz_He_loc
+    end subroutine ionization_state_Tp
+
+    subroutine ionization_solve_p_Rfactor(rho, T, p, Rfactor)
+      use mod_comm_lib, only: mpistop
+
+      integer, parameter :: max_expand = 32, max_iter = 80
+      double precision, intent(in) :: rho, T
+      double precision, intent(out) :: p, Rfactor
+
+      integer :: iter
+      double precision :: plo, phi, pmid
+      double precision :: Rlo, Rhi, Rmid
+      double precision :: fhi, fmid, scale
+
+      if (.not. ionization_initialized) then
+        call mpistop("ionization pressure solver called before initialization")
+      end if
+      if (rho <= 0.d0 .or. T <= 0.d0) then
+        call mpistop("invalid rho or T in ionization pressure solver")
+      end if
+
+      if (ionization_is_temperature_only()) then
+        call ionization_state_from_temperature_scalar(T, Rfactor)
+        p = rho*Rfactor*T
+        return
+      end if
+
+      ! Low-pressure clamp branch
+      plo = prom_p_table(1)
+      call ionization_state_Tp(T, plo, Rlo)
+      p = rho*Rlo*T
+      if (p <= plo) then
+        Rfactor = Rlo
+        return
+      end if
+
+      ! High-pressure clamp branch
+      phi = prom_p_table(n_prom_p)
+      call ionization_state_Tp(T, phi, Rhi)
+      p = rho*Rhi*T
+      if (p >= phi) then
+        Rfactor = Rhi
+        return
+      end if
+
+      ! Now the root must lie inside [plo, phi]
+      do iter = 1, max_iter
+        pmid = 0.5d0*(plo+phi)
+        call ionization_state_Tp(T, pmid, Rmid)
+        fmid = pmid-rho*Rmid*T
+        scale = max(abs(pmid), abs(rho*Rmid*T), tiny(1.d0))
+
+        if (abs(fmid) <= 1.d-12*scale) then
+          p = pmid
+          Rfactor = Rmid
+          return
+        end if
+
+        if (fmid > 0.d0) then
+          phi = pmid
+        else
+          plo = pmid
+        end if
+      end do
+
+      call mpistop("pressure-dependent EOS solve did not converge")
+    end subroutine ionization_solve_p_Rfactor
 
     subroutine ionization_get_state(ixI^L, ixO^L, rho, p, T, Rfactor, iz_H, iz_He)
       integer, intent(in) :: ixI^L, ixO^L
@@ -293,47 +700,116 @@ module mod_ionization_degree
     end subroutine ionization_invert_y_scalar
 
     subroutine ionization_state_from_temperature_scalar(T, Rfactor, iz_H, iz_He)
-      use mod_global_parameters, only: unit_temperature
       use mod_comm_lib, only: mpistop
+
       double precision, intent(in) :: T
       double precision, intent(out) :: Rfactor
       double precision, intent(out), optional :: iz_H, iz_He
-
-      integer :: i
       double precision :: iz_H_loc, iz_He_loc
 
-      if (.not. allocated(Te_H_table) .or. .not. allocated(iz_H_table)) then
-        call mpistop("ionization_state_from_temperature_scalar: tables missing")
+      if (ionization_table_mode /= ionization_mode_carlsson) then
+        call mpistop("temperature-only ionization state requested "// &
+              "for a pressure-dependent table")
       end if
 
-      if (T < Te_table_min) then
-        iz_H_loc = 0.d0
-      else if (T >= Te_table_max) then
-        iz_H_loc = 1.d0
-      else
-        i = int((T - Te_table_min)*inv_Te_table_step) + 1
-        i = max(1, min(size(Te_H_table)-1, i))
+      call ionization_H_degree_carlsson_scalar(T, iz_H_loc)
+      call ionization_He_degree_scalar(T, iz_He_loc)
 
-        iz_H_loc = iz_H_table(i) + (T - Te_H_table(i)) * &
-             (iz_H_table(i+1) - iz_H_table(i))*inv_Te_table_step
-      end if
-
-      if (T < Te_low_iz_He) then
-        iz_He_loc = 1.0084814d-4
-      else
-        iz_He_loc = 1.d0 - 10.d0**(0.322571d0 - 5.96d-5*T*unit_temperature)
-      end if
-      iz_H_loc = min(1.d0, max(0.d0, iz_H_loc))
-      iz_He_loc = min(1.d0, max(0.d0, iz_He_loc))
-      Rfactor = ionization_Rfactor_from_degrees(iz_H_loc, iz_He_loc)
+      Rfactor = ionization_Rfactor_from_degrees( &
+            iz_H_loc, iz_He_loc)
 
       if (present(iz_H)) iz_H = iz_H_loc
       if (present(iz_He)) iz_He = iz_He_loc
     end subroutine ionization_state_from_temperature_scalar
 
+    subroutine ionization_check_prominence_y_table()
+      use mod_comm_lib, only: mpistop
+      integer :: iT, ip
+
+      do ip = 1, n_prom_p
+        do iT = 1, n_prom_eos-1
+          if (prom_Y_eos_table(iT+1,ip) <= &
+              prom_Y_eos_table(iT,ip)) then
+            call mpistop("prominence EOS Y(T,p) is not monotonic")
+          end if
+        end do
+      end do
+    end subroutine ionization_check_prominence_y_table
+
+    subroutine ionization_invert_y_prominence_scalar(y, p, T)
+      use mod_comm_lib, only: mpistop
+
+      double precision, intent(in) :: y, p
+      double precision, intent(out) :: T
+
+      integer :: ip, ilo, ihi, imid
+      double precision :: wp, Ylo, Yhi, Ymid
+      double precision :: Ymin, Ymax, Rend, denom
+
+      if (.not. allocated(prom_Y_eos_table)) then
+        call mpistop("prominence EOS inversion table is missing")
+      end if
+
+      call ionization_prominence_pressure_bracket(p, ip, wp)
+
+      Ymin = (1.d0-wp)*prom_Y_eos_table(1,ip) + &
+            wp*prom_Y_eos_table(1,ip+1)
+
+      Ymax = (1.d0-wp)*prom_Y_eos_table(n_prom_eos,ip) + &
+            wp*prom_Y_eos_table(n_prom_eos,ip+1)
+
+      if (y <= 0.d0) then
+        T = prom_T_eos_table(1)
+        return
+      end if
+
+      if (y < Ymin) then
+        Rend = Ymin/prom_T_eos_table(1)
+        T = max(tiny(1.d0), y/Rend)
+        return
+      end if
+
+      if (y >= Ymax) then
+        Rend = Ymax/prom_T_eos_table(n_prom_eos)
+        T = y/Rend
+        return
+      end if
+
+      ilo = 1
+      ihi = n_prom_eos
+
+      do while (ihi-ilo > 1)
+        imid = (ilo+ihi)/2
+        Ymid = (1.d0-wp)*prom_Y_eos_table(imid,ip) + &
+              wp*prom_Y_eos_table(imid,ip+1)
+
+        if (y >= Ymid) then
+          ilo = imid
+        else
+          ihi = imid
+        end if
+      end do
+
+      Ylo = (1.d0-wp)*prom_Y_eos_table(ilo,ip) + &
+            wp*prom_Y_eos_table(ilo,ip+1)
+
+      Yhi = (1.d0-wp)*prom_Y_eos_table(ilo+1,ip) + &
+            wp*prom_Y_eos_table(ilo+1,ip+1)
+
+      denom = Yhi-Ylo
+      if (denom <= max(tiny(denom),1.d-12*abs(Ylo))) then
+        call mpistop("invalid prominence EOS inversion interval")
+      end if
+
+      T = prom_T_eos_table(ilo) + (y-Ylo) * &
+            (prom_T_eos_table(ilo+1)-prom_T_eos_table(ilo)) / &
+            denom
+    end subroutine ionization_invert_y_prominence_scalar
+
     subroutine ionization_build_eos_table()
       use mod_comm_lib, only: mpistop
       integer :: i, n
+      double precision :: iz_H
 
       if (.not. allocated(Te_H_table) .or. .not. allocated(iz_H_table)) then
         call mpistop("ionization_build_eos_table: ionization tables are not initialized")
@@ -341,6 +817,7 @@ module mod_ionization_degree
 
       if (allocated(Rfactor_table)) deallocate(Rfactor_table)
       if (allocated(Y_table)) deallocate(Y_table)
+      if (allocated(eps_ion_H_table)) deallocate(eps_ion_H_table)
 
       n = size(Te_H_table)
 
@@ -350,11 +827,15 @@ module mod_ionization_degree
 
       allocate(Rfactor_table(1:n))
       allocate(Y_table(1:n))
+      if (ionization_include_energy) allocate(eps_ion_H_table(1:n))
 
       do i = 1, n
         call ionization_state_from_temperature_scalar( &
-             Te_H_table(i), Rfactor_table(i))
+             Te_H_table(i), Rfactor_table(i), iz_H)
         Y_table(i) = Rfactor_table(i)*Te_H_table(i)
+        if (ionization_include_energy) then
+          eps_ion_H_table(i) = ionization_H_energy_unit*iz_H
+        end if
       end do
 
       Y_table_min = Y_table(1)
@@ -396,5 +877,229 @@ module mod_ionization_degree
 
       call ionization_state_from_temperature_scalar(T, Rfactor)
     end subroutine ionization_get_Rfactor_from_temperature
+
+    logical function ionization_is_temperature_only()
+      ionization_is_temperature_only = &
+            ionization_table_mode == ionization_mode_carlsson
+    end function ionization_is_temperature_only
+
+    logical function ionization_includes_energy()
+      ionization_includes_energy = ionization_include_energy
+    end function ionization_includes_energy
+
+    double precision function ionization_eint_table_value(i, invgam)
+      integer, intent(in) :: i
+      double precision, intent(in) :: invgam
+
+      ionization_eint_table_value = &
+           Y_table(i)*invgam + eps_ion_H_table(i)
+    end function ionization_eint_table_value
+
+    subroutine ionization_check_eint_table(invgam)
+      use mod_comm_lib, only: mpistop
+      double precision, intent(in) :: invgam
+      integer :: i
+      double precision :: eps1, eps2
+
+      if (.not. ionization_include_energy) return
+      if (.not. allocated(eps_ion_H_table)) then
+        call mpistop("ionization-energy table is not initialized")
+      end if
+      if (invgam <= 0.d0) then
+        call mpistop("invalid inverse gamma minus one for ionization EOS")
+      end if
+
+      do i = 1, size(Y_table)-1
+        eps1 = ionization_eint_table_value(i, invgam)
+        eps2 = ionization_eint_table_value(i+1, invgam)
+        if (eps2 <= eps1) then
+          call mpistop("ionization specific-energy table is not monotonic")
+        end if
+      end do
+    end subroutine ionization_check_eint_table
+
+    subroutine ionization_invert_eint_scalar(eps, invgam, T)
+      use mod_comm_lib, only: mpistop
+      double precision, intent(in) :: eps, invgam
+      double precision, intent(out) :: T
+
+      integer :: ilo, ihi, imid, n, iter
+      double precision :: eps_min, eps_max, eps_lo, eps_hi, denom
+      double precision :: eps_eval, slope, Rfactor, iz_H, Tnew
+
+      if (.not. ionization_include_energy .or. &
+          .not. allocated(eps_ion_H_table)) then
+        call mpistop("ionization-energy EOS is not initialized")
+      end if
+      if (invgam <= 0.d0) then
+        call mpistop("invalid inverse gamma minus one in energy inversion")
+      end if
+
+      n = size(Y_table)
+      eps_min = ionization_eint_table_value(1, invgam)
+      eps_max = ionization_eint_table_value(n, invgam)
+
+      if (eps < eps_min) then
+        T = max(tiny(1.d0), &
+             (eps-eps_ion_H_table(1))/(Rfactor_table(1)*invgam))
+        return
+      end if
+
+      if (eps >= eps_max) then
+        T = max(tiny(1.d0), &
+             (eps-eps_ion_H_table(n))/(Rfactor_table(n)*invgam))
+        return
+      end if
+
+      ilo = 1
+      ihi = n
+      do while (ihi-ilo > 1)
+        imid = (ilo+ihi)/2
+        if (eps >= ionization_eint_table_value(imid, invgam)) then
+          ilo = imid
+        else
+          ihi = imid
+        end if
+      end do
+
+      eps_lo = ionization_eint_table_value(ilo, invgam)
+      eps_hi = ionization_eint_table_value(ilo+1, invgam)
+      denom = eps_hi-eps_lo
+      if (denom <= max(tiny(denom), 1.d-12*abs(eps_lo))) then
+        call mpistop("invalid ionization-energy inversion interval")
+      end if
+
+      T = Te_H_table(ilo) + (eps-eps_lo) * &
+           (Te_H_table(ilo+1)-Te_H_table(ilo))/denom
+
+      ! The tabulated value supplies a close initial guess. Correct it against
+      ! the actual interpolated ionization state so rho,eint -> T and
+      ! rho,T -> eint remain mutually consistent inside each table interval.
+      slope = denom/(Te_H_table(ilo+1)-Te_H_table(ilo))
+      do iter = 1, 3
+        call ionization_state_from_temperature_scalar( &
+             T, Rfactor, iz_H)
+        eps_eval = Rfactor*T*invgam + ionization_H_energy_unit*iz_H
+        if (abs(eps_eval-eps) <= &
+            1.d-12*max(abs(eps), tiny(1.d0))) exit
+        Tnew = T-(eps_eval-eps)/slope
+        T = max(Te_H_table(ilo), min(Te_H_table(ilo+1), Tnew))
+      end do
+    end subroutine ionization_invert_eint_scalar
+
+    subroutine ionization_get_state_from_eint( &
+         rho, eint, invgam, T, p, Rfactor, iz_H, iz_He)
+      use mod_comm_lib, only: mpistop
+      double precision, intent(in) :: rho, eint, invgam
+      double precision, intent(out) :: T, p, Rfactor
+      double precision, intent(out), optional :: iz_H, iz_He
+      double precision :: iz_H_loc, iz_He_loc
+
+      if (.not. ionization_include_energy) &
+           call mpistop("ionization-energy EOS is not enabled")
+      if (.not. ionization_is_temperature_only()) &
+           call mpistop("ionization-energy EOS requires a T-only table")
+      if (rho <= 0.d0 .or. eint <= 0.d0) &
+           call mpistop("invalid rho or eint in ionization EOS")
+      call ionization_invert_eint_scalar(eint/rho, invgam, T)
+      call ionization_state_from_temperature_scalar( &
+           T, Rfactor, iz_H_loc, iz_He_loc)
+      p = rho*Rfactor*T
+      if (present(iz_H)) iz_H = iz_H_loc
+      if (present(iz_He)) iz_He = iz_He_loc
+    end subroutine ionization_get_state_from_eint
+
+    subroutine ionization_get_p_eint_from_rho_T( &
+         rho, T, invgam, p, eint, Rfactor, iz_H, iz_He)
+      use mod_comm_lib, only: mpistop
+      double precision, intent(in) :: rho, T, invgam
+      double precision, intent(out) :: p, eint, Rfactor
+      double precision, intent(out), optional :: iz_H, iz_He
+      double precision :: iz_H_loc, iz_He_loc
+
+      if (rho <= 0.d0 .or. T <= 0.d0 .or. invgam <= 0.d0) then
+        call mpistop("invalid state in rho,T ionization EOS mapping")
+      end if
+
+      if (ionization_include_energy) then
+        if (.not. ionization_is_temperature_only()) then
+          call mpistop("ionization energy requires a T-only ionization table")
+        end if
+        call ionization_state_from_temperature_scalar( &
+             T, Rfactor, iz_H_loc, iz_He_loc)
+        p = rho*Rfactor*T
+        ! Only hydrogen ionization energy is included in this first version;
+        ! helium ionization energy is intentionally deferred.
+        eint = rho*(Rfactor*T*invgam + &
+             ionization_H_energy_unit*iz_H_loc)
+      else
+        call ionization_solve_p_Rfactor(rho, T, p, Rfactor)
+        call ionization_state_Tp(T, p, Rfactor, iz_H_loc, iz_He_loc)
+        eint = p*invgam
+      end if
+
+      if (present(iz_H)) iz_H = iz_H_loc
+      if (present(iz_He)) iz_He = iz_He_loc
+    end subroutine ionization_get_p_eint_from_rho_T
+
+    subroutine ionization_get_eps_derivative_T( &
+         T, invgam, eps, deps_dT, dq_dT_out)
+      use mod_comm_lib, only: mpistop
+      double precision, intent(in) :: T, invgam
+      double precision, intent(out) :: eps, deps_dT
+      double precision, intent(out), optional :: dq_dT_out
+
+      integer :: i, n
+      double precision :: Rfactor, iz_H, q, dq_dT, depsion_dT
+
+      if (.not. ionization_include_energy) then
+        call mpistop("ionization-energy derivative requested while disabled")
+      end if
+      if (.not. ionization_is_temperature_only()) then
+        call mpistop("ionization-energy derivative requires a T-only table")
+      end if
+      if (T <= 0.d0 .or. invgam <= 0.d0) then
+        call mpistop("invalid state in ionization-energy derivative")
+      end if
+
+      n = size(Te_H_table)
+      call ionization_state_from_temperature_scalar(T, Rfactor, iz_H)
+      q = Rfactor*T
+      eps = q*invgam + ionization_H_energy_unit*iz_H
+
+      if (T < Te_table_min) then
+        dq_dT = Rfactor_table(1)
+        depsion_dT = 0.d0
+      else if (T >= Te_table_max) then
+        dq_dT = Rfactor_table(n)
+        depsion_dT = 0.d0
+      else
+        i = int((T-Te_table_min)*inv_Te_table_step) + 1
+        i = max(1, min(n-1, i))
+        dq_dT = (Y_table(i+1)-Y_table(i)) / &
+             (Te_H_table(i+1)-Te_H_table(i))
+        depsion_dT = (eps_ion_H_table(i+1)-eps_ion_H_table(i)) / &
+             (Te_H_table(i+1)-Te_H_table(i))
+      end if
+
+      deps_dT = dq_dT*invgam + depsion_dT
+      if (deps_dT <= 0.d0) then
+        call mpistop("non-positive heat capacity in ionization EOS")
+      end if
+      if (present(dq_dT_out)) dq_dT_out = dq_dT
+    end subroutine ionization_get_eps_derivative_T
+
+    subroutine ionization_get_csound2_T(T, invgam, csound2)
+      double precision, intent(in) :: T, invgam
+      double precision, intent(out) :: csound2
+
+      double precision :: Rfactor, q, eps, deps_dT, dq_dT
+
+      call ionization_get_eps_derivative_T( &
+           T, invgam, eps, deps_dT, dq_dT)
+      call ionization_state_from_temperature_scalar(T, Rfactor)
+      q = Rfactor*T
+      csound2 = q*(1.d0+dq_dT/deps_dT)
+    end subroutine ionization_get_csound2_T
 
 end module mod_ionization_degree

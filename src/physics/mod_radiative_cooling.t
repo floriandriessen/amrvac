@@ -40,6 +40,24 @@ module mod_radiative_cooling
       double precision, intent(in)  :: T
       double precision, intent(out) :: Rfactor
     end subroutine get_Rfactor_T
+
+    subroutine get_pthermal_Rfactor_rho_T(rho, T, pthermal, Rfactor)
+      double precision, intent(in) :: rho, T
+      double precision, intent(out) :: pthermal, Rfactor
+    end subroutine get_pthermal_Rfactor_rho_T
+
+    subroutine get_pthermal_eint_Rfactor_rho_T( &
+         rho, T, pthermal, eint, Rfactor)
+      double precision, intent(in) :: rho, T
+      double precision, intent(out) :: pthermal, eint, Rfactor
+    end subroutine get_pthermal_eint_Rfactor_rho_T
+
+    subroutine get_eps_derivative_T( &
+         T, invgam, eps, deps_dT, dq_dT)
+      double precision, intent(in) :: T, invgam
+      double precision, intent(out) :: eps, deps_dT
+      double precision, intent(out), optional :: dq_dT
+    end subroutine get_eps_derivative_T
   end interface
 
   type rc_fluid
@@ -50,8 +68,10 @@ module mod_radiative_cooling
     ! these are set in init method
     double precision, allocatable :: tcool(:), Lcool(:), dLdtcool(:)
     double precision, allocatable :: Yc(:)
+    double precision, allocatable :: Teion(:), Yeion(:)
     double precision  :: tref, lref, tcoolmin,tcoolmax
     double precision  :: lgtcoolmin, lgtcoolmax, lgstep
+    double precision  :: eion_lgtmin, eion_lgstep
 
     ! The piecewise powerlaw (PPL) tabels and variabels
     ! x_* en t_* are given as log_10
@@ -78,6 +98,7 @@ module mod_radiative_cooling
     logical    :: rc_split
 
     logical :: isPPL = .false.
+    logical :: has_eion_table = .false.
 
     !> Apply radiative damping near both x1 boundaries for 1D loop models
     logical :: rc_is_1d_loop = .false.
@@ -108,6 +129,12 @@ module mod_radiative_cooling
     procedure (get_subr1), pointer, nopass :: get_var_Rfactor => null()
     procedure (get_Rfactor_T), pointer, nopass :: get_Rfactor_from_temperature => null()
     procedure (get_subr1), pointer, nopass :: get_temperature_equi => null()
+    procedure (get_pthermal_Rfactor_rho_T), pointer, nopass :: get_pthermal_Rfactor_from_rho_T => null()
+    procedure (get_subr1), pointer, nopass :: get_eint => null()
+    procedure (get_pthermal_eint_Rfactor_rho_T), pointer, nopass :: &
+         get_pthermal_eint_Rfactor_from_rho_T => null()
+    procedure (get_eps_derivative_T), pointer, nopass :: &
+         get_eps_derivative_from_T => null()
 
   end type rc_fluid
 
@@ -581,8 +608,69 @@ module mod_radiative_cooling
 
       rc_gamma_1=rc_gamma-1.d0
       invgam = 1.d0/rc_gamma_1
-
     end subroutine radiative_cooling_init
+
+    subroutine radiative_cooling_build_eion_table(fl)
+      use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+      use mod_global_parameters
+      type(rc_fluid), intent(inout) :: fl
+
+      integer :: i, j
+      double precision :: frac, Tleft, Tright, Tpoint, dtemp
+      double precision :: Lpoint, eps, deps_dT
+
+      if (.not. associated(fl%get_eps_derivative_from_T)) then
+        call mpistop("eion cooling table requires an EOS heat-capacity callback")
+      end if
+      if (rc_gamma_1 <= zero) then
+        call mpistop("invalid gamma for eion cooling table")
+      end if
+      if (fl%tcoolmin <= zero .or. fl%tcoolmax <= fl%tcoolmin) then
+        call mpistop("invalid temperature range for eion cooling table")
+      end if
+
+      if (allocated(fl%Teion)) deallocate(fl%Teion)
+      if (allocated(fl%Yeion)) deallocate(fl%Yeion)
+      allocate(fl%Teion(1:fl%ncool), fl%Yeion(1:fl%ncool))
+
+      fl%eion_lgtmin = dlog10(fl%tcoolmin)
+      fl%eion_lgstep = (dlog10(fl%tcoolmax)-fl%eion_lgtmin) / &
+           dble(fl%ncool-1)
+      do i = 1, fl%ncool
+        frac = dble(i-1)/dble(fl%ncool-1)
+        fl%Teion(i) = 10.d0**(fl%eion_lgtmin + &
+             frac*(dlog10(fl%tcoolmax)-fl%eion_lgtmin))
+      end do
+
+      ! Y_eion(T) = (Lref/Tref) integral_T^Tmax
+      !                 [d eps(T')/dT']/Lambda(T') dT'.
+      ! With this normalization, dY/dt=(Lref/Tref)*rho.
+      fl%Yeion(fl%ncool) = zero
+      do i = fl%ncool-1, 1, -1
+        fl%Yeion(i) = fl%Yeion(i+1)
+        Tleft = fl%Teion(i)
+        Tright = fl%Teion(i+1)
+        dtemp = (Tright-Tleft)/100.d0
+        do j = 1, 100
+          Tpoint = Tleft+(dble(j)-half)*dtemp
+          call findL(Tpoint, Lpoint, fl)
+          call fl%get_eps_derivative_from_T( &
+               Tpoint, invgam, eps, deps_dT)
+          if (.not. ieee_is_finite(Lpoint) .or. Lpoint <= zero) then
+            call mpistop("invalid Lambda in eion cooling table")
+          end if
+          if (.not. ieee_is_finite(deps_dT) .or. deps_dT <= zero) then
+            call mpistop("invalid heat capacity in eion cooling table")
+          end if
+          fl%Yeion(i) = fl%Yeion(i) + &
+               fl%lref/fl%tref*dtemp*deps_dT/Lpoint
+        end do
+        if (fl%Yeion(i) <= fl%Yeion(i+1)) then
+          call mpistop("eion cooling transform is not monotonic")
+        end if
+      end do
+      fl%has_eion_table = .true.
+    end subroutine radiative_cooling_build_eion_table
 
     subroutine create_y_PPL(fl)
     !  creates the constants of integration needed for solving
@@ -680,77 +768,90 @@ module mod_radiative_cooling
       {end do\}
     end subroutine getvar_cooling
 
-    subroutine getvar_cooling_exact(qdt, ixI^L, ixO^L, wCT, w, x, coolrate, fl)
-    ! TODO: getvar_cooling_exact is a diagnostic routine and is not currently
-    ! guaranteed to reproduce cool_exact after the FIP-dependent cooling,
-    ! rad_damp, and Newton-cooling extensions.
+    subroutine getvar_cooling_exact(qdt, ixI^L, ixO^L, wCT, w, x, &
+        coolrate, fl)
+      ! Finite-step optically-thin cooling diagnostic based on the
+      ! Townsend exact-cooling temperature map.
+      !
+      ! This routine is not a complete mirror of cool_exact. It excludes
+      ! Newton cooling/heating, FIP corrections, geometric damping, TRAC
+      ! rescaling, and the source-ordering details of the actual update.
+      !
+      ! The dummy argument w is retained for calling-interface compatibility;
+      ! the diagnostic initial state is defined by wCT.
       use mod_global_parameters
 
-      integer, intent(in)           :: ixI^L, ixO^L
-      double precision, intent(in)  :: qdt, x(ixI^S, 1:ndim), wCT(ixI^S, 1:nw)
-      double precision              :: w(ixI^S, 1:nw)
+      integer, intent(in) :: ixI^L, ixO^L
+      double precision, intent(in) :: qdt
+      double precision, intent(in) :: x(ixI^S,1:ndim)
+      double precision, intent(in) :: wCT(ixI^S,1:nw)
+      double precision, intent(in) :: w(ixI^S,1:nw)
       double precision, intent(out) :: coolrate(ixI^S)
-      type(rc_fluid), intent(in)    :: fl
-      double precision              :: y1, y2, l1, tlocal2
-      double precision              :: Te(ixI^S), pnew(ixI^S), rho(ixI^S), rhonew(ixI^S)
-      double precision              :: emin, Lmax, fact, Rfactor(ixI^S)
-      double precision              :: Rfloor, Rnew
-      integer                       :: ix^D
-      logical :: use_Rfactor_T
-      double precision :: Rfloor_const
+      type(rc_fluid), intent(in) :: fl
 
+      double precision :: rho(ixI^S), Te(ixI^S), pthermal(ixI^S)
+      double precision :: eint_old(ixI^S)
+      double precision :: Y1, Y2, L1, Ttarget
+      double precision :: Rguess, Rtarget
+      double precision :: pfloor, ptarget, eint_floor, eint_target
+      double precision :: Lmax, fact
+      integer :: ix^D
+
+      if (qdt <= zero) then
+        call mpistop("getvar_cooling_exact requires qdt > 0")
+      end if
+      if (associated(fl%get_eps_derivative_from_T) .and. &
+          .not. fl%has_eion_table) then
+        call mpistop("eion exact-cooling table is not initialized")
+      end if
       call fl%get_rho(wCT, x, ixI^L, ixO^L, rho)
       call fl%get_temperature(wCT, x, ixI^L, ixO^L, Te)
-      call fl%get_pthermal(w, x, ixI^L, ixO^L, pnew)
-      call fl%get_rho(w, x, ixI^L, ixO^L, rhonew)
-
-      fact=fl%lref*qdt/fl%tref
-      use_Rfactor_T = associated(fl%get_Rfactor_from_temperature)
-      if (use_Rfactor_T) then
-        {do ix^DB = ixO^LIM^DB\}
-          call fl%get_Rfactor_from_temperature(Te(ix^D), Rfactor(ix^D))
-        {end do\}
-      else
-        call fl%get_var_Rfactor(wCT, x, ixI^L, ixO^L, Rfactor)
-      end if
-      if (use_Rfactor_T) then
-        call cooling_get_Rfactor_T(fl, fl%tlow, 1.d0, Rfloor_const)
-      end if
+      call fl%get_pthermal(wCT, x, ixI^L, ixO^L, pthermal)
+      call cooling_get_eint( &
+           fl, wCT, x, ixI^L, ixO^L, pthermal, eint_old)
+      fact = fl%lref*qdt/fl%tref
       {do ix^DB = ixO^LIM^DB\}
-         if (use_Rfactor_T) then
-           Rfloor = Rfloor_const
-         else
-           Rfloor = Rfactor(ix^D)
-         end if
-         emin = rhonew(ix^D) * fl%tlow * Rfloor * invgam
-         lmax = max(zero, ( pnew(ix^D)*invgam - emin ) / qdt)
-
-         ! No cooling if temperature is below floor level.
-         ! Assuming Bremsstrahlung if temperature is higher than maximum.
-         if( Te(ix^D)<= fl%tcoolmin) then
-           l1 = zero
-         else if( Te(ix^D)>= fl%tcoolmax ) then
-           call calc_l_extended(Te(ix^D), l1, fl)
-           l1 = l1 * rho(ix^D)**2
-           l1 = min(l1, lmax)
-         else
-           call findY(Te(ix^D), y1, fl)
-           y2   = y1 +  fact * rho(ix^D)*rc_gamma_1
-           call findT(tlocal2, y2, fl)
-           if( tlocal2 <= fl%tcoolmin ) then
-             l1 = lmax
-           else
-             call cooling_get_Rfactor_T( &
-                fl, tlocal2, Rfactor(ix^D), Rnew)
-             l1 = rho(ix^D) * (Rfactor(ix^D)*Te(ix^D) - Rnew*tlocal2) * invgam/qdt
-             l1 = max(zero, l1)
-           end if
-           l1 = min(l1, lmax)
-         end if
-         if(slab_uniform .and. fl%rad_damp .and. x(ix^D,ndim) .le. fl%rad_damp_height) then
-           l1 = l1*exp(-(x(ix^D,ndim)-fl%rad_damp_height)**2/fl%rad_damp_scale**2)
-         end if
-        coolrate(ix^D) = l1
+        if (rho(ix^D) <= zero .or. Te(ix^D) <= zero .or. &
+            pthermal(ix^D) <= zero) then
+          coolrate(ix^D) = zero
+          cycle
+        end if
+        if (Te(ix^D) <= fl%tcoolmin) then
+          coolrate(ix^D) = zero
+          cycle
+        end if
+        Rguess = pthermal(ix^D)/(rho(ix^D)*Te(ix^D))
+        call cooling_get_pthermal_eint_Rfactor( &
+             fl, rho(ix^D), fl%tlow, Rguess, &
+             pfloor, eint_floor, Rtarget)
+        Lmax = max(zero, (eint_old(ix^D)-eint_floor)/qdt)
+        if (Te(ix^D) >= fl%tcoolmax) then
+          call calc_l_extended(Te(ix^D), L1, fl)
+          L1 = min(L1*rho(ix^D)**2, Lmax)
+        else
+          ! Townsend Y(T) remains a one-dimensional approximation for a
+          ! pressure-dependent EOS. The endpoint energy is mapped consistently
+          ! through pthermal(rho,Ttarget).
+          if (fl%has_eion_table) then
+            call findY_eion(Te(ix^D), Y1, fl)
+            Y2 = Y1 + fact*rho(ix^D)
+            call findT_eion(Ttarget, Y2, fl)
+          else
+            call findY(Te(ix^D), Y1, fl)
+            Y2 = Y1 + fact*rho(ix^D)*rc_gamma_1
+            call findT(Ttarget, Y2, fl)
+          end if
+          if (Ttarget <= fl%tcoolmin) then
+            L1 = Lmax
+          else
+            call cooling_get_pthermal_eint_Rfactor( &
+                 fl, rho(ix^D), Ttarget, Rguess, &
+                 ptarget, eint_target, Rtarget)
+            L1 = max(zero, (eint_old(ix^D)-eint_target)/qdt)
+            L1 = min(L1, Lmax)
+          end if
+        end if
+        coolrate(ix^D) = L1
       {end do\}
     end subroutine getvar_cooling_exact
 
@@ -783,34 +884,54 @@ module mod_radiative_cooling
     !  Force minimum temperature to a fixed temperature
       use mod_global_parameters
       integer, intent(in)             :: ixI^L, ixO^L
-      double precision, intent(in)    :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw)
+      double precision, intent(in)    :: qdt, x(ixI^S,1:ndim)
+      double precision, intent(in)    :: wCT(ixI^S,1:nw)
       double precision, intent(inout) :: w(ixI^S,1:nw)
       type(rc_fluid), intent(in) :: fl
-      double precision :: etherm(ixI^S), rho(ixI^S)
-      double precision :: Rfactor(ixI^S), emin, Rfloor
-      integer :: ix^D
-      logical :: use_Rfactor_T
-      double precision :: Rfloor_const
 
-      call fl%get_pthermal(w,x,ixI^L,ixO^L,etherm)
-      call fl%get_rho(w,x,ixI^L,ixO^L,rho)
-      call fl%get_var_Rfactor(wCT,x,ixI^L,ixO^L,Rfactor)
-      use_Rfactor_T = associated(fl%get_Rfactor_from_temperature)
-      if (use_Rfactor_T) then
-        call fl%get_Rfactor_from_temperature(fl%tlow, Rfloor_const)
+      double precision :: pthermal(ixI^S), rho(ixI^S)
+      double precision :: eint_current(ixI^S)
+      double precision :: temperature(ixI^S), Rfactor(ixI^S)
+      double precision :: Rguess, Rfloor, pfloor, eint_floor
+      integer :: ix^D
+
+      call fl%get_pthermal(w, x, ixI^L, ixO^L, pthermal)
+      call fl%get_rho(w, x, ixI^L, ixO^L, rho)
+      call cooling_get_eint( &
+           fl, w, x, ixI^L, ixO^L, pthermal, eint_current)
+
+      if (associated(fl%get_pthermal_Rfactor_from_rho_T)) then
+        ! Use the updated state and solve the floor EOS only where needed.
+        call fl%get_temperature(w, x, ixI^L, ixO^L, temperature)
+
+        {do ix^DB = ixO^LIM^DB\}
+          if (temperature(ix^D) >= fl%tlow) cycle
+          if (rho(ix^D) > zero .and. temperature(ix^D) > zero) then
+            Rguess = pthermal(ix^D) / (rho(ix^D)*temperature(ix^D))
+          else
+            Rguess = one
+          end if
+          call cooling_get_pthermal_eint_Rfactor( &
+               fl, rho(ix^D), fl%tlow, Rguess, &
+               pfloor, eint_floor, Rfloor)
+          if (eint_current(ix^D) < eint_floor) then
+            w(ix^D,fl%e_) = w(ix^D,fl%e_) + &
+                (eint_floor-eint_current(ix^D))
+          end if
+        {end do\}
+      else
+        ! Preserve the existing constant-R/user-Rfactor fallback behavior.
+        call fl%get_var_Rfactor(wCT, x, ixI^L, ixO^L, Rfactor)
+        {do ix^DB = ixO^LIM^DB\}
+          call cooling_get_pthermal_eint_Rfactor( &
+               fl, rho(ix^D), fl%tlow, Rfactor(ix^D), &
+               pfloor, eint_floor, Rfloor)
+          if (eint_current(ix^D) < eint_floor) then
+            w(ix^D,fl%e_) = w(ix^D,fl%e_) + &
+                (eint_floor-eint_current(ix^D))
+          end if
+        {end do\}
       end if
-      {do ix^DB = ixO^LIM^DB\}
-         if (use_Rfactor_T) then
-           Rfloor = Rfloor_const
-         else
-           Rfloor = Rfactor(ix^D)
-         end if
-         emin = rho(ix^D)*fl%tlow*Rfloor
-         if (etherm(ix^D) < emin) then
-           w(ix^D,fl%e_) = w(ix^D,fl%e_) + &
-                (emin-etherm(ix^D))*invgam
-         end if
-      {end do\}
     end subroutine floortemperature
 
     subroutine get_cool_equi(qdt,ixI^L,ixO^L,wCT,w,x,fl,res)
@@ -824,67 +945,73 @@ module mod_radiative_cooling
 
       double precision :: pth(ixI^S),rho(ixI^S),Rfactor(ixI^S),L1,Tlocal2
       double precision :: Te(ixI^S)
-      double precision :: emin, Lmax
+      double precision :: Lmax
       double precision :: Y1, Y2
       double precision :: de, emax,fact
-      double precision :: Rfloor, Rnew
+      double precision :: Rfloor, Rnew, Rstate
+      double precision :: pfloor, ptarget, pstate
+      double precision :: eint_old, eint_floor, eint_target
       integer :: ix^D
-      logical :: use_Rfactor_T
-      double precision :: Rfloor_const
 
       call fl%get_pthermal_equi(wCT,x,ixI^L,ixO^L,pth)
+      if (associated(fl%get_eps_derivative_from_T) .and. &
+          .not. fl%has_eion_table) then
+        call mpistop("eion exact-cooling table is not initialized")
+      end if
       call fl%get_rho_equi(wCT,x,ixI^L,ixO^L,rho)
       call fl%get_temperature_equi(wCT,x,ixI^L,ixO^L,Te)
       Rfactor(ixO^S)=pth(ixO^S)/(rho(ixO^S)*Te(ixO^S))
       res=0d0
       fact = fl%lref*qdt/fl%tref
-      use_Rfactor_T = associated(fl%get_Rfactor_from_temperature)
-      if (use_Rfactor_T) then
-        call cooling_get_Rfactor_T(fl, fl%tlow, 1.d0, Rfloor_const)
-      end if
-      {do ix^DB = ixO^LIM^DB\}
-           if (use_Rfactor_T) then
-             Rfloor = Rfloor_const
-           else
-             Rfloor = Rfactor(ix^D)
-           end if
-           emin = rho(ix^D) * fl%tlow * Rfloor * invgam
-           Lmax = max(zero,(pth(ix^D)*invgam-emin)/qdt)
-           emax = max(zero, pth(ix^D)*invgam-emin)
-           if( Te(ix^D)<=fl%tcoolmin ) then
-             ! temperature is below floor level, no cooling.
-             L1 = zero
-           else if( Te(ix^D)>=fl%tcoolmax )then
-             call calc_l_extended(Te(ix^D), L1,fl)
-             L1 = L1*rho(ix^D)**2
-             if(phys_trac) then
-               if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
-                 L1=L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
-               end if
-             end if
-             L1 = min(L1,Lmax)
-             res(ix^D) =  L1*qdt
-           else
-             call findY(Te(ix^D),Y1,fl)
-             Y2 = Y1 + fact * rho(ix^D)*rc_gamma_1
-             call findT(Tlocal2,Y2,fl)
-             if(Tlocal2<=fl%tcoolmin) then
-               de = emax
-             else
-               call cooling_get_Rfactor_T( &
-                    fl, Tlocal2, Rfactor(ix^D), Rnew)
-               de = rho(ix^D) * &
-                    (Rfactor(ix^D)*Te(ix^D) - Rnew*Tlocal2) * &
-                    invgam
-             end if
-             if(phys_trac) then
-               if(Te(ix^D)<block%wextra(ix^D,fl%Tcoff_)) then
-                 de=de*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
-               end if
-             end if
-             de = min(max(zero, de), emax)
-             res(ix^D) = de
-           end if
+
+     {do ix^DB = ixO^LIM^DB\}
+        call cooling_get_pthermal_eint_Rfactor( &
+             fl, rho(ix^D), Te(ix^D), Rfactor(ix^D), &
+             pstate, eint_old, Rstate)
+        call cooling_get_pthermal_eint_Rfactor( &
+             fl, rho(ix^D), fl%tlow, Rfactor(ix^D), &
+             pfloor, eint_floor, Rfloor)
+        Lmax = max(zero, (eint_old-eint_floor)/qdt)
+        emax = max(zero, eint_old-eint_floor)
+        if( Te(ix^D)<=fl%tcoolmin ) then
+          L1 = zero
+        else if( Te(ix^D)>=fl%tcoolmax )then
+          call calc_l_extended(Te(ix^D), L1, fl)
+          L1 = L1*rho(ix^D)**2
+          if (phys_trac) then
+            if (Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
+              L1 = L1*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
+            end if
+          end if
+          L1 = min(L1,Lmax)
+          res(ix^D) =  L1*qdt
+        else
+          if (fl%has_eion_table) then
+            call findY_eion(Te(ix^D), Y1, fl)
+            Y2 = Y1 + fact*rho(ix^D)
+            call findT_eion(Tlocal2, Y2, fl)
+          else
+            call findY(Te(ix^D),Y1,fl)
+            Y2 = Y1 + fact*rho(ix^D)*rc_gamma_1
+            call findT(Tlocal2,Y2,fl)
+          end if
+          if(Tlocal2<=fl%tcoolmin) then
+            de = emax
+          else
+            call cooling_get_pthermal_eint_Rfactor( &
+                 fl, rho(ix^D), Tlocal2, Rfactor(ix^D), &
+                 ptarget, eint_target, Rnew)
+            de = eint_old-eint_target
+          end if
+
+          if (phys_trac) then
+            if (Te(ix^D) < block%wextra(ix^D,fl%Tcoff_)) then
+              de = de*sqrt((Te(ix^D)/block%wextra(ix^D,fl%Tcoff_))**5)
+            end if
+          end if
+          de = min(max(zero, de), emax)
+          res(ix^D) = de
+        endif
       {end do\}
     end subroutine get_cool_equi
 
@@ -900,61 +1027,112 @@ module mod_radiative_cooling
       end if
     end subroutine cooling_get_Rfactor_T
 
+    subroutine cooling_get_pthermal_Rfactor(fl, rho, T, Rold, pnew, Rnew)
+      type(rc_fluid), intent(in) :: fl
+      double precision, intent(in) :: rho, T, Rold
+      double precision, intent(out) :: pnew, Rnew
+
+      if (associated(fl%get_pthermal_Rfactor_from_rho_T)) then
+        call fl%get_pthermal_Rfactor_from_rho_T(rho, T, pnew, Rnew)
+      else
+        call cooling_get_Rfactor_T(fl, T, Rold, Rnew)
+        pnew = rho*Rnew*T
+      end if
+    end subroutine cooling_get_pthermal_Rfactor
+
+    subroutine cooling_get_pthermal_eint_Rfactor( &
+         fl, rho, T, Rold, pnew, eint_new, Rnew)
+      type(rc_fluid), intent(in) :: fl
+      double precision, intent(in) :: rho, T, Rold
+      double precision, intent(out) :: pnew, eint_new, Rnew
+
+      if (associated(fl%get_pthermal_eint_Rfactor_from_rho_T)) then
+        call fl%get_pthermal_eint_Rfactor_from_rho_T( &
+             rho, T, pnew, eint_new, Rnew)
+      else
+        call cooling_get_pthermal_Rfactor( &
+             fl, rho, T, Rold, pnew, Rnew)
+        eint_new = pnew*invgam
+      end if
+    end subroutine cooling_get_pthermal_eint_Rfactor
+
+    subroutine cooling_get_eint( &
+         fl, w, x, ixI^L, ixO^L, pthermal, eint)
+      use mod_global_parameters
+
+      type(rc_fluid), intent(in) :: fl
+      integer, intent(in) :: ixI^L, ixO^L
+      double precision, intent(in) :: w(ixI^S,1:nw)
+      double precision, intent(in) :: x(ixI^S,1:ndim)
+      double precision, intent(in) :: pthermal(ixI^S)
+      double precision, intent(out) :: eint(ixI^S)
+
+      if (associated(fl%get_eint)) then
+        call fl%get_eint(w, x, ixI^L, ixO^L, eint)
+      else
+        eint(ixO^S) = pthermal(ixO^S)*invgam
+      end if
+    end subroutine cooling_get_eint
+
     subroutine cool_exact(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,fl)
-    !  Cooling routine using exact integration method from Townsend 2009
       use mod_global_parameters
       integer, intent(in)             :: ixI^L, ixO^L
       double precision, intent(in)    :: qdt, x(ixI^S,1:ndim), wCT(ixI^S,1:nw), wCTprim(ixI^S,1:nw)
       double precision, intent(inout) :: w(ixI^S,1:nw)
       type(rc_fluid), intent(in) :: fl
       double precision :: Y1, Y2
-      double precision :: L1, Tlocal2, pnew(ixI^S)
-      double precision :: Rfloor, Rnew, R1, R2
-      double precision :: rho(ixI^S), Te(ixI^S), rhonew(ixI^S), Rfactor(ixI^S)
-      double precision :: emin, Lmax, fact
+      double precision :: L1, Tlocal2
+      double precision :: Rguess, Rfloor, Rnew, R2
+      double precision :: rho(ixI^S), Te(ixI^S), rhonew(ixI^S)
+      double precision :: eint_old(ixI^S), eint_work(ixI^S)
+      double precision :: eint_after(ixI^S)
+      double precision :: Lmax, fact
       double precision :: de_thin, de_thick, emax
       double precision :: T1, T2, Tnew(ixI^S), tau, xi
       double precision :: xi_arr(ixI^S), emax_rem_arr(ixI^S)
       double precision :: cool_fac, fip_prim, frac_lowFIP, fip_factor
+      double precision :: pold(ixI^S), pwork(ixI^S), pafter(ixI^S)
+      double precision :: pfloor, ptarget, eint_floor, eint_target
       integer :: ix^D
-      logical :: use_Rfactor_T
-      double precision :: Rfloor_const
 
-      call fl%get_rho(wCT,x,ixI^L,ixO^L,rho)
-      call fl%get_temperature(wCT,x,ixI^L,ixO^L,Te)
-      call fl%get_pthermal(w,x,ixI^L,ixO^L,pnew)
+      if (associated(fl%get_eps_derivative_from_T) .and. &
+          .not. fl%has_eion_table) then
+        call mpistop("eion exact-cooling table is not initialized")
+      end if
       call fl%get_rho(w,x,ixI^L,ixO^L,rhonew)
-      use_Rfactor_T = associated(fl%get_Rfactor_from_temperature)
-      if (use_Rfactor_T) then
-        {do ix^DB = ixO^LIM^DB\}
-          call fl%get_Rfactor_from_temperature(Te(ix^D), Rfactor(ix^D))
-        {end do\}
-      else
-        call fl%get_var_Rfactor(wCT, x, ixI^L, ixO^L, Rfactor)
-      end if
+      call fl%get_rho(wCT, x, ixI^L, ixO^L, rho)
+      call fl%get_pthermal(w, x, ixI^L, ixO^L, pwork)
+      call fl%get_pthermal(wCT, x, ixI^L, ixO^L, pold)
+      call fl%get_temperature(wCT, x, ixI^L, ixO^L, Te)
+      call cooling_get_eint( &
+           fl, wCT, x, ixI^L, ixO^L, pold, eint_old)
+      call cooling_get_eint( &
+           fl, w, x, ixI^L, ixO^L, pwork, eint_work)
       fact = fl%lref*qdt/fl%tref
-      if (use_Rfactor_T) then
-        call cooling_get_Rfactor_T(fl, fl%tlow, 1.d0, Rfloor_const)
-      end if
       xi_arr = one
       emax_rem_arr = zero
-      {do ix^DB = ixO^LIM^DB\}
-        if (use_Rfactor_T) then
-          Rfloor = Rfloor_const
+     {do ix^DB = ixO^LIM^DB\}
+        ! Do not apply radiative or Newton updates below the cooling-table cutoff.
+        ! A hard temperature floor, when enabled, is applied by floortemperature.
+        if (Te(ix^D) <= fl%tcoolmin) cycle
+        if (rho(ix^D) > zero .and. Te(ix^D) > zero) then
+          Rguess = pold(ix^D)/(rho(ix^D)*Te(ix^D))
         else
-          Rfloor = Rfactor(ix^D)
+          Rguess = one
         end if
-        emin = rhonew(ix^D)*fl%tlow*Rfloor*invgam
-        Lmax = max(zero,pnew(ix^D)*invgam-emin)/qdt
-        emax = max(zero,pnew(ix^D)*invgam-emin)
-        if (Te(ix^D)<=fl%tcoolmin) cycle
+        call cooling_get_pthermal_eint_Rfactor( &
+             fl, rhonew(ix^D), fl%tlow, Rguess, &
+             pfloor, eint_floor, Rfloor)
+        Lmax = max(zero, eint_work(ix^D)-eint_floor)/qdt
+        emax = max(zero, eint_work(ix^D)-eint_floor)
         if (fl%rad_newton) then
-          xi = exp(-pnew(ix^D) / fl%rad_newton_pthick)
+          xi = exp(-pwork(ix^D) / fl%rad_newton_pthick)
           xi = min(max(xi, zero), one)
         else
           xi = one
         end if
         cool_fac = xi
+        if (fl%rad_newton) xi_arr(ix^D) = xi
 
         ! ------- (A) OPTICALLY-THIN PART --------
         ! --- FIP factor with T-dependent r(T) ---
@@ -998,19 +1176,28 @@ module mod_radiative_cooling
           de_thin = L1*qdt
           w(ix^D,fl%e_) = w(ix^D,fl%e_) - de_thin
         else
-          ! Map T^n to Y-space
-          call findY(Te(ix^D), Y1, fl)
-          ! FIP and cutoff are included here as multiplicative factors in Lambda_eff.
-          Y2 = Y1 + cool_fac * fact * rho(ix^D) * rc_gamma_1
-          ! Invert Y(T) to get T^{n+1}
-          call findT(Tlocal2, Y2, fl)
+          ! FIP and damping are frozen multiplicative factors in Lambda_eff
+          ! during this source update.
+          if (fl%has_eion_table) then
+            call findY_eion(Te(ix^D), Y1, fl)
+            Y2 = Y1 + cool_fac*fact*rho(ix^D)
+            call findT_eion(Tlocal2, Y2, fl)
+          else
+            ! For a pressure-dependent EOS, this one-dimensional Townsend map
+            ! remains approximate. Endpoint energy is nevertheless mapped
+            ! consistently through pthermal(rho,Tlocal2).
+            call findY(Te(ix^D), Y1, fl)
+            Y2 = Y1 + cool_fac*fact*rho(ix^D)*rc_gamma_1
+            call findT(Tlocal2, Y2, fl)
+          end if
           ! Convert delta_T to an energy loss delta_e, respecting internal-energy floor.
           if (Tlocal2 <= fl%tcoolmin) then
             de_thin = emax
           else
-            call cooling_get_Rfactor_T(fl, Tlocal2, Rfactor(ix^D), Rnew)
-            de_thin = rho(ix^D) * &
-                 (Rfactor(ix^D)*Te(ix^D) - Rnew*Tlocal2) * invgam
+            call cooling_get_pthermal_eint_Rfactor( &
+                 fl, rho(ix^D), Tlocal2, Rguess, &
+                 ptarget, eint_target, Rnew)
+            de_thin = eint_old(ix^D)-eint_target
           end if
           ! --- TRAC modification: approximate, NOT strictly EI ---
           ! This rescaling is applied *after* the EI step and depends on T^n,
@@ -1024,23 +1211,34 @@ module mod_radiative_cooling
           end if
           de_thin = min(max(zero, de_thin), emax)
           w(ix^D,fl%e_) = w(ix^D,fl%e_) - de_thin
-          if (fl%rad_newton) then
-            xi_arr(ix^D) = xi
-            emax_rem_arr(ix^D) = max(zero, emax - de_thin)
-          end if
         end if
-      {end do\}
+        if (fl%rad_newton) then
+          emax_rem_arr(ix^D) = max(zero, emax - de_thin)
+        end if
+     {end do\}
 
       ! ------- (B) OPTICALLY-THICK (NEWTON) PART --------
       if (fl%rad_newton) then
         call fl%get_temperature(w, x, ixI^L, ixO^L, Tnew)
+        call fl%get_pthermal(w, x, ixI^L, ixO^L, pafter)
+        call cooling_get_eint( &
+             fl, w, x, ixI^L, ixO^L, pafter, eint_after)
         {do ix^DB = ixO^LIM^DB\}
+          if (Te(ix^D) <= fl%tcoolmin) cycle
           T1 = Tnew(ix^D)
           tau = max(0.1d0 * sqrt(fl%rad_newton_rhosurf/rho(ix^D)), 4.d0*qdt)
           T2 = fl%rad_newton_trad + (T1-fl%rad_newton_trad)*exp(-qdt/tau)
-          call cooling_get_Rfactor_T(fl, T1, Rfactor(ix^D), R1)
-          call cooling_get_Rfactor_T(fl, T2, R1, R2)
-          de_thick = (one-xi_arr(ix^D)) * rho(ix^D) * (R1*T1-R2*T2)*invgam
+          if (rho(ix^D) > zero .and. Tnew(ix^D) > zero) then
+            Rguess = pafter(ix^D)/(rho(ix^D)*Tnew(ix^D))
+          else
+            Rguess = one
+          end if
+          call cooling_get_pthermal_eint_Rfactor( &
+               fl, rho(ix^D), T2, Rguess, &
+               ptarget, eint_target, R2)
+          de_thick = (one-xi_arr(ix^D)) * &
+               (eint_after(ix^D)-eint_target)
+          ! Only cap cooling. Negative de_thick represents Newton heating.
           de_thick = min(de_thick, emax_rem_arr(ix^D))
           w(ix^D,fl%e_) = w(ix^D,fl%e_) - de_thick
         {end do\}
@@ -1114,6 +1312,11 @@ module mod_radiative_cooling
 
     end subroutine findL
 
+    ! The Townsend transform uses a one-dimensional Y(T) table. For a
+    ! pressure-dependent EOS this gives an approximate temperature update,
+    ! because the strict heat capacity depends on density. The endpoint
+    ! energy is nevertheless mapped consistently through
+    ! pthermal(rho,Tlocal2). A strict Y(T,rho) treatment is deferred.
     subroutine findY (tpoint,Ypoint,fl)
     !  Fast search option to find correct point in cooling time
       use mod_global_parameters
@@ -1144,6 +1347,33 @@ module mod_radiative_cooling
       end if
 
     end subroutine findY
+
+    subroutine findY_eion(tpoint, Ypoint, fl)
+      use mod_global_parameters
+      double precision, intent(in) :: tpoint
+      double precision, intent(out) :: Ypoint
+      type(rc_fluid), intent(in) :: fl
+
+      double precision :: lgtp
+      integer :: jl
+
+      if (.not. fl%has_eion_table) then
+        call mpistop("eion cooling transform table is not initialized")
+      end if
+      if (tpoint <= fl%Teion(1)) then
+        Ypoint = fl%Yeion(1)
+      else if (tpoint >= fl%Teion(fl%ncool)) then
+        Ypoint = fl%Yeion(fl%ncool)
+      else
+        lgtp = dlog10(tpoint)
+        jl = int((lgtp-fl%eion_lgtmin)/fl%eion_lgstep) + 1
+        jl = max(1, min(fl%ncool-1, jl))
+        Ypoint = fl%Yeion(jl) + &
+             (tpoint-fl%Teion(jl)) * &
+             (fl%Yeion(jl+1)-fl%Yeion(jl)) / &
+             (fl%Teion(jl+1)-fl%Teion(jl))
+      end if
+    end subroutine findY_eion
 
     subroutine findT (tpoint,Ypoint,fl)
     !  Fast search option to find correct temperature
@@ -1191,5 +1421,38 @@ module mod_radiative_cooling
         end if
       end if
     end subroutine findT
+
+    subroutine findT_eion(tpoint, Ypoint, fl)
+      type(rc_fluid), intent(in) :: fl
+      double precision, intent(out) :: tpoint
+      double precision, intent(in) :: Ypoint
+
+      integer :: jl, jc, jh
+
+      if (.not. fl%has_eion_table) then
+        call mpistop("eion cooling transform table is not initialized")
+      end if
+      if (Ypoint >= fl%Yeion(1)) then
+        tpoint = fl%Teion(1)
+      else if (Ypoint <= fl%Yeion(fl%ncool)) then
+        tpoint = fl%Teion(fl%ncool)
+      else
+        jl = 0
+        jh = fl%ncool+1
+        do
+          if (jh-jl <= 1) exit
+          jc = (jh+jl)/2
+          if (Ypoint <= fl%Yeion(jc)) then
+            jl = jc
+          else
+            jh = jc
+          end if
+        end do
+        tpoint = fl%Teion(jl) + &
+             (Ypoint-fl%Yeion(jl)) * &
+             (fl%Teion(jl+1)-fl%Teion(jl)) / &
+             (fl%Yeion(jl+1)-fl%Yeion(jl))
+      end if
+    end subroutine findT_eion
 
 end module mod_radiative_cooling

@@ -250,12 +250,14 @@ module mod_solar_atmosphere
                 9.7965d+05, 9.8195d+05, 9.8424d+05, 9.8652d+05, 9.8879d+05,&
                 9.9105d+05, 9.9330d+05, 9.9554d+05, 9.9778d+05, 9.9778d+05 /
 
+  private :: get_atm_para_pressure_eos
 
 contains
 
   subroutine get_atm_para(h,rho,pth,grav,nh,Tcurve,hc,rhohc,Tem,clamp_low_T)
     use mod_physics, only: phys_partial_ionization
-    use mod_ionization_degree, only: ionization_get_Rfactor_from_temperature
+    use mod_ionization_degree, only: ionization_is_temperature_only, &
+        ionization_get_Rfactor_from_temperature
     ! input:h,grav,nh,rho0,Tcurve; output:rho,pth (dimensionless units)
     ! nh -- number of points
     ! rho0 -- number density at h=0
@@ -304,8 +306,13 @@ contains
     Te=Te_cgs/unit_temperature
     if(present(Tem)) Tem=Te
 
-    if(phys_partial_ionization) then
-      do j=1,nh
+    if (phys_partial_ionization) then
+      if (.not. ionization_is_temperature_only()) then
+        call get_atm_para_pressure_eos(h, Te, grav, nh, hc, rhohc, rho, pth)
+        return
+      end if
+
+      do j = 1, nh
         call ionization_get_Rfactor_from_temperature(Te(j), Rfactor)
         Te(j) = Te(j)*Rfactor
       end do
@@ -334,6 +341,95 @@ contains
     pth=pth*ratio
 
   end subroutine get_atm_para
+
+
+  subroutine get_atm_para_pressure_eos(h, T, grav, nh, hc, rhohc, rho, pth)
+    use mod_ionization_degree, only : ionization_state_Tp, ionization_solve_p_Rfactor
+
+    integer, intent(in) :: nh
+    double precision, intent(in) :: h(nh), T(nh), grav(nh), hc, rhohc
+    double precision, intent(out) :: rho(nh), pth(nh)
+
+    integer :: outer, inner, j
+    double precision :: rho0, rhot, ratio, dh, dht
+    double precision :: Rprev, Rcur, RTprev, RTcur
+    double precision :: pguess, pnext, rel
+    logical :: converged, found_hc
+
+    if (nh < 2) call mpistop("pressure-dependent HSE requires nh >= 2")
+    if (rhohc <= zero) call mpistop("get_atm_para: invalid rhohc")
+    if (any(T <= zero)) call mpistop("get_atm_para: non-positive temperature")
+    if (any(h(2:nh) <= h(1:nh-1))) then
+      call mpistop("get_atm_para: height grid must be strictly increasing")
+    end if
+
+    rho0 = 1.d5
+    converged = .false.
+
+    do outer = 1, 30
+      call ionization_solve_p_Rfactor(rho0, T(1), pth(1), Rprev)
+      rho(1) = rho0
+      RTprev = Rprev*T(1)
+
+      do j = 2, nh
+        dh = h(j)-h(j-1)
+
+        call ionization_state_Tp(T(j), pth(j-1), Rcur)
+        RTcur = Rcur*T(j)
+        pguess = pth(j-1)*exp(0.5d0*dh * (grav(j-1)/RTprev+grav(j)/RTcur))
+
+        do inner = 1, 20
+          call ionization_state_Tp(T(j), pguess, Rcur)
+          RTcur = Rcur*T(j)
+          pnext = pth(j-1)*exp(0.5d0*dh * (grav(j-1)/RTprev+grav(j)/RTcur))
+          ! The first condition also catches NaN because NaN > zero is false.
+          if (.not. (pnext > zero) .or. pnext >= bigdouble) then
+            call mpistop("invalid pressure in pressure-dependent HSE")
+          end if
+          rel = abs(pnext-pguess)/max(abs(pnext),tiny(1.d0))
+          pguess = pnext
+          if (rel < 1.d-12) exit
+        end do
+        if (inner > 20) call mpistop("pressure-dependent HSE did not converge")
+
+        pth(j) = pnext
+        call ionization_state_Tp(T(j), pth(j), Rcur)
+        RTcur = Rcur*T(j)
+        rho(j) = pth(j)/RTcur
+        RTprev = RTcur
+      end do
+
+      if (hc <= h(1)) then
+        rhot = rho(1)
+      else if (hc >= h(nh)) then
+        rhot = rho(nh)
+      else
+        found_hc = .false.
+        do j = 2, nh
+          if (h(j-1) <= hc .and. hc <= h(j)) then
+            dht = hc-h(j-1)
+            rhot = rho(j-1)+dht*(rho(j)-rho(j-1)) / (h(j)-h(j-1))
+            found_hc = .true.
+            exit
+          end if
+        end do
+        if (.not. found_hc) call mpistop("hc is not bracketed by h")
+      end if
+
+      ratio = rhohc/rhot
+      if (abs(ratio-one) < 1.d-10) then
+        converged = .true.
+        exit
+      end if
+
+      ! Shooting correction; outputs are recomputed, never rescaled afterward.
+      rho0 = rho0*min(10.d0,max(0.1d0,ratio))
+    end do
+
+    if (.not. converged) then
+      call mpistop("pressure-dependent HSE shooting did not converge")
+    end if
+  end subroutine get_atm_para_pressure_eos
 
   subroutine get_Te_ALC7(h,Te,nh,clamp_low_T)
     use mod_interpolation

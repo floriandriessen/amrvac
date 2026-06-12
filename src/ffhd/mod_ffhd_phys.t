@@ -51,7 +51,7 @@ module mod_ffhd_phys
 
   !> Whether plasma is partially ionized
   logical, public, protected              :: ffhd_partial_ionization = .false.
-
+  character(len=32), public, protected    :: ffhd_ionization_table = "carlsson2012"
   !> Index of the density (in the w array)
   integer, public, protected              :: rho_
 
@@ -146,7 +146,8 @@ contains
     namelist /ffhd_list/ ffhd_energy, ffhd_gamma, ffhd_adiab, &
       ffhd_thermal_conduction, ffhd_hyperbolic_tc, ffhd_hyperbolic_tc_sat, ffhd_radiative_cooling, ffhd_gravity,&
       He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit,&
-      B0field, Busr, ffhd_partial_ionization, ffhd_trac, ffhd_trac_type, ffhd_trac_mask, ffhd_trac_finegrid
+      B0field, Busr, ffhd_partial_ionization, ffhd_ionization_table, ffhd_trac, ffhd_trac_type, &
+      ffhd_trac_mask, ffhd_trac_finegrid
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -181,7 +182,7 @@ contains
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_ionization_degree, only: ionization_degree_init,&
-        ionization_get_Rfactor_from_temperature
+        ionization_get_Rfactor_from_temperature, ionization_is_temperature_only, ionization_solve_p_Rfactor
     use mod_usr_methods, only: usr_Rfactor
     integer :: itr, idir
 
@@ -334,12 +335,17 @@ contains
     else
       ffhd_get_Rfactor=>Rfactor_from_constant_ionization
     end if
-
     ffhd_get_temperature => ffhd_get_temperature_from_etot
 
     ! derive units from basic units
     call ffhd_physical_units()
-
+    ! initialize ionization degree table
+    if (ffhd_partial_ionization) then
+      call ionization_degree_init(He_abundance, &
+           1.d0 + H_ion_fr + He_abundance * &
+           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)), &
+           ffhd_ionization_table)
+    end if
     if(ffhd_hyperbolic_tc) then
       if(SI_unit)then
         ! parallel conduction Spitzer
@@ -386,7 +392,13 @@ contains
       rc_fl%get_temperature => ffhd_get_temperature
       rc_fl%get_var_Rfactor => ffhd_get_Rfactor
       if (ffhd_partial_ionization) then
-        rc_fl%get_Rfactor_from_temperature => ionization_get_Rfactor_from_temperature
+        rc_fl%get_pthermal_Rfactor_from_rho_T => &
+            ionization_solve_p_Rfactor
+
+        if (ionization_is_temperature_only()) then
+          rc_fl%get_Rfactor_from_temperature => &
+              ionization_get_Rfactor_from_temperature
+        end if
       end if
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
@@ -404,13 +416,6 @@ contains
     ! Initialize gravity module
     if(ffhd_gravity) then
       call gravity_init()
-    end if
-
-    ! initialize ionization degree table
-    if (ffhd_partial_ionization) then
-      call ionization_degree_init(He_abundance, &
-           1.d0 + H_ion_fr + He_abundance * &
-           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)))
     end if
   end subroutine ffhd_phys_init
 
