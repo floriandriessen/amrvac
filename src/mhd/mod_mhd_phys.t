@@ -1192,7 +1192,7 @@ contains
   function mhd_get_tc_dt_mhd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
     !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
     !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
-    !and                        T=p/rho
+    !and temperature is obtained through the active EOS callback
     use mod_global_parameters
     use mod_thermal_conduction, only: get_tc_dt_mhd
  
@@ -1207,7 +1207,7 @@ contains
   function mhd_get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
     !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
     !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
-    !and                        T=p/rho
+    !and temperature is obtained through the active EOS callback
     use mod_global_parameters
     use mod_thermal_conduction, only: get_tc_dt_hd
  
@@ -1467,9 +1467,9 @@ contains
       if (.not. mhd_energy) then
         call mpistop("mhd_include_ionization_energy requires mhd_energy")
       end if
-      if (mhd_internal_e .or. mhd_hydrodynamic_e .or. &
-          mhd_semirelativistic .or. has_equi_rho_and_p) then
-        call mpistop("MHD ionization energy requires the standard total-energy formulation")
+      if (mhd_semirelativistic .or. has_equi_rho_and_p) then
+        call mpistop( &
+             "MHD ionization energy requires non-split, non-semirelativistic energy")
       end if
       if (mhd_radiation_fld) then
         call mpistop("MHD ionization energy does not support FLD")
@@ -1899,18 +1899,22 @@ contains
       if(primitive) then
         if(w(ix^D,p_)<small_pressure) flag(ix^D,e_) = .true.
       else
-        eint=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+&
-          (^C&w(ix^D,b^C_)**2+))
-        if (mhd_include_ionization_energy) then
-          if (w(ix^D,rho_) > zero .and. eint > zero) then
-            call mhd_get_state_from_eint_scalar( &
-                 w(ix^D,rho_), eint, T, pthermal, Rfactor)
-            if (pthermal < small_pressure) flag(ix^D,e_) = .true.
-          else
-            flag(ix^D,e_) = .true.
-          end if
+        if (w(ix^D,rho_) <= zero) then
+          flag(ix^D,e_) = .true.
         else
-          if(eint<small_e) flag(ix^D,e_) = .true.
+          eint=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)+&
+            (^C&w(ix^D,b^C_)**2+))
+          if (mhd_include_ionization_energy) then
+            if (eint > zero) then
+              call mhd_get_state_from_eint_scalar( &
+                   w(ix^D,rho_), eint, T, pthermal, Rfactor)
+              if (pthermal < small_pressure) flag(ix^D,e_) = .true.
+            else
+              flag(ix^D,e_) = .true.
+            end if
+          else
+            if(eint<small_e) flag(ix^D,e_) = .true.
+          end if
         end if
       end if
       if(mhd_radiation_fld)then
@@ -1971,6 +1975,7 @@ contains
     logical, intent(inout) :: flag(ixI^S,1:nw)
 
     integer :: ix^D
+    double precision :: T, pthermal, Rfactor
 
     flag=.false.
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -1978,7 +1983,17 @@ contains
       if(primitive) then
         if(w(ix^D,p_) < small_pressure) flag(ix^D,e_) = .true.
       else
-        if(w(ix^D,e_)<small_e) flag(ix^D,e_) = .true.
+        if (mhd_include_ionization_energy) then
+          if (w(ix^D,rho_) > zero .and. w(ix^D,e_) > zero) then
+            call mhd_get_state_from_eint_scalar( &
+                 w(ix^D,rho_), w(ix^D,e_), T, pthermal, Rfactor)
+            if (pthermal < small_pressure) flag(ix^D,e_) = .true.
+          else
+            flag(ix^D,e_) = .true.
+          end if
+        else
+          if(w(ix^D,e_)<small_e) flag(ix^D,e_) = .true.
+        end if
       end if
    {end do\}
 
@@ -1993,6 +2008,7 @@ contains
     logical, intent(inout) :: flag(ixI^S,1:nw)
 
     integer :: ix^D
+    double precision :: eint, T, pthermal, Rfactor
 
     flag=.false.
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
@@ -2000,7 +2016,22 @@ contains
       if(primitive) then
         if(w(ix^D,p_)<small_pressure) flag(ix^D,e_) = .true.
       else
-        if(w(ix^D,e_)-half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)<small_e) flag(ix^D,e_) = .true.
+        if (w(ix^D,rho_) <= zero) then
+          flag(ix^D,e_) = .true.
+        else
+          eint=w(ix^D,e_)-half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+          if (mhd_include_ionization_energy) then
+            if (eint > zero) then
+              call mhd_get_state_from_eint_scalar( &
+                   w(ix^D,rho_), eint, T, pthermal, Rfactor)
+              if (pthermal < small_pressure) flag(ix^D,e_) = .true.
+            else
+              flag(ix^D,e_) = .true.
+            end if
+          else
+            if(eint<small_e) flag(ix^D,e_) = .true.
+          end if
+        end if
       end if
    {end do\}
 
@@ -2089,12 +2120,19 @@ contains
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
     integer :: ix^D
+    double precision :: eint
 
     if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate total energy from pressure, kinetic and magnetic energy
-      w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
-                 +half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+      if (mhd_include_ionization_energy) then
+        call mhd_get_eint_from_rho_p_scalar( &
+             w(ix^D,rho_), w(ix^D,p_), eint)
+        w(ix^D,e_)=eint+half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+      else
+        w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1&
+                   +half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+      end if
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
       if (mhd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
@@ -2110,11 +2148,18 @@ contains
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
     integer :: ix^D
+    double precision :: eint
 
     if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate total energy from pressure, kinetic and magnetic energy
-      w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1
+      if (mhd_include_ionization_energy) then
+        call mhd_get_eint_from_rho_p_scalar( &
+             w(ix^D,rho_), w(ix^D,p_), eint)
+        w(ix^D,e_)=eint
+      else
+        w(ix^D,e_)=w(ix^D,p_)*inv_gamma_1
+      end if
       ! Convert velocity to momentum
       ^C&w(ix^D,m^C_)=w(ix^D,rho_)*w(ix^D,m^C_)\
       if (mhd_fip) w(ix^D,fip_) = w(ix^D,rho_) * w(ix^D,fip_)
@@ -2300,6 +2345,7 @@ contains
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
     double precision                :: inv_rho
+    double precision                :: eint, T, pthermal, Rfactor
     integer                         :: ix^D
 
     if (fix_small_values) then
@@ -2313,7 +2359,14 @@ contains
       ! Convert momentum to velocity
       ^C&w(ix^D,m^C_)=w(ix^D,m^C_)*inv_rho\
       ! Calculate pressure = (gamma-1) * (e-ek)
-      w(ix^D,p_)=gamma_1*(w(ix^D,e_)-half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+))
+      eint=w(ix^D,e_)-half*w(ix^D,rho_)*(^C&w(ix^D,m^C_)**2+)
+      if (mhd_include_ionization_energy) then
+        call mhd_get_state_from_eint_scalar( &
+             w(ix^D,rho_), eint, T, pthermal, Rfactor)
+        w(ix^D,p_)=pthermal
+      else
+        w(ix^D,p_)=gamma_1*eint
+      end if
    {end do\}
    if (mhd_fip) call mhd_bound_fip(.true., ixI^L, ixO^L, w)
   end subroutine mhd_to_primitive_hde
@@ -2326,6 +2379,7 @@ contains
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
     double precision                :: inv_rho
+    double precision                :: T, pthermal, Rfactor
     integer                         :: ix^D
 
     if (fix_small_values) then
@@ -2335,7 +2389,13 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       ! Calculate pressure = (gamma-1) * e_internal
-      w(ix^D,p_)=w(ix^D,e_)*gamma_1
+      if (mhd_include_ionization_energy) then
+        call mhd_get_state_from_eint_scalar( &
+             w(ix^D,rho_), w(ix^D,e_), T, pthermal, Rfactor)
+        w(ix^D,p_)=pthermal
+      else
+        w(ix^D,p_)=w(ix^D,e_)*gamma_1
+      end if
       ! Convert momentum to velocity
       inv_rho = 1.d0/w(ix^D,rho_)
       if (mhd_fip) w(ix^D,fip_) = w(ix^D,fip_) * inv_rho
@@ -2855,6 +2915,7 @@ contains
     character(len=*), intent(in)    :: subname
 
     integer :: ix^D
+    double precision :: eint_floor, T, pthermal, Rfactor
     logical :: flag(ixI^S,1:nw)
 
     call phys_check_w(primitive, ixI^L, ixO^L, w, flag)
@@ -2870,20 +2931,48 @@ contains
           if(primitive) then
             if(flag(ix^D,e_)) w(ix^D,p_)=small_pressure
           else
-            if(flag(ix^D,e_)) w(ix^D,e_)=small_e
+            if (mhd_include_ionization_energy) then
+              if (flag(ix^D,rho_) .or. flag(ix^D,e_)) then
+                call mhd_get_eint_from_rho_p_scalar( &
+                     w(ix^D,rho_), small_pressure, eint_floor)
+                w(ix^D,e_)=eint_floor
+              end if
+            else
+              if(flag(ix^D,e_)) w(ix^D,e_)=small_e
+            end if
           end if
        {end do\}
       case ("average")
         ! do averaging of density
         call small_values_average(ixI^L, ixO^L, w, x, flag, rho_)
-        ! do averaging of internal energy
-        call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
+        if (mhd_include_ionization_energy) then
+          if (primitive) then
+            call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
+          else
+            call small_values_average(ixI^L, ixO^L, w, x, flag, e_)
+           {do ix^DB=ixOmin^DB,ixOmax^DB\}
+              call mhd_get_eint_from_rho_p_scalar( &
+                   w(ix^D,rho_), small_pressure, eint_floor)
+              w(ix^D,e_)=max(w(ix^D,e_),eint_floor)
+           {end do\}
+          end if
+        else
+          ! Preserve the legacy internal-energy averaging path.
+          call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
+        end if
       case default
         if(.not.primitive) then
           !convert w to primitive
          {do ix^DB=ixOmin^DB,ixOmax^DB\}
             ^C&w(ix^D,m^C_)=w(ix^D,m^C_)/w(ix^D,rho_)\
-            w(ix^D,p_)=gamma_1*w(ix^D,e_)
+            if (mhd_include_ionization_energy .and. &
+                w(ix^D,rho_) > zero .and. w(ix^D,e_) > zero) then
+              call mhd_get_state_from_eint_scalar( &
+                   w(ix^D,rho_), w(ix^D,e_), T, pthermal, Rfactor)
+              w(ix^D,p_)=pthermal
+            else
+              w(ix^D,p_)=gamma_1*w(ix^D,e_)
+            end if
          {end do\}
         end if
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
@@ -2943,6 +3032,7 @@ contains
     character(len=*), intent(in)    :: subname
 
     integer :: ix^D
+    double precision :: eint, eint_floor, kinetic, T, pthermal, Rfactor
     logical :: flag(ixI^S,1:nw)
 
     call phys_check_w(primitive, ixI^L, ixO^L, w, flag)
@@ -2958,7 +3048,16 @@ contains
           if(primitive) then
             if(flag(ix^D,e_)) w(ix^D,p_)=small_pressure
           else
-            if(flag(ix^D,e_)) w(ix^D,e_)=small_e+half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+            if (mhd_include_ionization_energy) then
+              if (flag(ix^D,rho_) .or. flag(ix^D,e_)) then
+                call mhd_get_eint_from_rho_p_scalar( &
+                     w(ix^D,rho_), small_pressure, eint_floor)
+                kinetic=half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+                w(ix^D,e_)=eint_floor+kinetic
+              end if
+            else
+              if(flag(ix^D,e_)) w(ix^D,e_)=small_e+half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+            end if
           end if
        {end do\}
       case ("average")
@@ -2966,12 +3065,27 @@ contains
         call small_values_average(ixI^L, ixO^L, w, x, flag, rho_)
         ! do averaging of energy
         call small_values_average(ixI^L, ixO^L, w, x, flag, e_)
+        if (mhd_include_ionization_energy .and. .not. primitive) then
+         {do ix^DB=ixOmin^DB,ixOmax^DB\}
+            call mhd_get_eint_from_rho_p_scalar( &
+                 w(ix^D,rho_), small_pressure, eint_floor)
+            kinetic=half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+            w(ix^D,e_)=max(w(ix^D,e_),eint_floor+kinetic)
+         {end do\}
+        end if
       case default
         if(.not.primitive) then
           !convert w to primitive
          {do ix^DB=ixOmin^DB,ixOmax^DB\}
          ^C&w(ix^D,m^C_)=w(ix^D,m^C_)/w(ix^D,rho_)\
-            w(ix^D,p_)=gamma_1*(w(ix^D,e_)-half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_))
+            eint=w(ix^D,e_)-half*(^C&w(ix^D,m^C_)**2+)*w(ix^D,rho_)
+            if (mhd_include_ionization_energy .and. eint > zero) then
+              call mhd_get_state_from_eint_scalar( &
+                   w(ix^D,rho_), eint, T, pthermal, Rfactor)
+              w(ix^D,p_)=pthermal
+            else
+              w(ix^D,p_)=gamma_1*eint
+            end if
          {end do\}
         end if
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
@@ -4154,9 +4268,19 @@ contains
     double precision, intent(out):: pth(ixI^S)
 
     integer :: iw, ix^D
+    double precision :: T, Rfactor
 
    {do ix^DB= ixOmin^DB,ixOmax^DB\}
-      pth(ix^D)=gamma_1*w(ix^D,e_)
+      if (mhd_include_ionization_energy) then
+        if (w(ix^D,rho_) > zero .and. w(ix^D,e_) > zero) then
+          call mhd_get_state_from_eint_scalar( &
+               w(ix^D,rho_), w(ix^D,e_), T, pth(ix^D), Rfactor)
+        else
+          pth(ix^D)=gamma_1*w(ix^D,e_)
+        end if
+      else
+        pth(ix^D)=gamma_1*w(ix^D,e_)
+      end if
       if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
    {end do\}
 
@@ -4181,7 +4305,7 @@ contains
 
   end subroutine mhd_get_pthermal_inte
 
-  !> Calculate thermal pressure=(gamma-1)*(e-0.5*m**2/rho-b**2/2) within ixO^L
+  !> Calculate thermal pressure from conserved energy using the active EOS.
   subroutine mhd_get_pthermal_origin(w,x,ixI^L,ixO^L,pth)
     use mod_global_parameters
     use mod_small_values, only: trace_small_values
@@ -4196,9 +4320,13 @@ contains
 
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       if (mhd_include_ionization_energy) then
+        if (w(ix^D,rho_) <= zero) then
+          pth(ix^D)=small_pressure
+          cycle
+        end if
         eint=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
              +(^C&w(ix^D,b^C_)**2+))
-        if (w(ix^D,rho_) > zero .and. eint > zero) then
+        if (eint > zero) then
           call mhd_get_state_from_eint_scalar( &
                w(ix^D,rho_), eint, T, pth(ix^D), Rfactor)
         else
@@ -4295,7 +4423,7 @@ contains
 
   end subroutine mhd_get_pthermal_semirelati
 
-  !> Calculate thermal pressure=(gamma-1)*(e-0.5*m**2/rho) within ixO^L
+  !> Calculate thermal pressure from hydrodynamic energy using the active EOS.
   subroutine mhd_get_pthermal_hde(w,x,ixI^L,ixO^L,pth)
     use mod_global_parameters
     use mod_small_values, only: trace_small_values
@@ -4306,9 +4434,25 @@ contains
     double precision, intent(out):: pth(ixI^S)
 
     integer :: iw, ix^D
+    double precision :: eint, T, Rfactor
 
    {do ix^DB= ixOmin^DB,ixOmax^DB\}
-      pth(ix^D)=gamma_1*(w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)))
+      if (mhd_include_ionization_energy) then
+        if (w(ix^D,rho_) <= zero) then
+          pth(ix^D)=small_pressure
+          cycle
+        end if
+        eint=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_))
+        if (eint > zero) then
+          call mhd_get_state_from_eint_scalar( &
+               w(ix^D,rho_), eint, T, pth(ix^D), Rfactor)
+        else
+          pth(ix^D)=gamma_1*eint
+        end if
+      else
+        eint=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_))
+        pth(ix^D)=gamma_1*eint
+      end if
       if(fix_small_values.and.pth(ix^D)<small_pressure) pth(ix^D)=small_pressure
    {end do\}
     if(check_small_values.and..not.fix_small_values) then
@@ -4391,8 +4535,16 @@ contains
 
     if (mhd_include_ionization_energy) then
       {do ix^DB = ixO^LIM^DB\}
-        eint=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
-             +(^C&w(ix^D,b^C_)**2+))
+        if (w(ix^D,rho_) <= zero) then
+          res(ix^D)=small_temperature
+          cycle
+        end if
+        if (mhd_hydrodynamic_e) then
+          eint=w(ix^D,e_)-half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
+        else
+          eint=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)&
+               +(^C&w(ix^D,b^C_)**2+))
+        end if
         call mhd_get_state_from_eint_scalar( &
              w(ix^D,rho_), eint, Tcell, pth(ix^D), Rcell)
         res(ix^D)=Tcell
@@ -6238,9 +6390,29 @@ contains
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out) :: eint(ixI^S)
+    integer :: ix^D
 
-    eint(ixO^S)=w(ixO^S,e_)-half*((^C&w(ixO^S,m^C_)**2+)/&
-         w(ixO^S,rho_)+(^C&w(ixO^S,b^C_)**2+))
+    if (mhd_internal_e) then
+      eint(ixO^S)=w(ixO^S,e_)
+    else if (mhd_hydrodynamic_e) then
+      {do ix^DB = ixO^LIM^DB\}
+        if (w(ix^D,rho_) <= zero) then
+          eint(ix^D)=w(ix^D,e_)
+          cycle
+        end if
+        eint(ix^D)=w(ix^D,e_)-half*(^C&w(ix^D,m^C_)**2+)/&
+             w(ix^D,rho_)
+      {end do\}
+    else
+      {do ix^DB = ixO^LIM^DB\}
+        if (w(ix^D,rho_) <= zero) then
+          eint(ix^D)=w(ix^D,e_)
+          cycle
+        end if
+        eint(ix^D)=w(ix^D,e_)-half*((^C&w(ix^D,m^C_)**2+)/&
+             w(ix^D,rho_)+(^C&w(ix^D,b^C_)**2+))
+      {end do\}
+    end if
   end subroutine mhd_get_eint
 
   subroutine mhd_get_rho(w,x,ixI^L,ixO^L,rho)
@@ -6519,7 +6691,7 @@ contains
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: wCTprim(ixI^S,1:nw)
 
-    double precision                :: divv(ixI^S), tmp
+    double precision                :: divv(ixI^S), tmp, eint_floor
     integer :: ix^D
 
     if(slab_uniform) then
@@ -6534,8 +6706,12 @@ contains
    {do ix^DB=ixOmin^DB,ixOmax^DB\}
       tmp=w(ix^D,e_)
       w(ix^D,e_)=w(ix^D,e_)-qdt*wCTprim(ix^D,p_)*divv(ix^D)
-      if(w(ix^D,e_)<small_e) then
-        w(ix^D,e_)=tmp
+      if (mhd_include_ionization_energy) then
+        call mhd_get_eint_from_rho_p_scalar( &
+             max(w(ix^D,rho_),small_density), small_pressure, eint_floor)
+        if(w(ix^D,e_)<eint_floor) w(ix^D,e_)=tmp
+      else
+        if(w(ix^D,e_)<small_e) w(ix^D,e_)=tmp
       end if
    {end do\}
     if(mhd_ambipolar_sts)then

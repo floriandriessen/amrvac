@@ -940,6 +940,8 @@ module mod_ionization_degree
       eps_max = ionization_eint_table_value(n, invgam)
 
       if (eps < eps_min) then
+        ! Below the tabulated eion energy range this is floor/illegal-state
+        ! recovery, not a strictly conservative EOS inversion.
         T = max(tiny(1.d0), &
              (eps-eps_ion_H_table(1))/(Rfactor_table(1)*invgam))
         return

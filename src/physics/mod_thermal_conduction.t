@@ -191,9 +191,12 @@ contains
   !> Get the explicit timestep for the TC (mhd implementation)
   !> Note: for multi-D MHD (1D MHD will use HD fall-back)
   function get_tc_dt_mhd(w,ixI^L,ixO^L,dx^D,x,fl) result(dtnew)
-    !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
-    !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
-    !and                        T=p/rho
+    ! For ionization-energy EOS this gamma-law heat-capacity estimate is
+    ! approximate; the TC energy update still uses the EOS temperature
+    ! callback. Revisit if tighter stability bounds are needed.
+    ! Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
+    ! where                      tc_k_para_i=tc_k_para*B_i**2/B**2
+    ! and temperature is obtained through the active EOS callback
     use mod_global_parameters
 
     type(tc_fluid), intent(in)  ::  fl
@@ -1415,6 +1418,9 @@ contains
   !> Get the explicit timestep for the TC (hd implementation)
   !> Note: also used in 1D MHD (or for neutrals in twofl)
   function get_tc_dt_hd(w,ixI^L,ixO^L,dx^D,x,fl)  result(dtnew)
+    ! For ionization-energy EOS this gamma-law heat-capacity estimate is
+    ! approximate; the TC energy update still uses the EOS temperature
+    ! callback. Revisit if tighter stability bounds are needed.
     ! Check diffusion time limit dt < dx_i**2 / ((gamma-1)*tc_k_para/rho)
     use mod_global_parameters
 

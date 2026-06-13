@@ -469,7 +469,7 @@ contains
   function ffhd_get_tc_dt_ffhd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
     !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
     !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
-    !and                        T=p/rho
+    !and temperature is obtained through the active EOS callback
     use mod_global_parameters
     use mod_thermal_conduction, only: get_tc_dt_mhd
 
@@ -752,8 +752,8 @@ contains
     logical, intent(in) :: primitive
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,nw)
-    double precision :: tmp(ixI^S), kinetic(ixO^S)
-    double precision :: eint, T, pthermal, Rfactor
+    double precision :: tmp(ixI^S)
+    double precision :: kinetic, eint, T, pthermal, Rfactor
     integer :: ix^D
     logical, intent(inout) :: flag(ixI^S,1:nw)
 
@@ -764,10 +764,15 @@ contains
       if(primitive) then
         where(w(ixO^S,e_) < small_pressure) flag(ixO^S,e_) = .true.
       else
-        if (ffhd_include_ionization_energy) then
-          kinetic=ffhd_kin_en(w,ixI^L,ixO^L)
-          {do ix^DB = ixO^LIM^DB\}
-            eint=w(ix^D,e_)-kinetic(ix^D)
+        {do ix^DB = ixO^LIM^DB\}
+          if (w(ix^D,rho_) <= zero) then
+            flag(ix^D,e_) = .true.
+            tmp(ix^D)=-bigdouble
+            cycle
+          end if
+          kinetic=half*w(ix^D,mom(1))**2/w(ix^D,rho_)
+          eint=w(ix^D,e_)-kinetic
+          if (ffhd_include_ionization_energy) then
             if (w(ix^D,rho_) > zero .and. eint > zero) then
               call ffhd_get_state_from_eint_scalar( &
                    w(ix^D,rho_), eint, T, pthermal, Rfactor)
@@ -775,10 +780,10 @@ contains
             else
               tmp(ix^D)=-bigdouble
             end if
-          {end do\}
-        else
-          tmp(ixO^S)=w(ixO^S,e_)-ffhd_kin_en(w,ixI^L,ixO^L)
-        end if
+          else
+            tmp(ix^D)=eint
+          end if
+        {end do\}
         if (ffhd_include_ionization_energy) then
           where(tmp(ixO^S) < small_pressure) flag(ixO^S,e_) = .true.
         else
@@ -1249,13 +1254,22 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out):: pth(ixI^S)
     integer                      :: iw, ix^D
-    double precision :: kinetic(ixO^S), eint, T, Rfactor
+    double precision :: kinetic(ixO^S), inv_rho(ixO^S), eint, T, Rfactor
 
-    kinetic=ffhd_kin_en(w,ixI^L,ixO^L)
     if (ffhd_include_ionization_energy) then
+      where (w(ixO^S,rho_) > zero)
+        inv_rho(ixO^S)=one/w(ixO^S,rho_)
+      elsewhere
+        inv_rho(ixO^S)=zero
+      end where
+      kinetic=ffhd_kin_en(w,ixI^L,ixO^L,inv_rho)
       {do ix^DB = ixO^LIM^DB\}
+        if (w(ix^D,rho_) <= zero) then
+          pth(ix^D)=small_pressure
+          cycle
+        end if
         eint=w(ix^D,e_)-kinetic(ix^D)
-        if (w(ix^D,rho_) > zero .and. eint > zero) then
+        if (eint > zero) then
           call ffhd_get_state_from_eint_scalar( &
                w(ix^D,rho_), eint, T, pth(ix^D), Rfactor)
         else
@@ -1263,6 +1277,7 @@ contains
         end if
       {end do\}
     else
+      kinetic=ffhd_kin_en(w,ixI^L,ixO^L)
       pth(ixO^S)=gamma_1*(w(ixO^S,e_)-kinetic)
     end if
     if (fix_small_values) then
@@ -1352,12 +1367,22 @@ contains
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
     double precision :: R(ixI^S), pth(ixI^S)
-    double precision :: kinetic(ixO^S), eint, Tcell, Rcell
+    double precision :: kinetic(ixO^S), inv_rho(ixO^S)
+    double precision :: eint, Tcell, Rcell
     integer :: ix^D
 
     if (ffhd_include_ionization_energy) then
-      kinetic=ffhd_kin_en(w,ixI^L,ixO^L)
+      where (w(ixO^S,rho_) > zero)
+        inv_rho(ixO^S)=one/w(ixO^S,rho_)
+      elsewhere
+        inv_rho(ixO^S)=zero
+      end where
+      kinetic=ffhd_kin_en(w,ixI^L,ixO^L,inv_rho)
       {do ix^DB = ixO^LIM^DB\}
+        if (w(ix^D,rho_) <= zero) then
+          res(ix^D)=small_temperature
+          cycle
+        end if
         eint=w(ix^D,e_)-kinetic(ix^D)
         call ffhd_get_state_from_eint_scalar( &
              w(ix^D,rho_), eint, Tcell, pth(ix^D), Rcell)
@@ -1498,8 +1523,19 @@ contains
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out) :: eint(ixI^S)
+    double precision :: inv_rho(ixO^S), kinetic(ixO^S)
 
-    eint(ixO^S)=w(ixO^S,e_)-ffhd_kin_en(w,ixI^L,ixO^L)
+    where (w(ixO^S,rho_) > zero)
+      inv_rho(ixO^S)=one/w(ixO^S,rho_)
+    elsewhere
+      inv_rho(ixO^S)=zero
+    end where
+    kinetic=ffhd_kin_en(w,ixI^L,ixO^L,inv_rho)
+    where (w(ixO^S,rho_) > zero)
+      eint(ixO^S)=w(ixO^S,e_)-kinetic
+    elsewhere
+      eint(ixO^S)=w(ixO^S,e_)
+    end where
   end subroutine ffhd_get_eint
 
   subroutine ffhd_get_rho(w,x,ixI^L,ixO^L,rho)

@@ -602,8 +602,19 @@ contains
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out) :: eint(ixI^S)
+    double precision :: inv_rho(ixO^S), kinetic(ixO^S)
 
-    eint(ixO^S) = w(ixO^S,e_) - hd_kin_en(w,ixI^L,ixO^L)
+    where (w(ixO^S,rho_) > zero)
+      inv_rho(ixO^S)=one/w(ixO^S,rho_)
+    elsewhere
+      inv_rho(ixO^S)=zero
+    end where
+    kinetic=hd_kin_en(w,ixI^L,ixO^L,inv_rho)
+    where (w(ixO^S,rho_) > zero)
+      eint(ixO^S)=w(ixO^S,e_)-kinetic
+    elsewhere
+      eint(ixO^S)=w(ixO^S,e_)
+    end where
   end subroutine hd_get_eint
 
 !!end th cond
@@ -703,6 +714,9 @@ contains
       end if
       if (.not. ionization_is_temperature_only()) then
         call mpistop("HD ionization energy requires a T-only ionization table")
+      end if
+      if (hd_radiation_fld) then
+        call mpistop("HD ionization energy EOS does not support FLD")
       end if
       call ionization_check_eint_table(inv_gamma_1)
       if (allocated(flux_method)) then
@@ -1394,8 +1408,8 @@ contains
 
   end subroutine hd_get_cbounds
 
-  !> Calculate the square of the thermal sound speed csound2 within ixO^L.
-  !> csound2=gamma*p/rho
+  !> Calculate the square of the thermal sound speed using the active EOS
+  !> within ixO^L.
   subroutine hd_get_csound2(w,x,ixI^L,ixO^L,csound2)
     use mod_global_parameters
     use mod_ionization_degree, only: ionization_get_csound2_T
@@ -1443,7 +1457,7 @@ contains
     end if
   end subroutine hd_get_csound2_prim
 
-  !> Calculate thermal pressure=(gamma-1)*(e-0.5*m**2/rho) within ixO^L
+  !> Calculate thermal pressure from conserved energy using the active EOS.
   subroutine hd_get_pthermal(w, x, ixI^L, ixO^L, pth)
     use mod_global_parameters
     use mod_usr_methods, only: usr_set_pthermal
@@ -1459,9 +1473,13 @@ contains
     if (hd_energy) then
        if (hd_include_ionization_energy) then
          {do ix^DB = ixO^LIM^DB\}
+           if (w(ix^D,rho_) <= zero) then
+             pth(ix^D) = small_pressure
+             cycle
+           end if
            eint = w(ix^D,e_) - &
                 half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
-           if (w(ix^D,rho_) > zero .and. eint > zero) then
+           if (eint > zero) then
              call hd_get_state_from_eint_scalar( &
                   w(ix^D,rho_), eint, T, pth(ix^D), Rfactor)
            else
@@ -1623,6 +1641,10 @@ contains
 
     if (hd_include_ionization_energy) then
       {do ix^DB = ixO^LIM^DB\}
+        if (w(ix^D,rho_) <= zero) then
+          res(ix^D) = small_temperature
+          cycle
+        end if
         eint = w(ix^D,e_) - &
              half*(^C&w(ix^D,m^C_)**2+)/w(ix^D,rho_)
         call hd_get_state_from_eint_scalar( &
