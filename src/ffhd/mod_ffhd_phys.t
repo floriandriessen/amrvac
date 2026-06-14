@@ -51,7 +51,7 @@ module mod_ffhd_phys
 
   !> Whether plasma is partially ionized
   logical, public, protected              :: ffhd_partial_ionization = .false.
-  character(len=32), public, protected    :: ffhd_ionization_table = "carlsson2012"
+  character(len=32), public, protected    :: ffhd_ionization_table = "chromosphere"
   !> Whether hydrogen ionization energy is included in the thermal energy
   logical, public, protected              :: ffhd_include_ionization_energy = .false.
   !> Index of the density (in the w array)

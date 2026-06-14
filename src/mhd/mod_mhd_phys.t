@@ -174,7 +174,7 @@ module mod_mhd_phys
   logical, public, protected              :: mhd_semirelativistic = .false.
   !> Whether plasma is partially ionized
   logical, public, protected              :: mhd_partial_ionization = .false.
-  character(len=32), public, protected    :: mhd_ionization_table = "carlsson2012"
+  character(len=32), public, protected    :: mhd_ionization_table = "chromosphere"
   !> Whether hydrogen ionization energy is included in the thermal energy
   logical, public, protected              :: mhd_include_ionization_energy = .false.
   !> Whether CAK radiation line force is activated

@@ -2,8 +2,9 @@
 module mod_ionization_degree
   implicit none
   private
-  double precision :: iz_H_CL(1:100)
-  double precision :: Te_H_CL(1:100)
+  integer, parameter :: n_Tonly = 100
+  double precision :: HI_fraction_chromosphere(n_Tonly)
+  double precision :: T_H_fraction_K(n_Tonly)
   double precision :: ionization_He_abundance = 0.1d0
   double precision :: ionization_Rfactor_norm = 2.3d0
   double precision, allocatable :: prom_T_table(:)
@@ -19,12 +20,23 @@ module mod_ionization_degree
   double precision, dimension(:), allocatable :: eps_ion_H_table
   double precision, dimension(:), allocatable :: Te_H_table
   double precision, dimension(:), allocatable :: iz_H_table
-  integer, parameter :: ionization_mode_carlsson = 1
-  integer, parameter :: ionization_mode_gunar2025 = 2
+  ! chromosphere: T-only ionization table based on
+  ! Carlsson & Leenaarts (2012, A&A, 539, A39).
+  integer, parameter :: ionization_mode_chromosphere = 1
+  ! prominence: pressure-dependent prominence ionization table based on
+  ! Heinzel et al. (2015, A&A, 579, A16) and
+  ! Gunár et al. (2025, A&A, 699, A89). The bundled table uses model A,
+  ! side illumination, and the L = 500 km voxel from the latter work.
+  integer, parameter :: ionization_mode_prominence = 2
+  ! flare: T-only hydrogen H I/H fraction table for flaring chromosphere
+  ! conditions from Hong, Carlsson & Ding (2022, A&A, 661, A77). It is
+  ! handled by the same T-only H-fraction machinery as the chromosphere
+  ! table.
+  integer, parameter :: ionization_mode_flare = 3
   integer, parameter :: n_prom_T = 10
   integer, parameter :: n_prom_p = 7
   integer, parameter :: n_prom_eos = 4000
-  integer :: ionization_table_mode = ionization_mode_carlsson
+  integer :: ionization_table_mode = ionization_mode_chromosphere
   ! Initialize
   public :: ionization_degree_init
   ! Current rho,p -> complete EOS state
@@ -84,8 +96,34 @@ module mod_ionization_degree
       0.98d0, 0.99d0, 1.00d0, 1.00d0, 1.00d0 /), &
       (/ n_prom_T, n_prom_p /))
 
-  ! Carlsson, M., & Leenaarts, J. 2012, A&A, 539, A39
-  data Te_H_CL /2.1000005d+03, 2.2349495d+03, 2.3785708d+03, 2.5314199d+03, 2.6940928d+03, &
+  ! H I/H population fraction from Hong, Carlsson & Ding
+  ! (2022, A&A, 661, A77). Its temperature grid is identical to
+  ! T_H_fraction_K.
+  double precision, parameter :: HI_fraction_flare(n_Tonly) = (/ &
+       9.9999877d-1, 9.9999877d-1, 9.9999877d-1, 9.9999877d-1, 9.9999877d-1, &
+       9.9999877d-1, 9.9999877d-1, 9.9999877d-1, 9.9999877d-1, 9.9999877d-1, &
+       9.9999877d-1, 9.9999890d-1, 9.9998024d-1, 9.9992560d-1, 9.9968205d-1, &
+       9.9899492d-1, 9.9682125d-1, 9.9069732d-1, 9.8273722d-1, 9.5165553d-1, &
+       8.8401513d-1, 7.5808722d-1, 6.3272201d-1, 4.7164997d-1, 1.6497967d-1, &
+       8.6151552d-2, 4.9787498d-2, 2.3629016d-2, 1.1010071d-2, 7.7663095d-3, &
+       5.7739222d-3, 4.1811404d-3, 3.4427999d-3, 2.9108183d-3, 2.2295092d-3, &
+       1.9451997d-3, 1.4754925d-3, 1.1849689d-3, 9.1381928d-4, 7.1369446d-4, &
+       6.3154203d-4, 5.4204957d-4, 4.6800799d-4, 4.1090740d-4, 3.4051796d-4, &
+       2.9397681d-4, 2.5497294d-4, 2.0900410d-4, 1.7267453d-4, 1.3474650d-4, &
+       1.0894726d-4, 8.6230407d-5, 7.0545733d-5, 5.8882317d-5, 4.9311732d-5, &
+       3.9687148d-5, 3.1954017d-5, 2.6460585d-5, 2.1367807d-5, 1.7836169d-5, &
+       1.4207015d-5, 1.2022741d-5, 9.9158901d-6, 8.5561393d-6, 7.1994135d-6, &
+       6.1326905d-6, 5.0944881d-6, 4.3131760d-6, 3.6080551d-6, 3.0571391d-6, &
+       2.5778758d-6, 2.1649433d-6, 1.7960119d-6, 1.4711565d-6, 1.1832833d-6, &
+       9.3858978d-7, 7.4227325d-7, 5.8536296d-7, 4.6590828d-7, 3.8339449d-7, &
+       3.2851748d-7, 2.8778528d-7, 2.5213506d-7, 2.2042234d-7, 1.9440791d-7, &
+       1.7116454d-7, 1.5143655d-7, 1.3390303d-7, 1.1879927d-7, 1.0569364d-7, &
+       9.4140342d-8, 8.3767251d-8, 7.4822295d-8, 6.6863923d-8, 5.9836421d-8, &
+       5.3685738d-8, 4.8177839d-8, 4.3423310d-8, 3.9109303d-8, 1.0188512d-8 /)
+
+  ! Common temperature grid for the T-only H-fraction tables. The
+  ! Carlsson & Leenaarts (2012) and Hong et al. (2022) grids coincide.
+  data T_H_fraction_K /2.1000005d+03, 2.2349495d+03, 2.3785708d+03, 2.5314199d+03, 2.6940928d+03, &
                 2.8672190d+03, 3.0514692d+03, 3.2475613d+03, 3.4562544d+03, 3.6783584d+03, &
                 3.9147351d+03, 4.1662998d+03, 4.4340322d+03, 4.7189697d+03, 5.0222153d+03, &
                 5.3449502d+03, 5.6884248d+03, 6.0539712d+03, 6.4430083d+03, 6.8570420d+03, &
@@ -106,8 +144,9 @@ module mod_ionization_degree
                 5.7090725d+05, 6.0759431d+05, 6.4663956d+05, 6.8819319d+05, 7.3241712d+05, &
                 7.7948294d+05, 8.2957412d+05, 8.8288331d+05, 9.3961919d+05, 1.0000000d+06  /
 
-  ! Carlsson, M., & Leenaarts, J. 2012, A&A, 539, A39
-  data iz_H_CL /1.0000000d+00, 1.0000000d+00, 1.0000000d+00, 1.0000000d+00, 1.0000000d+00, &
+  ! Chromospheric H I/H fraction from
+  ! Carlsson, M., & Leenaarts, J. 2012, A&A, 539, A39.
+  data HI_fraction_chromosphere /1.0000000d+00, 1.0000000d+00, 1.0000000d+00, 1.0000000d+00, 1.0000000d+00, &
                 1.0000000d+00, 1.0000000d+00, 9.9999928d-01, 9.9999774d-01, 9.9999624d-01, &
                 9.9999428d-01, 9.9999219d-01, 9.9998862d-01, 9.9998313d-01, 9.9997944d-01, &
                 9.9995774d-01, 1.0000324d+00, 9.9822283d-01, 9.6391600d-01, 8.8995951d-01, &
@@ -154,21 +193,27 @@ module mod_ionization_degree
       ionization_include_energy = .false.
       if (present(include_energy)) ionization_include_energy = include_energy
 
-      selected_table = "carlsson2012"
+      selected_table = "chromosphere"
       if (present(table_name)) selected_table = trim(adjustl(table_name))
 
       select case (trim(selected_table))
-      case ("carlsson2012")
-        ionization_table_mode = ionization_mode_carlsson
-      case ("gunar2025_a_l500")
-        ionization_table_mode = ionization_mode_gunar2025
+      case ("chromosphere")
+        ionization_table_mode = ionization_mode_chromosphere
+      case ("flare")
+        ionization_table_mode = ionization_mode_flare
+      case ("prominence")
+        ionization_table_mode = ionization_mode_prominence
       case default
-        call mpistop("unknown partial-ionization table")
+        call mpistop( &
+             "Unknown ionization table. Use 'chromosphere', 'flare', "// &
+             "or 'prominence'.")
       end select
 
       if (ionization_include_energy .and. &
-          ionization_table_mode /= ionization_mode_carlsson) then
-        call mpistop("ionization energy requires a T-only ionization table")
+          .not. ionization_is_temperature_only()) then
+        call mpistop("Ionization energy is supported only for T-only tables "// &
+             "('chromosphere' and 'flare'), not for the pressure-dependent "// &
+             "'prominence' table.")
       end if
 
       if (ionization_include_energy) then
@@ -189,104 +234,109 @@ module mod_ionization_degree
       end if
 
       select case (ionization_table_mode)
-      case (ionization_mode_carlsson)
-        call ionization_build_carlsson_table()
-      case (ionization_mode_gunar2025)
+      case (ionization_mode_chromosphere)
+        call ionization_build_temperature_table(HI_fraction_chromosphere)
+      case (ionization_mode_flare)
+        call ionization_build_temperature_table(HI_fraction_flare)
+      case (ionization_mode_prominence)
         call ionization_build_prominence_table()
       end select
       ionization_initialized = .true.
     end subroutine ionization_degree_init
 
-    subroutine ionization_build_carlsson_table()
+    subroutine ionization_build_temperature_table(HI_fraction)
       use mod_global_parameters, only: unit_temperature, zero
 
+      double precision, intent(in) :: HI_fraction(n_Tonly)
       double precision :: fact1, fact2, fact3
       double precision :: dL1, dL2, Te_table_step
-      integer :: i, j, ntable, n_interpolated_table
+      double precision :: iz_H_source(n_Tonly)
+      integer :: i, j, n_interpolated_table
       logical :: jump
 
-      ntable=100
       n_interpolated_table=4000
 
-      ! change neutral fraction to ionization degree
-      iz_H_CL=1.d0-iz_H_CL
+      ! The source tables store H I/H; the EOS uses H II/H.
+      iz_H_source=1.d0-HI_fraction
 
       allocate(Te_H_table(1:n_interpolated_table))
       allocate(iz_H_table(1:n_interpolated_table))
       Te_H_table=zero
       iz_H_table=zero
 
-      ! create cooling table(s) for use in amrvac
-      Te_table_step = (Te_H_CL(ntable)-Te_H_CL(1))/dble(n_interpolated_table-1)
+      Te_table_step = (T_H_fraction_K(n_Tonly)-T_H_fraction_K(1)) &
+            /dble(n_interpolated_table-1)
 
-      Te_H_table(1) = Te_H_CL(1)
-      iz_H_table(1) = iz_H_CL(1)
+      Te_H_table(1) = T_H_fraction_K(1)
+      iz_H_table(1) = iz_H_source(1)
 
-      Te_H_table(n_interpolated_table) = Te_H_CL(ntable)
-      iz_H_table(n_interpolated_table) = iz_H_CL(ntable)
+      Te_H_table(n_interpolated_table) = T_H_fraction_K(n_Tonly)
+      iz_H_table(n_interpolated_table) = iz_H_source(n_Tonly)
 
-      do i=2,n_interpolated_table        ! loop to create one table
+      do i=2,n_interpolated_table
         Te_H_table(i) = Te_H_table(i-1)+Te_table_step
-        do j=1,ntable-1   ! loop to create one spot on a table
-        ! Second order polynomial interpolation, except at the outer edge,
-        ! or in case of a large jump.
-          if(Te_H_table(i) < Te_H_CL(j+1)) then
-             if(j.eq. ntable-1 )then
-               fact1 = (Te_H_table(i)-Te_H_CL(j+1))     &
-                     /(Te_H_CL(j)-Te_H_CL(j+1))
+        do j=1,n_Tonly-1
+          ! Second order interpolation except at the outer edge or a jump.
+          if(Te_H_table(i) < T_H_fraction_K(j+1)) then
+            if(j.eq. n_Tonly-1) then
+              fact1 = (Te_H_table(i)-T_H_fraction_K(j+1)) &
+                    /(T_H_fraction_K(j)-T_H_fraction_K(j+1))
 
-               fact2 = (Te_H_table(i)-Te_H_CL(j))       &
-                     /(Te_H_CL(j+1)-Te_H_CL(j))
+              fact2 = (Te_H_table(i)-T_H_fraction_K(j)) &
+                    /(T_H_fraction_K(j+1)-T_H_fraction_K(j))
 
-               iz_H_table(i) = iz_H_CL(j)*fact1 + iz_H_CL(j+1)*fact2
-               exit
-             else
-               dL1 = iz_H_CL(j+1)-iz_H_CL(j)
-               dL2 = iz_H_CL(j+2)-iz_H_CL(j+1)
-               jump =(max(dabs(dL1),dabs(dL2)) > 2.d0*min(dabs(dL1),dabs(dL2)))
-             end if
+              iz_H_table(i) = iz_H_source(j)*fact1 + &
+                    iz_H_source(j+1)*fact2
+              exit
+            else
+              dL1 = iz_H_source(j+1)-iz_H_source(j)
+              dL2 = iz_H_source(j+2)-iz_H_source(j+1)
+              jump = (max(dabs(dL1),dabs(dL2)) > &
+                    2.d0*min(dabs(dL1),dabs(dL2)))
+            end if
 
-             if( jump ) then
-               fact1 = (Te_H_table(i)-Te_H_CL(j+1))     &
-                     /(Te_H_CL(j)-Te_H_CL(j+1))
+            if(jump) then
+              fact1 = (Te_H_table(i)-T_H_fraction_K(j+1)) &
+                    /(T_H_fraction_K(j)-T_H_fraction_K(j+1))
 
-               fact2 = (Te_H_table(i)-Te_H_CL(j))       &
-                     /(Te_H_CL(j+1)-Te_H_CL(j))
+              fact2 = (Te_H_table(i)-T_H_fraction_K(j)) &
+                    /(T_H_fraction_K(j+1)-T_H_fraction_K(j))
 
-               iz_H_table(i) = iz_H_CL(j)*fact1 + iz_H_CL(j+1)*fact2
-               exit
-             else
-               fact1 = ((Te_H_table(i)-Te_H_CL(j+1))     &
-                     * (Te_H_table(i)-Te_H_CL(j+2)))   &
-                     / ((Te_H_CL(j)-Te_H_CL(j+1)) &
-                     * (Te_H_CL(j)-Te_H_CL(j+2)))
+              iz_H_table(i) = iz_H_source(j)*fact1 + &
+                    iz_H_source(j+1)*fact2
+              exit
+            else
+              fact1 = ((Te_H_table(i)-T_H_fraction_K(j+1)) &
+                    * (Te_H_table(i)-T_H_fraction_K(j+2))) &
+                    / ((T_H_fraction_K(j)-T_H_fraction_K(j+1)) &
+                    * (T_H_fraction_K(j)-T_H_fraction_K(j+2)))
 
-               fact2 = ((Te_H_table(i)-Te_H_CL(j))       &
-                     * (Te_H_table(i)-Te_H_CL(j+2)))   &
-                     / ((Te_H_CL(j+1)-Te_H_CL(j)) &
-                     * (Te_H_CL(j+1)-Te_H_CL(j+2)))
+              fact2 = ((Te_H_table(i)-T_H_fraction_K(j)) &
+                    * (Te_H_table(i)-T_H_fraction_K(j+2))) &
+                    / ((T_H_fraction_K(j+1)-T_H_fraction_K(j)) &
+                    * (T_H_fraction_K(j+1)-T_H_fraction_K(j+2)))
 
-               fact3 = ((Te_H_table(i)-Te_H_CL(j))       &
-                     * (Te_H_table(i)-Te_H_CL(j+1)))   &
-                     / ((Te_H_CL(j+2)-Te_H_CL(j)) &
-                     * (Te_H_CL(j+2)-Te_H_CL(j+1)))
+              fact3 = ((Te_H_table(i)-T_H_fraction_K(j)) &
+                    * (Te_H_table(i)-T_H_fraction_K(j+1))) &
+                    / ((T_H_fraction_K(j+2)-T_H_fraction_K(j)) &
+                    * (T_H_fraction_K(j+2)-T_H_fraction_K(j+1)))
 
-               iz_H_table(i) = iz_H_CL(j)*fact1 + iz_H_CL(j+1)*fact2 &
-                        + iz_H_CL(j+2)*fact3
-               exit
-             endif
-          endif
-        enddo  ! end loop to find create one spot on a table
-      enddo    ! end loop to create one table
+              iz_H_table(i) = iz_H_source(j)*fact1 + &
+                    iz_H_source(j+1)*fact2 + iz_H_source(j+2)*fact3
+              exit
+            end if
+          end if
+        end do
+      end do
 
-      ! nondimensionalize temperature
       Te_H_table=Te_H_table/unit_temperature
       Te_table_min=Te_H_table(1)
       Te_table_max=Te_H_table(n_interpolated_table)
-      inv_Te_table_step=dble(n_interpolated_table-1)/(Te_table_max-Te_table_min)
+      inv_Te_table_step = &
+           dble(n_interpolated_table-1)/(Te_table_max-Te_table_min)
 
       call ionization_build_eos_table()
-    end subroutine ionization_build_carlsson_table
+    end subroutine ionization_build_temperature_table
 
     subroutine ionization_build_prominence_table()
       use mod_global_parameters, only: unit_temperature, unit_pressure, SI_unit
@@ -380,7 +430,7 @@ module mod_ionization_degree
       {end do\}
     end subroutine ionization_degree_from_temperature
 
-    subroutine ionization_H_degree_carlsson_scalar(T, iz_H)
+    subroutine ionization_H_degree_temperature_scalar(T, iz_H)
       use mod_comm_lib, only: mpistop
 
       double precision, intent(in) :: T
@@ -390,7 +440,7 @@ module mod_ionization_degree
 
       if (.not. allocated(Te_H_table) .or. &
           .not. allocated(iz_H_table)) then
-        call mpistop("Carlsson ionization table is not initialized")
+        call mpistop("temperature-only ionization table is not initialized")
       end if
 
       if (T < Te_table_min) then
@@ -408,7 +458,7 @@ module mod_ionization_degree
       end if
 
       iz_H = min(1.d0, max(0.d0, iz_H))
-    end subroutine ionization_H_degree_carlsson_scalar
+    end subroutine ionization_H_degree_temperature_scalar
 
     subroutine ionization_H_degree_prominence_scalar(T, p, iz_H)
       use mod_comm_lib, only: mpistop
@@ -477,19 +527,19 @@ module mod_ionization_degree
 
       if (rho <= 0.d0 .or. p <= 0.d0) then
         select case (ionization_table_mode)
-        case (ionization_mode_carlsson)
+        case (ionization_mode_chromosphere, ionization_mode_flare)
           T = Te_H_table(1)
-        case (ionization_mode_gunar2025)
+        case (ionization_mode_prominence)
           T = prom_T_eos_table(1)
         end select
       else
         y = p/rho
 
         select case (ionization_table_mode)
-        case (ionization_mode_carlsson)
+        case (ionization_mode_chromosphere, ionization_mode_flare)
           call ionization_invert_y_scalar(y, T)
 
-        case (ionization_mode_gunar2025)
+        case (ionization_mode_prominence)
           call ionization_invert_y_prominence_scalar(y, p, T)
 
         case default
@@ -529,10 +579,10 @@ module mod_ionization_degree
       double precision :: iz_H_loc, iz_He_loc
 
       select case (ionization_table_mode)
-      case (ionization_mode_carlsson)
-        call ionization_H_degree_carlsson_scalar(T, iz_H_loc)
+      case (ionization_mode_chromosphere, ionization_mode_flare)
+        call ionization_H_degree_temperature_scalar(T, iz_H_loc)
 
-      case (ionization_mode_gunar2025)
+      case (ionization_mode_prominence)
         call ionization_H_degree_prominence_scalar( &
               T, p, iz_H_loc)
 
@@ -707,12 +757,15 @@ module mod_ionization_degree
       double precision, intent(out), optional :: iz_H, iz_He
       double precision :: iz_H_loc, iz_He_loc
 
-      if (ionization_table_mode /= ionization_mode_carlsson) then
+      if (.not. ionization_is_temperature_only()) then
         call mpistop("temperature-only ionization state requested "// &
               "for a pressure-dependent table")
       end if
 
-      call ionization_H_degree_carlsson_scalar(T, iz_H_loc)
+      select case (ionization_table_mode)
+      case (ionization_mode_chromosphere, ionization_mode_flare)
+        call ionization_H_degree_temperature_scalar(T, iz_H_loc)
+      end select
       call ionization_He_degree_scalar(T, iz_He_loc)
 
       Rfactor = ionization_Rfactor_from_degrees( &
@@ -880,7 +933,8 @@ module mod_ionization_degree
 
     logical function ionization_is_temperature_only()
       ionization_is_temperature_only = &
-            ionization_table_mode == ionization_mode_carlsson
+            ionization_table_mode == ionization_mode_chromosphere .or. &
+            ionization_table_mode == ionization_mode_flare
     end function ionization_is_temperature_only
 
     logical function ionization_includes_energy()

@@ -49,7 +49,7 @@ module mod_hd_phys
 
   !> Whether plasma is partially ionized
   logical, public, protected              :: hd_partial_ionization = .false.
-  character(len=32), public, protected    :: hd_ionization_table = "carlsson2012"
+  character(len=32), public, protected    :: hd_ionization_table = "chromosphere"
   !> Include hydrogen ionization energy in the HD internal energy
   logical, public, protected              :: hd_include_ionization_energy = .false.
   !> Index of the density (in the w array)
