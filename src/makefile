@@ -351,6 +351,8 @@ mod_input_output_helper.o: mod_global_parameters.mod
 mod_input_output_helper.o: mod_physics.mod
 mod_interpolation.o: mod_comm_lib.mod
 mod_interpolation.o: mod_global_parameters.mod
+mod_ionization_degree.o: mod_comm_lib.mod
+mod_ionization_degree.o: mod_constants.mod
 mod_ionization_degree.o: mod_global_parameters.mod
 mod_kdv.o: mod_comm_lib.mod
 mod_kdv.o: mod_global_parameters.mod
