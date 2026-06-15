@@ -166,7 +166,6 @@ module mod_mhd_phys
   !> Whether semirelativistic MHD equations (Gombosi 2002 JCP) are solved
   logical, public, protected              :: mhd_semirelativistic = .false.
   !> Whether plasma is partially ionized
-  logical, public, protected              :: mhd_partial_ionization = .false.
   !> Whether CAK radiation line force is activated
   logical, public, protected              :: mhd_cak_force = .false.
   !> Whether radiation-gas interaction is handled using flux limited diffusion
@@ -184,10 +183,6 @@ module mod_mhd_phys
   logical, public :: divbwave     = .true.
   !> clean initial divB
   logical, public :: clean_initial_divb     = .false.
-  ! remove the below flag  and assume default value = .false.
-  ! when eq state properly implemented everywhere
-  ! and not anymore through units
-  logical, public, protected :: eq_state_units = .true.
   !> To control divB=0 fix for boundary
   logical, public, protected :: boundary_divbfix(2*^ND)=.true.
   !> B0 field is force-free
@@ -278,8 +273,8 @@ contains
       mhd_thermal_conduction, mhd_radiative_cooling, mhd_hall, mhd_ambipolar, mhd_ambipolar_sts, mhd_gravity,&
       mhd_rotating_frame,mhd_viscosity, typedivbfix, source_split_divb, divbdiff,&
       typedivbdiff, type_ct, divbwave, &
-      H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit, B0field ,mhd_dump_full_vars,&
-      B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles, mhd_partial_ionization,&
+      H_ion_fr, He_ion_fr, He_ion_fr2, SI_unit, B0field ,mhd_dump_full_vars,&
+      B0field_forcefree, Bdip, Bquad, Boct, Busr, mhd_particles,&
       particles_eta, particles_etah,has_equi_rho_and_p,mhd_equi_thermal,&
       boundary_divbfix, boundary_divbfix_skip, mhd_divb_nth, mhd_semirelativistic,&
       mhd_reduced_c, clean_initial_divb, mhd_internal_e, numerical_resistive_heating,&
@@ -329,7 +324,7 @@ contains
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
     use mod_cak_force, only: cak_init
-    use mod_ionization_degree
+    use mod_eos_PI_tables
     use mod_geometry
     use mod_usr_methods, only: usr_Rfactor
     {^NOONED
@@ -407,10 +402,6 @@ contains
         mhd_trac=.false.
         if(mype==0) write(*,*) 'WARNING: set mhd_trac=F when mhd_energy=F'
       end if
-      if(mhd_partial_ionization) then
-        mhd_partial_ionization=.false.
-        if(mype==0) write(*,*) 'WARNING: set mhd_partial_ionization=F when mhd_energy=F'
-      end if
       if(B0field) then
         B0field=.false.
         if(mype==0) write(*,*) 'WARNING: set B0field=F when mhd_energy=F'
@@ -418,12 +409,6 @@ contains
       if(has_equi_rho_and_p) then
         has_equi_rho_and_p=.false.
         if(mype==0) write(*,*) 'WARNING: set has_equi_rho_and_p=F when mhd_energy=F'
-      end if
-    end if
-    if(.not.eq_state_units) then
-      if(mhd_partial_ionization) then
-        mhd_partial_ionization=.false.
-        if(mype==0) write(*,*) 'WARNING: set mhd_partial_ionization=F when eq_state_units=F'
       end if
     end if
 
@@ -443,7 +428,6 @@ contains
     phys_internal_e=mhd_internal_e
     phys_trac=mhd_trac
     phys_trac_type=mhd_trac_type
-    phys_partial_ionization=mhd_partial_ionization
 
     phys_gamma = eos%gamma
     phys_trac_finegrid=mhd_trac_finegrid
@@ -572,9 +556,9 @@ contains
     if (eos%eos_type == 'LTE') then
       Ne_ = var_set_ne()
       Te_ = var_set_te()
-    else if (mhd_partial_ionization) then !  set temperature as an auxiliary variable to get ionization degree
+    else if (eos%eos_type == 'PI') then !  PI stores Te via var_set_te (sets iw_te) so the generic mod_eos_PI getters address it like LTE
       Ne_ = -1
-      Te_ = var_set_auxvar('Te','Te')
+      Te_ = var_set_te()
     else
       Ne_ = -1
       Te_ = -1
@@ -1028,8 +1012,8 @@ contains
       end if
     end if
 
-    ! initialize ionization degree table
-    if(mhd_partial_ionization) call ionization_degree_init()
+    ! ionization-degree table init now lives in eos_finalise (eos% owns
+    ! thermodynamic-backend init, parallel to LTE tables); see mod_eos_PI.
 
     ! Initialize CAK radiation force module
     if (mhd_cak_force) then
@@ -1480,7 +1464,6 @@ contains
            print *,'========EOS and UNITS==========='
            print *,'SI_unit       =',SI_unit
            print *,'gamma=',eos%gamma
-           print *,'eq_state_units=',eq_state_units
            print *,'He_abundance  =',eos%He_abundance
            print *,'RR            =',RR
            print *,'========EOS and UNITS==========='
@@ -1519,7 +1502,7 @@ contains
                 a=unit_density/unit_numberdensity/mp_cgs
                 b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
            endif
-           if(eq_state_units)then
+           if(eos%eos_type /= 'LTE')then
               print *, 'mean molecular weight mu is =',a/b,' = ', (1.d0+4.d0*eos%He_abundance)/(2.d0+3.d0*eos%He_abundance)
               Xfrac=1.d0/a
               Yfrac=4.d0*eos%He_abundance/(1.d0+4.d0*eos%He_abundance)
@@ -1553,16 +1536,10 @@ contains
       c_lightspeed=const_c
       sigma_Telectron=sigma_Te_cgs
     end if
-    if(eq_state_units) then
-      a=1d0+4d0*eos%He_abundance
-      if(mhd_partial_ionization) then
-        b=1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
-      else
-        b=2d0+3d0*eos%He_abundance
-      end if
-      RR=1d0
-      Xfrac=1.d0/a
-    else if (eos%eos_type == 'LTE') then
+    ! Normalisation dispatch keyed solely on eos%eos_type (FI is the default, so
+    ! legacy parfiles land in the FI/PI absorbed-(a,b), RR=1 branch -- the former
+    ! eq_state_units=.true. result).
+    if (eos%eos_type == 'LTE') then
       !> Remove the assumed FI normalisation from the units and handle in EoS
       a=1d0
       b=1d0
@@ -1570,10 +1547,16 @@ contains
       RR=(2d0+3d0*eos%He_abundance) / (1d0+4d0*eos%He_abundance)
       Xfrac=1.d0/(1.d0+4.d0*eos%He_abundance)
     else
-      a=1d0
-      b=1d0
-      RR=(1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*eos%He_abundance)
-      Xfrac=1.d0/(1.d0+4.d0*eos%He_abundance)
+      !> FI / PI: absorbed-(a,b), RR=1 (a=b=1 with RR=1 would be wrong physics
+      !> for He>0). PI shares FI's normalisation exactly; the partial b lives here.
+      a=1d0+4d0*eos%He_abundance
+      if(eos%eos_type=='PI') then
+        b=1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
+      else
+        b=2d0+3d0*eos%He_abundance
+      end if
+      RR=1d0
+      Xfrac=1.d0/a
     end if
     if(unit_density/=1.d0 .or. unit_numberdensity/=1.d0) then
       if(unit_density/=1.d0) then
@@ -1713,11 +1696,7 @@ contains
     arad_norm=const_rad_a*unit_temperature**4/unit_pressure
     ! This is the Thomson scattering opacity in the correct units
     ! note that the hydrogen mass fraction X=1/a in eq_state_units
-    if(eq_state_units) then
-       const_kappae=sigma_Telectron*(1.d0+Xfrac)/(2.0d0*mp)
-    else
-       const_kappae=0.34d0 ! specific value in cm^2/g for He=0.1 in cgs
-    endif
+    const_kappae=sigma_Telectron*(1.d0+Xfrac)/(2.0d0*mp)
     ! these are the units
     unit_Erad = unit_pressure
     unit_radflux = unit_velocity*unit_Erad
@@ -2690,7 +2669,7 @@ contains
     integer :: idims,ix^D,jxO^L,hxO^L,ixA^D,ixB^D
     integer :: jxP^L,hxP^L,ixP^L,ixQ^L
 
-    if (eos%eos_type == 'LTE' .or. mhd_partial_ionization) then
+    if (eos%eos_type == 'LTE' .or. eos%eos_type == 'PI') then
       Te(ixI^S) = w(ixI^S, Te_)
     else
       call eos%get_Rfactor(w,x,ixI^L,ixI^L,Te)
@@ -4703,10 +4682,10 @@ contains
     endif
 
     ! update temperature from new pressure, density, and old ionization degree
-    if(mhd_partial_ionization) then
+    if(eos%eos_type == 'PI') then
       if(.not.qsourcesplit) then
         active = .true.
-        call phys_update_temperature(ixI^L,ixO^L,wCT,w,x)
+        call eos%update_eos(ixI^L,ixO^L,w,x)
       end if
     end if
 

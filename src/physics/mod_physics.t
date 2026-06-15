@@ -42,8 +42,6 @@ module mod_physics
   !> Solve internal energy instead of total energy
   logical :: phys_internal_e=.false.
 
-  !> Solve partially ionized one-fluid plasma
-  logical :: phys_partial_ionization=.false.
 
   !> String describing the physics type of the simulation
   character(len=name_len) :: physics_type = ""
@@ -94,8 +92,6 @@ module mod_physics
   procedure(sub_set_equi_vars), pointer   :: phys_set_equi_vars          => null()
   ! subroutine with no parameters which creates EUV images
   procedure(sub_check_params), pointer    :: phys_te_images              => null()
-  ! to update temperature variable with partial ionization
-  procedure(sub_update_temperature), pointer :: phys_update_temperature  => null()
   procedure(sub_get_auxiliary), pointer         :: phys_get_auxiliary         => null()
   procedure(sub_get_auxiliary_prim), pointer    :: phys_get_auxiliary_prim    => null()
 
@@ -399,13 +395,6 @@ module mod_physics
        double precision, intent(in) :: qtC
        double precision, intent(in) :: dtfactor
      end subroutine sub_implicit_update
-
-     subroutine sub_update_temperature(ixI^L,ixO^L,wCT,w,x)
-       use mod_global_parameters
-       integer, intent(in)             :: ixI^L, ixO^L
-       double precision, intent(in)    :: wCT(ixI^S,nw),x(ixI^S,1:ndim)
-       double precision, intent(inout) :: w(ixI^S,nw)
-     end subroutine sub_update_temperature
 
    end interface
 

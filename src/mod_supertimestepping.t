@@ -25,6 +25,7 @@
 module mod_supertimestepping
   use mod_geometry
   use mod_comm_lib, only: mpistop
+  use mod_eos_container, only: eos   !> PI temperature cache refresh via eos%update_eos
   implicit none
   private
 
@@ -624,11 +625,11 @@ contains
 
     bcphys=.true.
 
-    if(phys_partial_ionization) then
+    if(eos%eos_type == 'PI') then
       ! update temperature variable in w
       !$OMP PARALLEL DO PRIVATE(igrid)
       do iigrid=1,igridstail; igrid=igrids(iigrid);
-        call phys_update_temperature(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%w,ps(igrid)%x)
+        call eos%update_eos(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)
       end do
       !$OMP END PARALLEL DO
     end if
@@ -983,11 +984,11 @@ contains
 
     bcphys=.true.
 
-    if(phys_partial_ionization) then
+    if(eos%eos_type == 'PI') then
       ! update temperature variable in w
       !$OMP PARALLEL DO PRIVATE(igrid)
       do iigrid=1,igridstail; igrid=igrids(iigrid);
-        call phys_update_temperature(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%w,ps(igrid)%x)
+        call eos%update_eos(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)
       end do
       !$OMP END PARALLEL DO
     end if

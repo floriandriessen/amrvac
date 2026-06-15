@@ -58,7 +58,6 @@ module mod_hd_phys
   integer, public, protected              :: hd_n_tracer = 0
 
   !> Whether plasma is partially ionized
-  logical, public, protected              :: hd_partial_ionization = .false.
 
   !> Index of the density (in the w array)
   integer, public, protected              :: rho_
@@ -211,10 +210,6 @@ module mod_hd_phys
   ! and it is p = RR * rho * T
   double precision, public, protected  :: RR=1d0
   ! remove the below flag  and assume default value = .false.
-  ! when eq state properly implemented everywhere
-  ! and not anymore through units
-  logical, public, protected :: eq_state_units = .true.
-
   ! procedure(sub_get_pthermal), pointer :: hd_get_Rfactor   => null()
   ! Public methods
   public :: hd_phys_init
@@ -258,10 +253,10 @@ contains
     hd_htc_beta, hd_htc_sat_alpha, hd_htc_pos_eta, hd_htc_validity_warn, &
     hd_htc_gradT_floor, &
     hd_radiative_cooling, hd_viscosity, &
-    hd_gravity, H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, &
+    hd_gravity, H_ion_fr, He_ion_fr, He_ion_fr2, &
     SI_unit, hd_particles, hd_rotating_frame, hd_trac, &
     hd_trac_type, hd_trac_nzones, hd_trac_zone_splits, hd_trac_delta, hd_trac_v_thresh, &
-    hd_cak_force, hd_partial_ionization, hd_well_balanced, &
+    hd_cak_force, hd_well_balanced, &
     hd_radiation_fld, hd_fip
 
     do n = 1, size(files)
@@ -302,7 +297,7 @@ contains
     use mod_cak_force, only: cak_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
-    use mod_ionization_degree
+    use mod_eos_PI_tables
     use mod_usr_methods, only: usr_Rfactor, usr_get_heating
     use mod_escape_probability, only: escape_prob_init
     use mod_fld
@@ -316,7 +311,6 @@ contains
     phys_total_energy  = hd_energy
     phys_internal_e = .false.
     phys_gamma = eos%gamma
-    phys_partial_ionization=hd_partial_ionization
 
     phys_trac=hd_trac
     if(phys_trac) then
@@ -352,12 +346,6 @@ contains
       if(hd_radiative_cooling) then
         hd_radiative_cooling=.false.
         if(mype==0) write(*,*) 'WARNING: set hd_radiative_cooling=F when hd_energy=F'
-      end if
-    end if
-    if(.not.eq_state_units) then
-      if(hd_partial_ionization) then
-        hd_partial_ionization=.false.
-        if(mype==0) write(*,*) 'WARNING: set hd_partial_ionization=F when eq_state_units=F'
       end if
     end if
     use_particles = hd_particles
@@ -401,9 +389,9 @@ contains
     if (eos%eos_type == 'LTE') then
       Ne_ = var_set_ne()
       Te_ = var_set_te()
-    else if (hd_partial_ionization) then !  set temperature as an auxiliary variable to get ionization degree
+    else if (eos%eos_type == 'PI') then !  PI stores Te via var_set_te (sets iw_te) so the generic mod_eos_PI getters address it like LTE
       Ne_ = -1
-      Te_ = var_set_auxvar('Te','Te')
+      Te_ = var_set_te()
     else
       Ne_ = -1
       Te_ = -1
@@ -633,8 +621,8 @@ contains
     nvector      = 1 ! No. vector vars
     allocate(iw_vector(nvector))
     iw_vector(1) = mom(1) - 1
-    ! initialize ionization degree table
-    if(hd_partial_ionization) call ionization_degree_init()
+    ! ionization-degree table init now lives in eos_finalise (eos% owns
+    ! thermodynamic-backend init); see mod_eos_PI.
 
   end subroutine hd_phys_init
 
@@ -1002,7 +990,6 @@ contains
            print *,'========EOS and UNITS==========='
            print *,'SI_unit       =',SI_unit
            print *,'gamma=',eos%gamma
-           print *,'eq_state_units=',eq_state_units
            print *,'He_abundance  =',eos%He_abundance
            print *,'RR            =',RR
            print *,'========EOS and UNITS==========='
@@ -1035,7 +1022,7 @@ contains
                 a=unit_density/unit_numberdensity/mp_cgs
                 b=unit_pressure/(unit_numberdensity*unit_temperature*kB_cgs)
            endif
-           if(eq_state_units)then
+           if(eos%eos_type /= 'LTE')then
               print *, 'mean molecular weight mu is =',a/b,' = ', (1.d0+4.d0*eos%He_abundance)/(2.d0+3.d0*eos%He_abundance)
               Xfrac=1.d0/a
               Yfrac=4.d0*eos%He_abundance/(1.d0+4.d0*eos%He_abundance)
@@ -1067,16 +1054,10 @@ contains
       c_lightspeed=const_c
       sigma_Telectron=sigma_Te_cgs
     end if
-    if(eq_state_units) then
-      a=1d0+4d0*eos%He_abundance
-      if(hd_partial_ionization) then
-        b=1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
-      else
-        b=2d0+3d0*eos%He_abundance
-      end if
-      RR=1d0
-      Xfrac=1.d0/a
-    else if (eos%eos_type == 'LTE') then
+    ! Normalisation dispatch keyed solely on eos%eos_type (FI is the default, so
+    ! legacy parfiles land in the FI/PI absorbed-(a,b), RR=1 branch -- the former
+    ! eq_state_units=.true. result).
+    if (eos%eos_type == 'LTE') then
       !> Remove the assumed FI normalisation from the units and handle in EoS
       a=1d0
       b=1d0
@@ -1084,10 +1065,16 @@ contains
       RR=(2d0+3d0*eos%He_abundance) / (1d0+4d0*eos%He_abundance)
       Xfrac=1.d0/(1.d0+4.d0*eos%He_abundance)
     else
-      a=1d0
-      b=1d0
-      RR=(1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*eos%He_abundance)
-      Xfrac=1.d0/(1.d0+4.d0*eos%He_abundance)
+      !> FI / PI: absorbed-(a,b), RR=1 (a=b=1 with RR=1 would be wrong physics
+      !> for He>0). PI shares FI's normalisation exactly.
+      a=1d0+4d0*eos%He_abundance
+      if(eos%eos_type=='PI') then
+        b=1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
+      else
+        b=2d0+3d0*eos%He_abundance
+      end if
+      RR=1d0
+      Xfrac=1.d0/a
     end if
     if(unit_density/=1.d0 .or. unit_numberdensity/=1.d0) then
       if(unit_density/=1.d0) then
@@ -1163,12 +1150,8 @@ contains
     ! this is the dimensionless conversion factor for Erad to Trad
     arad_norm=const_rad_a*unit_temperature**4/unit_pressure
     ! This is the Thomson scattering opacity in the correct units
-    ! note that the hydrogen mass fraction X=1/a in eq_state_units
-    if(eq_state_units) then
-       const_kappae=sigma_Telectron*(1.d0+Xfrac)/(2.0d0*mp)
-    else
-       const_kappae=0.34d0 ! specific value in cm^2/g for He=0.1 in cgs 
-    endif
+    ! hydrogen mass fraction X=1/a in the absorbed-(a,b) normalisation
+    const_kappae=sigma_Telectron*(1.d0+Xfrac)/(2.0d0*mp)
     ! these are the units
     unit_Erad = unit_pressure
     unit_radflux = unit_velocity*unit_Erad
@@ -1760,7 +1743,7 @@ contains
   subroutine hd_get_csound2(w,x,ixI^L,ixO^L,csound2)
     use mod_global_parameters
     use mod_timing
-    use mod_eos, only: gamma1_from_nH_p
+    use mod_eos_LTE, only: gamma1_from_nH_p
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
@@ -2194,10 +2177,10 @@ contains
        call hd_add_radiation_source(qdt,ixI^L,ixO^L,wCT,wCTprim,w,x,qsourcesplit,active)
     endif
 
-    if(hd_partial_ionization) then
+    if(eos%eos_type == 'PI') then
       if(.not.qsourcesplit) then
         active = .true.
-        call phys_update_temperature(ixI^L,ixO^L,wCT,w,x)
+        call eos%update_eos(ixI^L,ixO^L,w,x)
       end if
     end if
 
