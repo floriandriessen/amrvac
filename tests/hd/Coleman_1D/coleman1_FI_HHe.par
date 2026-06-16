@@ -49,7 +49,6 @@
 &hd_list
   hd_energy          = .true.
   hd_gravity         = .false.
-  eq_state_units     = .false.
 /
 
 &eos_list

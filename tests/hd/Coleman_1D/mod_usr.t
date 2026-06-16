@@ -81,6 +81,7 @@ contains
 
   subroutine initonegrid_usr(ixI^L, ixO^L, w, x)
     use mod_global_parameters
+    use mod_eos_LTE, only: eint_nH_from_T
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: w(ixI^S, 1:nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
@@ -126,7 +127,7 @@ contains
 
   subroutine set_output_vars(ixI^L, ixO^L, qt, w, x)
     use mod_global_parameters
-    use mod_eos, only: gamma1_from_nH_p
+    use mod_eos_LTE, only: gamma1_from_nH_p
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(in)    :: qt, x(ixI^S, 1:ndim)
     double precision, intent(inout) :: w(ixI^S, nw)

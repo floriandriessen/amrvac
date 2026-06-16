@@ -49,13 +49,11 @@
 &hd_list
   hd_energy          = .true.
   hd_gravity         = .false.
-  eq_state_units     = .false.
 /
 
 &eos_list
   eos_type      = 'LTE'
   ionE          = .true.
-  table_check   = .false.
   eos_method    = 'entropy'
   table_location = '../../../src/tables/eos_tables/entropy128/'
   He_abundance  = 0.0d0
