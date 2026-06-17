@@ -49,7 +49,6 @@
   hd_gravity = .false.
   hd_energy = .true.
   hd_radiation_fld = .true.
-  eq_state_units=.true.
   SI_unit=.false.
  /
 

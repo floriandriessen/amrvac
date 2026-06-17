@@ -155,8 +155,7 @@ contains
       write(*,*)'----------------BEGIN UNITS  ------------------------'
       write(*,*)'----------------UNIT CONTROLS------------------------'
       write(*,*) "SI_unit",SI_unit
-      write(*,*) "eq_state_units",eq_state_units
-      write(*,*) "mhd_partial_ionization",mhd_partial_ionization
+      write(*,*) "eos_type",eos%eos_type
       write(*,printsettingformat) "eos%He_abundance",eos%He_abundance
       write(*,printsettingformat) "H_ion_fr",H_ion_fr
       write(*,printsettingformat) "He_ion_fr",He_ion_fr

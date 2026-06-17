@@ -50,6 +50,11 @@
   hd_radiation_fld = .true.
  /
 
+ &eos_list
+  gamma = 1.6666667d0
+  He_abundance = 0.0d0
+ /
+
  &fld_list
   fld_Radforce_split = .false.
   fld_opacity_law = 'const'
@@ -65,8 +70,3 @@
   rho_kappa_lambda=1000.d0
   A_rho = 1.0d-2
   /
- &eos_list
-  gamma = 1.6666667d0
-  He_abundance = 0.0d0
- /
-

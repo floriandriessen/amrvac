@@ -20,9 +20,9 @@ contains
     usr_add_aux_names   => specialvarnames_output
     usr_print_log       => energies_log
 
-    unit_length        = 1.001d8 ! cm
-    unit_temperature   = 1.001d3 ! K
-    unit_numberdensity = 1.001d9 ! cm^-3
+    unit_length        = 1.0d8 ! cm
+    unit_temperature   = 6.0d5 ! K
+    unit_density       = 3.61286d-10 ! 
 
     call mhd_activate()
   end subroutine usr_init
@@ -89,7 +89,7 @@ contains
     !
     
     ! equilibrium parameters
-    gamma=1.66666667d0
+    gamma=eos%gamma
     mpoly=1
     qchi=11.0d0
     qchand=72.0d0
@@ -162,7 +162,7 @@ contains
     }
     if(first)then
       if(mype==0) then
-         write(*,*)'Simulating rmhd convection: Hurlburt-Toomre'
+         write(*,*)'Simulating radiative mhd convection: Hurlburt-Toomre'
          write(*,*) 'velocity perturbation: dvx,dvy,nkx,nky'
          write(*,*) dvx,dvy,nkx,nky
          {^IFTHREED
@@ -181,7 +181,7 @@ contains
     w(ix^S,mom(1))=dvx*dsin(x(ix^S,1)*nkx)*dsin(x(ix^S,2)*nky){^IFTHREED *dsin(x(ix^S,3)*nkz)}
     w(ix^S,mom(2))=dvy*dsin(x(ix^S,1)*nkx)*dsin(x(ix^S,2)*nky){^IFTHREED *dsin(x(ix^S,3)*nkz)}
     {^IFTHREED w(ix^S,mom(3))=zero }
-    w(ix^S,iw_r_e) = const_rad_a*((zz0+one-x(ix^S,2))*unit_temperature)**4.d0/unit_pressure 
+    w(ix^S,r_e) = arad_norm*(zz0+one-x(ix^S,2))**4.d0 
     call eos%to_conserved(ixG^L,ix^L,w,x)
 
     if(mype == 0.and.first)then
@@ -198,7 +198,7 @@ contains
        print *,"unit_radflux = ",unit_radflux
        print *,"unit_opacity = ",unit_opacity
        print *,"eos%He_abundance = ",eos%He_abundance
-       print *,"eq_state_units = ",eq_state_units
+       print *,"eos_type = ",eos%eos_type
        print *,"H_ion_fr = ",H_ion_fr
        print *,"He_ion_fr2 = ",He_ion_fr2
        first=.false.
@@ -235,8 +235,7 @@ contains
          w(ixOmin1:ixOmax1,ix2,mom(2)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mom(2))
          w(ixOmin1:ixOmax1,ix2,mag(1)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mag(1))
          w(ixOmin1:ixOmax1,ix2,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,mag(2))
-         !case1
-         w(ixOmin1:ixOmax1,ix2,iw_r_e)= w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,iw_r_e) 
+         w(ixOmin1:ixOmax1,ix2,r_e)    = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,r_e) 
       enddo
       ! fill temperature array: extrapolate linearly with fixed dT/dy=-1, from bottom row
       do ix2=ixOmin2,ixOmax2
@@ -260,6 +259,7 @@ contains
          w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(1)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,mag(1))
          w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,mag(2))
          w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(3)) =-w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,mag(3))
+         w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,r_e)    = w(ixOmin1:ixOmax1,2*ixOmax2+1-ix2,ixOmin3:ixOmax3,r_e) 
       enddo
       ! fill temperature array: extrapolate linearly with fixed dT/dy=-1, from bottom row
       do ix2=ixOmin2,ixOmax2
@@ -294,10 +294,6 @@ contains
           w(ixOmin1:ixOmax1,ix2,mag(1)) =-w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,mag(1))
           w(ixOmin1:ixOmax1,ix2,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,mag(2))
       enddo
-      w(ixO^S,p_)=w(ixO^S,rho_)*temptop
-      !case1
-      w(ixO^S,iw_r_e)= const_rad_a*(temptop*unit_temperature)**4.d0/unit_pressure 
-    
       }
       {^IFTHREED
       ! in nghostcells rows below top boundary: switch to primitive
@@ -314,8 +310,10 @@ contains
           w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(2)) = w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,ixOmin3:ixOmax3,mag(2))
           w(ixOmin1:ixOmax1,ix2,ixOmin3:ixOmax3,mag(3)) =-w(ixOmin1:ixOmax1,2*ixOmin2-ix2-1,ixOmin3:ixOmax3,mag(3))
       enddo
-      w(ixO^S,p_)=w(ixO^S,rho_)*temptop
       }
+      w(ixO^S,p_)=w(ixO^S,rho_)*temptop
+      w(ixO^S,r_e)= arad_norm*(temptop)**4.d0 
+    
       ! now reset the inner mesh values to conservative
       call eos%to_conserved(ixG^L,ixIM^L,w,x)
       ! now switch to conservative in full bottom ghost layer
@@ -336,14 +334,14 @@ contains
     select case (iB)
     case (3)
       mg%bc(iB, mg_iphi)%bc_type = mg_bc_neumann
-      mg%bc(iB, mg_iphi)%bc_value = 0.0 !gradE
+      mg%bc(iB, mg_iphi)%bc_value = 0.0d0 
       
     case (4)
       mg%bc(iB, mg_iphi)%bc_type = mg_bc_dirichlet
-      mg%bc(iB, mg_iphi)%bc_value = (const_rad_a*(temptop*unit_temperature)**4)/unit_pressure
+      mg%bc(iB, mg_iphi)%bc_value = arad_norm*(temptop)**4
 
     case default
-      print *, "Not a standard: ", typeboundary(iw_r_e, iB)
+      print *, "Not a standard: ", typeboundary(r_e, iB)
       error stop "Set special bound for this Boundary "
     end select
   end subroutine mg_boundary_conditions
@@ -387,28 +385,30 @@ contains
     double precision                   :: w(ixI^S,nw+nwauxio)
     double precision                   :: normconv(0:nw+nwauxio)
 
-    double precision :: tmp(ixI^S),divb(ixI^S),current(ixI^S,7-2*ndir:3), lamb(ixO^S), R(ixO^S)
-    double precision :: radflux(ixO^S,1:ndim)
+    double precision                   :: wlocal(ixI^S,1:nw)
+    double precision :: tmp(ixI^S),divb(ixI^S),current(ixI^S,7-2*ndir:3), lamb(ixI^S), R(ixI^S)
+    double precision :: radflux(ixI^S,1:ndim)
     integer          :: idirmin
 
     ! output Te
-    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,tmp)
-    w(ixO^S,nw+1)=tmp(ixO^S)/w(ixO^S,rho_)
+    wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
+    call eos%get_thermal_pressure(wlocal,x,ixI^L,ixO^L,tmp)
+    w(ixO^S,nw+1)=tmp(ixO^S)/wlocal(ixO^S,rho_)
     ! output B 
-    w(ixO^S,nw+2)=dsqrt(sum(w(ixO^S,mag(:))**2,dim=ndim+1))
+    w(ixO^S,nw+2)=dsqrt(sum(wlocal(ixO^S,mag(:))**2,dim=ndim+1))
     ! output divB1
-    call get_divb(w,ixI^L,ixO^L,divb)
+    call get_divb(wlocal,ixI^L,ixO^L,divb)
     w(ixO^S,nw+3)=divb(ixO^S)
     ! output the plasma beta p*2/B**2
-    w(ixO^S,nw+4)=tmp(ixO^S)*two/sum(w(ixO^S,mag(:))**2,dim=ndim+1)
+    w(ixO^S,nw+4)=tmp(ixO^S)*two/sum(wlocal(ixO^S,mag(:))**2,dim=ndim+1)
     ! store current
-    call get_current(w,ixI^L,ixO^L,idirmin,current)
+    call get_current(wlocal,ixI^L,ixO^L,idirmin,current)
     w(ixO^S,nw+5)=current(ixO^S,3)
 
-    call fld_get_fluxlimiter(w,x,ixI^L,ixO^L,lamb,R,1)
+    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2,fld_fl)
     w(ixO^S,nw+6)=lamb(ixO^S)
     w(ixO^S,nw+7)=R(ixO^S)
-    call fld_get_radflux(w,x,ixI^L,ixO^L,radflux,1)
+    call fld_get_radflux(wlocal,x,ixI^L,ixO^L,radflux,fld_fl)
     w(ixO^S,nw+8)=radflux(ixO^S,1)
     w(ixO^S,nw+9)=radflux(ixO^S,2)
 
@@ -642,7 +642,7 @@ contains
     double precision, intent(in) :: w_vec(w_size)
     double precision             :: rad_energy
 
-    rad_energy = w_vec(iw_r_e)
+    rad_energy = w_vec(r_e)
   end function radiation
 
   ! Function that calculates internal energy, to be used in get_volume_average_func
