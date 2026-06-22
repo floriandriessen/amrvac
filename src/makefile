@@ -373,6 +373,9 @@ mod_load_balance.o: mod_forest.mod
 mod_load_balance.o: mod_functions_forest.mod
 mod_load_balance.o: mod_global_parameters.mod
 mod_load_balance.o: mod_space_filling_curve.mod
+mod_magnetic_topology.o: mod_comm_lib.mod
+mod_magnetic_topology.o: mod_global_parameters.mod
+mod_magnetic_topology.o: mod_trace_field.mod
 mod_magnetofriction.o: mod_amr_grid.mod
 mod_magnetofriction.o: mod_comm_lib.mod
 mod_magnetofriction.o: mod_fix_conserve.mod
@@ -622,9 +625,6 @@ mod_trace_field.o: mod_global_parameters.mod
 mod_trace_field.o: mod_particle_base.mod
 mod_trace_field.o: mod_physics.mod
 mod_trace_field.o: mod_usr_methods.mod
-mod_magnetic_topology.o: mod_comm_lib.mod
-mod_magnetic_topology.o: mod_global_parameters.mod
-mod_magnetic_topology.o: mod_trace_field.mod
 mod_tvd.o: mod_comm_lib.mod
 mod_tvd.o: mod_global_parameters.mod
 mod_tvd.o: mod_limiter.mod
