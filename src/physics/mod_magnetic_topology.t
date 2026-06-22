@@ -1,8 +1,7 @@
 module mod_magnetic_topology
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan, &
        ieee_is_finite
-  use mod_global_parameters, only: ndim,npe,slab_uniform, &
-       xprobmin1,xprobmax1,xprobmin2,xprobmax2,xprobmin3,xprobmax3
+  use mod_global_parameters, only: ndim,npe,slab_uniform
   use mod_comm_lib, only: mpistop
   use mod_trace_field, only: trace_length_result,trace_twist_result, &
        trace_mapping_result,trace_qperp_result,trace_topology_result, &
@@ -209,6 +208,9 @@ contains
 
     if (len_trim(mode)==0) then
       call mpistop('mt_run_topology_task requires mt_mode')
+    endif
+    if (ndim/=3 .or. .not.slab_uniform) then
+      call mpistop('mt_run_topology_task requires 3D uniform Cartesian geometry')
     endif
     if (len_trim(mt_output_file)==0 .and. &
         len_trim(mt_output_prefix)==0) then
@@ -811,6 +813,19 @@ contains
       out_value=0.d0
     endif
   end function mt_visual_valid_float
+
+  double precision function mt_vc(vec,icomp) result(value)
+    ! Return a physical coordinate component without creating fixed
+    ! out-of-bounds references in 1D/2D source expansions.
+    double precision, intent(in) :: vec(ndim)
+    integer, intent(in) :: icomp
+
+    if (icomp>=1 .and. icomp<=ndim) then
+      value=vec(icomp)
+    else
+      value=0.d0
+    endif
+  end function mt_vc
 
   subroutine mt_length_single(seed,dL,max_steps,csv_file,b_min)
     ! Trace one magnetic field line and write its summary to a CSV file.
@@ -3649,27 +3664,27 @@ contains
 
     call mt_write_vtu_float_array_start(vtu_unit,'x_f_mapping',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (mapping_results(ipoint)%forward_footpoint(1),ipoint=1,npoint)
+         (mt_vc(mapping_results(ipoint)%forward_footpoint,1),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'y_f_mapping',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (mapping_results(ipoint)%forward_footpoint(2),ipoint=1,npoint)
+         (mt_vc(mapping_results(ipoint)%forward_footpoint,2),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'z_f_mapping',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (mapping_results(ipoint)%forward_footpoint(3),ipoint=1,npoint)
+         (mt_vc(mapping_results(ipoint)%forward_footpoint,3),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'x_b_mapping',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (mapping_results(ipoint)%backward_footpoint(1),ipoint=1,npoint)
+         (mt_vc(mapping_results(ipoint)%backward_footpoint,1),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'y_b_mapping',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (mapping_results(ipoint)%backward_footpoint(2),ipoint=1,npoint)
+         (mt_vc(mapping_results(ipoint)%backward_footpoint,2),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'z_b_mapping',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (mapping_results(ipoint)%backward_footpoint(3),ipoint=1,npoint)
+         (mt_vc(mapping_results(ipoint)%backward_footpoint,3),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
 
     call mt_write_vtu_float_array_start(vtu_unit,'source_Bn_mapping', &
@@ -3789,27 +3804,27 @@ contains
 
     call mt_write_vtu_float_array_start(vtu_unit,'x_f_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%forward_endpoint(1),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%forward_endpoint,1),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'y_f_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%forward_endpoint(2),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%forward_endpoint,2),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'z_f_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%forward_endpoint(3),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%forward_endpoint,3),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'x_b_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%backward_endpoint(1),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%backward_endpoint,1),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'y_b_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%backward_endpoint(2),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%backward_endpoint,2),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'z_b_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%backward_endpoint(3),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%backward_endpoint,3),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
 
     call mt_write_vtu_int_array_start(vtu_unit,'valid_qperp_method2', &
@@ -4131,27 +4146,27 @@ contains
 
     call mt_write_vtu_float_array_start(vtu_unit,'x_f_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%forward_endpoint(1),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%forward_endpoint,1),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'y_f_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%forward_endpoint(2),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%forward_endpoint,2),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'z_f_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%forward_endpoint(3),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%forward_endpoint,3),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'x_b_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%backward_endpoint(1),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%backward_endpoint,1),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'y_b_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%backward_endpoint(2),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%backward_endpoint,2),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
     call mt_write_vtu_float_array_start(vtu_unit,'z_b_qperp',io_status)
     if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (qperp_results(ipoint)%backward_endpoint(3),ipoint=1,npoint)
+         (mt_vc(qperp_results(ipoint)%backward_endpoint,3),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
   end subroutine mt_write_vtu_qperp_endpoint_pointdata
 
