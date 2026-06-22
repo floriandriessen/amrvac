@@ -622,6 +622,9 @@ mod_trace_field.o: mod_global_parameters.mod
 mod_trace_field.o: mod_particle_base.mod
 mod_trace_field.o: mod_physics.mod
 mod_trace_field.o: mod_usr_methods.mod
+mod_magnetic_topology.o: mod_comm_lib.mod
+mod_magnetic_topology.o: mod_global_parameters.mod
+mod_magnetic_topology.o: mod_trace_field.mod
 mod_tvd.o: mod_comm_lib.mod
 mod_tvd.o: mod_global_parameters.mod
 mod_tvd.o: mod_limiter.mod
