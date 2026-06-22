@@ -1,0 +1,16 @@
+/amrvac
+/amrvac.h
+/mod_usr.f
+*.o
+*.mod
+*.dat
+*.vtu
+*.pvtu
+*.vti
+*.pvd
+*.csv
+*.log
+*.time
+__pycache__/
+output/
+timing/
