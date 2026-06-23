@@ -748,7 +748,9 @@ The computational domain is set by specifying the minimal and maximal
 coordinate value per direction in the _xprob^L_ settings. When cylindrical or
 spherical coordinates are selected, the angle ranges (for phi in
 the cylindrical case, and for both theta and phi in the spherical case) are to
-be given in 2 pi units.
+be given in 2 pi rad units. After initialization, e.g., inside the user module 
+_mod_usr.t_, the angle range parameters _xprobmin^D_ and _xprobmax^D_ are
+changed to be in rad units.
 
 The base grid resolution (i.e. on the coarsest level 1) is best specified by
 providing _domain_nx^D_, the number of grid cells per dimension, to cover the full
@@ -1228,8 +1230,7 @@ region below 'R_opt_thick' (in solar radius, default value is 1) is assumed as n
 set 
 ```
 
-        has_equi_pe0 = .true.
-        has_equi_rho0 = .true.
+        has_equi_rho_and_p = .true.
 
 ```
 to true in ***mhd\_list***

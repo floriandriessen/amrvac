@@ -75,7 +75,6 @@
 
  &rc_list
 	coolcurve   = 'SPEX_DM'
-        coolmethod = 'exact'
         Tfix       = .true.
  /
 

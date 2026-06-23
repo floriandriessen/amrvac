@@ -204,14 +204,14 @@ contains
       gridvars(igrid)%w(ixG^T,Tep) = pth(ixG^T)/w(ixG^T,rho_)
       
       ! Same for old state vector if interpolating in time
-      if (time_advance) then 
-        w(ixG^T,1:nw) = pso(igrid)%w(ixG^T,1:nw) 
+    !!  if (time_advance) then 
+    !!    w(ixG^T,1:nw) = pso(igrid)%w(ixG^T,1:nw) 
 
         ! Temperature
         call eos%get_thermal_pressure(w,pso(igrid)%x,ixG^LL,ixG^LL,pth)
         gridvars(igrid)%wold(ixG^T,Tep) = pth(ixG^T)/w(ixG^T,rho_)
 
-      end if
+    !!  end if
 
     end do
   end subroutine fill_additional_gridvars_usr

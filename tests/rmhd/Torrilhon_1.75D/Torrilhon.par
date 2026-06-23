@@ -57,6 +57,7 @@
   He_abundance = 0.0d0
  /
 
+     fld_kappa0 = 0.4d0
  &fld_list
      fld_Radforce_split = .false.
      fld_opacity_law = 'const'
