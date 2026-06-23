@@ -47,10 +47,14 @@
 
  &mhd_list
      typedivbfix='none'
-     He_abundance = 0.0d0
      mhd_energy = .true.
-     mhd_gamma = 1.6666667d0
      mhd_radiation_fld = .true.
+ /
+
+     fld_kappa0 = 0.4d0
+ &eos_list
+  gamma = 1.6666667d0
+  He_abundance = 0.0d0
  /
 
      fld_kappa0 = 0.4d0

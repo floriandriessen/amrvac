@@ -48,10 +48,12 @@
  &hd_list
   hd_gravity = .false.
   hd_energy = .true.
-  hd_gamma = 1.6667d0
   hd_radiation_fld = .true.
-  eq_state_units=.true.
   SI_unit=.false.
+ /
+
+ &eos_list
+  gamma = 1.6667d0
   He_abundance = 0.1d0
  /
 

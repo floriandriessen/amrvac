@@ -1,5 +1,6 @@
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   use mod_fld
   use mod_multigrid_coupling
     
@@ -85,7 +86,7 @@ contains
 
     if(first.and.mype==0) then
       print *,'BrioWu test'
-      print *,'bx=',bx,' gamma=',mhd_gamma
+      print *,'bx=',bx,' gamma=',eos%gamma
       print *,'LEFT:  by =',byleft,' bz=',bzleft
       print *,'LEFT:  rho=',rholeft,' p=',pleft
       print *,'LEFT:  T  =',Tleft,' Erad=',arad_norm*(Tleft)**4
@@ -101,7 +102,7 @@ contains
        w(ixG^S,mom(1))   = rholeft*vleft(1)
        w(ixG^S,mom(2))   = rholeft*vleft(2)
        w(ixG^S,mom(3))   = rholeft*vleft(3)
-       w(ixG^S,e_ )      = pleft/(mhd_gamma-1.0d0)+half*(rholeft* &
+       w(ixG^S,e_ )      = pleft/(eos%gamma-1.0d0)+half*(rholeft* &
            (vleft(1)**2+vleft(2)**2+vleft(3)**2)+(bx**2+byleft**2+bzleft**2))
        w(ixG^S,mag(1))  = bx
        w(ixG^S,mag(2))  = byleft
@@ -112,7 +113,7 @@ contains
        w(ixG^S,mom(1))   = rhoright*vright(1)
        w(ixG^S,mom(2))   = rhoright*vright(2)
        w(ixG^S,mom(3))   = rhoright*vright(3)
-       w(ixG^S,e_ )      = pright/(mhd_gamma-1.0d0)+half*(rhoright* &
+       w(ixG^S,e_ )      = pright/(eos%gamma-1.0d0)+half*(rhoright* &
                (vright(1)**2+vright(2)**2+vright(3)**2)+(bx**2+byright**2+bzright**2))
        w(ixG^S,mag(1))  = bx
        w(ixG^S,mag(2))  = byright
@@ -132,7 +133,7 @@ contains
     double precision :: lamb(ixI^S), R(ixI^S)
 
     wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
-    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2)
+    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2,fld_fl)
     w(ixO^S,nw+1)=lamb(ixO^S)
     w(ixO^S,nw+2)=R(ixO^S)
   end subroutine specialvar_output
@@ -143,10 +144,10 @@ contains
   end subroutine specialvarnames_output
 
 
-  subroutine boundary_conditions(qt,ixI^L,ixB^L,iB,w,x)
+  subroutine boundary_conditions(qdt,qt,ixI^L,ixB^L,iB,w,x)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixB^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in)    :: qdt, qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     select case (iB)
@@ -155,7 +156,7 @@ contains
        w(ixB^S,mom(1))   = rholeft*vleft(1)
        w(ixB^S,mom(2))   = rholeft*vleft(2)
        w(ixB^S,mom(3))   = rholeft*vleft(3)
-       w(ixB^S,e_ )      = pleft/(mhd_gamma-1.0d0)+half*(rholeft* &
+       w(ixB^S,e_ )      = pleft/(eos%gamma-1.0d0)+half*(rholeft* &
            (vleft(1)**2+vleft(2)**2+vleft(3)**2)+(bx**2+byleft**2+bzleft**2))
        w(ixB^S,mag(1))  = bx
        w(ixB^S,mag(2))  = byleft
@@ -166,7 +167,7 @@ contains
        w(ixB^S,mom(1))   = rhoright*vright(1)
        w(ixB^S,mom(2))   = rhoright*vright(2)
        w(ixB^S,mom(3))   = rhoright*vright(3)
-       w(ixB^S,e_ )      = pright/(mhd_gamma-1.0d0)+half*(rhoright* &
+       w(ixB^S,e_ )      = pright/(eos%gamma-1.0d0)+half*(rhoright* &
                (vright(1)**2+vright(2)**2+vright(3)**2)+(bx**2+byright**2+bzright**2))
        w(ixB^S,mag(1))  = bx
        w(ixB^S,mag(2))  = byright
@@ -185,9 +186,9 @@ contains
 
     double precision :: Trad(ixI^S),Tgas(ixI^S),pth(ixI^S)
 
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
     call mhd_get_trad(w,x,ixI^L,ixO^L,Trad)
-    call mhd_get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
+    call eos%get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
     w(ixO^S,Tgas_)=Tgas(ixO^S)
     w(ixO^S,Trad_)=Trad(ixO^S)
     w(ixO^S,pres_)=pth(ixO^S)

@@ -2,6 +2,7 @@ module mod_usr
 
   ! Include a physics module
   use mod_hd
+  use mod_eos, only: eos
   use mod_fld
 
   implicit none
@@ -267,13 +268,13 @@ contains
   end function read_initial_conditions
 
 
-  subroutine boundary_conditions(qt,ixI^L,ixB^L,iB,w,x)
+  subroutine boundary_conditions(qdt,qt,ixI^L,ixB^L,iB,w,x)
     use mod_global_parameters
     use mod_opal_opacity
     use mod_fld
 
     integer, intent(in)             :: ixI^L, ixB^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in)    :: qdt, qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     double precision :: kappa(ixI^S), Temp(ixI^S)
@@ -311,7 +312,7 @@ contains
       w(ixB^S,r_e) = (const_rad_a*T_bound**4)/unit_pressure
 
       temp(ixB^S) = (w(ixB^S,r_e)*unit_pressure/const_rad_a)**0.25d0/unit_temperature
-      w(ixB^S,e_) = w(ixB^S,rho_)*temp(ixB^S)/(hd_gamma-1.d0) + half*(w(ixB^S,mom(1))**2+w(ixB^S,mom(2))**2)/w(ixB^S,rho_)
+      w(ixB^S,e_) = w(ixB^S,rho_)*temp(ixB^S)/(eos%gamma-1.d0) + half*(w(ixB^S,mom(1))**2+w(ixB^S,mom(2))**2)/w(ixB^S,rho_)
     
 
    case(2)
@@ -363,11 +364,11 @@ contains
   end subroutine mg_boundary_conditions
 
 
-  subroutine floor_velocity(level,qt,ixI^L,ixO^L,w,x)
+  subroutine floor_velocity(level,qt,qdt,ixI^L,ixO^L,w,x)
     use mod_global_parameters
 
     integer, intent(in)             :: ixI^L,ixO^L,level
-    double precision, intent(in)    :: qt
+    double precision, intent(in)    :: qt, qdt
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
@@ -505,7 +506,7 @@ contains
     !> drho/dt = -2 rho v_r/r
     source(ixO^S,rho_) = -two*w(ixO^S,rho_)*v(ixO^S,rdir)/radius(ixO^S)
 
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
 
     !> dm_r/dt = +(rho*v_p**2 + 2pth)/r -2 (rho*v_r**2 + pth)/r
     !> dm_phi/dt = - 3*rho*v_p m_r/r
@@ -652,7 +653,7 @@ contains
     !> Absolute value of gradient:
     gradv(ixO^S) = abs(gradv(ixO^S))
     !> Get CAK opacities by reading from table
-    call hd_get_temperature_from_etot(w,x,ixI^L,ixO^L,Temp)
+    call eos%get_temperature_from_etot(w,x,ixI^L,ixO^L,Temp)
     {do ix^D=ixOmin^D,ixOmax^D\ }
       rho0 = w(ix^D,rho_)*unit_density
       Temp0 = Temp(ix^D)*unit_temperature
@@ -1031,7 +1032,7 @@ contains
     mass = M_star*(unit_density*unit_length**3.d0)
     call fld_get_opacity(w, x, ixI^L, ixO^L, kappa)
     call fld_get_radflux(w, x, ixI^L, ixO^L, rad_flux, 1)
-    call hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, Tgas)
+    call eos%get_temperature_from_etot(w, x, ixI^L, ixO^L, Tgas)
     call hd_get_trad(w, x, ixI^L, ixO^L, Trad)
     call get_kappa_OPAL(ixI^L,ixO^L,w,x,OPAL)
     call get_kappa_CAK(ixI^L,ixO^L,w,x,CAK)
@@ -1046,7 +1047,7 @@ contains
 
     pp_rf(ixO^S) = two*rad_flux(ixO^S,1)/x(ixO^S,1)*dt
 
-    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nghostcells)
+    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nghostcells,fld_fl)
 
     Lum(ixO^S) = 4*dpi*rad_flux(ixO^S,1)*(x(ixO^S,1)*unit_length)**2*unit_radflux/L_sun
 
@@ -1055,7 +1056,7 @@ contains
     w(ixO^S,i_v1) = w(ixO^S,mom(1))/w(ixO^S,rho_)
     w(ixO^S,i_v2) = w(ixO^S,mom(2))/w(ixO^S,rho_)
     w(ixO^S,i_p) = (w(ixO^S,e_) - 0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1) / w(ixO^S, rho_)) &
-          *(hd_gamma - 1)
+          *(eos%gamma - 1)
 
     w(ixO^S,i_Trad) = Trad(ixO^S)*unit_temperature
     w(ixO^S,i_Tgas) = Tgas(ixO^S)*unit_temperature

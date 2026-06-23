@@ -47,10 +47,8 @@
  /
 
  &hd_list
-  He_abundance = 0.0d0
   hd_gravity = .false.
   hd_energy = .true.
-  hd_gamma = 1.4d0
   hd_radiation_fld = .true.
  /
 
@@ -66,7 +64,12 @@
 
   &shock_list
    rho1 = 1.d-2
-   rho2 = 0.0685847d0 
+   rho2 = 0.0685847d0
    v1 = 1.d9
    T1 = 1.d4
    /
+ &eos_list
+  gamma = 1.4d0
+  He_abundance = 0.0d0
+ /
+

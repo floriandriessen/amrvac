@@ -255,8 +255,8 @@ module mod_solar_atmosphere
 contains
 
   subroutine get_atm_para(h,rho,pth,grav,nh,Tcurve,hc,rhohc,Tem,clamp_low_T)
-    use mod_physics, only: phys_partial_ionization
-    use mod_ionization_degree, only: ionization_is_temperature_only, &
+    use mod_eos_container, only: eos
+    use mod_eos_PI_tables, only: ionization_is_temperature_only, &
         ionization_get_Rfactor_from_temperature
     ! input:h,grav,nh,rho0,Tcurve; output:rho,pth (dimensionless units)
     ! nh -- number of points
@@ -306,7 +306,7 @@ contains
     Te=Te_cgs/unit_temperature
     if(present(Tem)) Tem=Te
 
-    if (phys_partial_ionization) then
+    if (eos%eos_type == 'PI') then
       if (.not. ionization_is_temperature_only()) then
         call get_atm_para_pressure_eos(h, Te, grav, nh, hc, rhohc, rho, pth)
         return
@@ -344,7 +344,7 @@ contains
 
 
   subroutine get_atm_para_pressure_eos(h, T, grav, nh, hc, rhohc, rho, pth)
-    use mod_ionization_degree, only : ionization_state_Tp, ionization_solve_p_Rfactor
+    use mod_eos_PI_tables, only : ionization_state_Tp, ionization_solve_p_Rfactor
 
     integer, intent(in) :: nh
     double precision, intent(in) :: h(nh), T(nh), grav(nh), hc, rhohc

@@ -24,6 +24,7 @@ module mod_usr
 
   ! Include a physics module
   use mod_hd
+  use mod_eos, only: eos
   
   ! Get access to some CAK radiation functionality
   use mod_cak_force, only: set_cak_force_norm, cak_alpha, gayley_qbar
@@ -113,7 +114,7 @@ contains
     gammae = const_kappae_local * lstar/(4.0d0*dpi * const_G * mstar * const_c)
     logg   = log10(const_G * mstar/rstar**2.0d0)
     logge  = logg + log10(1.0d0 - gammae)
-    mumol  = (1.0d0 + 4.0d0*He_abundance)/(2.0d0 + 3.0d0*He_abundance)
+    mumol  = (1.0d0 + 4.0d0*eos%He_abundance)/(2.0d0 + 3.0d0*eos%He_abundance)
     asound = sqrt(twind * kB_cgs/(mumol * mp_cgs))
     heff   = asound**2.0d0 / 10.0d0**logge
     vrotc  = sqrt(const_G * mstar*(1.0d0 - gammae)/rstar)
@@ -151,7 +152,7 @@ contains
       print*, 'critical vrot          = ', vrotc
       print*, 'vrot                   = ', vrot
       print*, 'Eddington gamma        = ', gammae
-      print*, 'adiabatic gamma        = ', hd_gamma
+      print*, 'adiabatic gamma        = ', eos%gamma
       print*, 'isothermal asound      = ', asound
       print*, 'eff. vesc              = ', vesc
       print*, 'CAK vinf               = ', vinf
@@ -214,10 +215,10 @@ contains
     endif
 
     if (hd_energy) then
-      w(ixO^S,p_) = dasound**2.0 * drhobound * (w(ixO^S,rho_)/drhobound)**hd_gamma
+      w(ixO^S,p_) = dasound**2.0 * drhobound * (w(ixO^S,rho_)/drhobound)**eos%gamma
     endif
 
-    call hd_to_conserved(ixI^L,ixO^L,w,x)
+    call eos%to_conserved(ixI^L,ixO^L,w,x)
 
     ! Initialise extra vars at 0
     w(ixO^S,nw-nwextra+1:nw) = 0.0d0
@@ -228,11 +229,11 @@ contains
   ! Special user boundary conditions at inner radial boundary:
   !   vr (extrapolated); rho, vtheta, vphi (fixed)
   !=============================================================================
-  subroutine special_bound(qt,ixI^L,ixB^L,iB,w,x)
+  subroutine special_bound(qdt,qt,ixI^L,ixB^L,iB,w,x)
 
     ! Subroutine arguments
     integer, intent(in)    :: ixI^L, ixB^L, iB
-    real(8), intent(in)    :: qt, x(ixI^S,1:ndim)
+    real(8), intent(in) :: qdt,qt, x(ixI^S,1:ndim)
     real(8), intent(inout) :: w(ixI^S,1:nw)
 
     ! Local variable
@@ -268,12 +269,12 @@ contains
       w(ixB^S,mom(1)) = max(w(ixB^S,mom(1)), -dasound)
 
       if (hd_energy) then
-        w(ixB^S,p_) = dasound**2.0 * drhobound * (w(ixB^S,rho_)/drhobound)**hd_gamma
+        w(ixB^S,p_) = dasound**2.0 * drhobound * (w(ixB^S,rho_)/drhobound)**eos%gamma
       endif
       w(ixBmax1+1^%1ixB^S,mom(1))=w(ixBmax1+1^%1ixB^S,mom(1))*w(ixBmax1+1^%1ixB^S,rho_)
       w(ixBmax1+2^%1ixB^S,mom(1))=w(ixBmax1+2^%1ixB^S,mom(1))*w(ixBmax1+2^%1ixB^S,rho_)
 
-      call hd_to_conserved(ixI^L,ixB^L,w,x)
+      call eos%to_conserved(ixI^L,ixB^L,w,x)
 
     case default
       call mpistop("BC not specified")

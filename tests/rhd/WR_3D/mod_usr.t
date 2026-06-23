@@ -3,6 +3,7 @@ module mod_usr
 
   ! Include a physics module
   use mod_hd
+  use mod_eos, only: eos
   use mod_fld
 
   implicit none
@@ -260,11 +261,11 @@ contains
 !    w(ixI^S,r_e) = w(ixI^S,r_e) - E_gauge + E_out
 !
 !      temp(ixI^S) = (w(ixI^S,r_e)*unit_pressure/const_rad_a)**0.25d0/unit_temperature
-!      w(ixI^S,e_) = w(ixI^S,rho_)*temp(ixI^S)/(hd_gamma-1.d0) + half*w(ixI^S,mom(1))**2/w(ixI^S,rho_)
+!      w(ixI^S,e_) = w(ixI^S,rho_)*temp(ixI^S)/(eos%gamma-1.d0) + half*w(ixI^S,mom(1))**2/w(ixI^S,rho_)
 !
 !
 !    call fld_get_opacity(w, x, ixI^L, ixO^L, kappa)
-!    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nth_for_gradient)
+!    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nth_for_gradient,fld_fl)
 !
 !    w(ixO^S,i_diff_mg) = (const_c/unit_velocity)*lambda(ixO^S)/(kappa(ixO^S)*w(ixO^S,rho_))
 !    w(ixO^S,i_diff_mg) = (const_c/unit_velocity)/(3.d0*kappa(ixO^S)*w(ixO^S,rho_))
@@ -322,13 +323,13 @@ contains
   end function read_initial_conditions
 
 
-  subroutine boundary_conditions(qt,ixI^L,ixB^L,iB,w,x)
+  subroutine boundary_conditions(qdt,qt,ixI^L,ixB^L,iB,w,x)
     use mod_global_parameters
     use mod_opal_opacity
     use mod_fld
 
     integer, intent(in)             :: ixI^L, ixB^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in)    :: qdt, qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     double precision :: kappa(ixI^S), Temp(ixI^S)
@@ -397,7 +398,7 @@ contains
       enddo
 
         temp(ixB^S) = (w(ixB^S,r_e)*unit_pressure/const_rad_a)**0.25d0/unit_temperature
-        w(ixB^S,e_) = w(ixB^S,rho_)*temp(ixB^S)/(hd_gamma-1.d0) + half*(w(ixB^S,mom(1))**2+w(ixB^S,mom(2))**2+w(ixB^S,mom(3))**2)/w(ixB^S,rho_)
+        w(ixB^S,e_) = w(ixB^S,rho_)*temp(ixB^S)/(eos%gamma-1.d0) + half*(w(ixB^S,mom(1))**2+w(ixB^S,mom(2))**2+w(ixB^S,mom(3))**2)/w(ixB^S,rho_)
 
 
    case(2)
@@ -477,11 +478,11 @@ contains
   end subroutine mg_boundary_conditions
 
 
-  subroutine Fix_pressure(level,qt,ixI^L,ixO^L,w,x)
+  subroutine Fix_pressure(level,qt,qdt,ixI^L,ixO^L,w,x)
     use mod_global_parameters
 
     integer, intent(in)             :: ixI^L,ixO^L,level
-    double precision, intent(in)    :: qt
+    double precision, intent(in)    :: qt, qdt
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
@@ -492,18 +493,18 @@ contains
     !  w(ixO^S,rho_) = 1.d-5
     !endwhere
 
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
 
     !if (any(press(ixO^S) .lt. 0.d0)) then
       mean_p = max(sum(pth(ixO^S))/(block_nx1*block_nx2),small_pressure)
       where (pth(ixO^S) .le. small_pressure)
-        w(ixO^S,e_) = mean_p/(hd_gamma - 1) +  0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1)/w(ixO^S,rho_)
+        w(ixO^S,e_) = mean_p/(eos%gamma - 1) +  0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1)/w(ixO^S,rho_)
       end where
     !endif
 
     !> Temperature ceil, Tmax 1d6
     where ((pth(ixO^S)/w(ixO^S,rho_)*unit_temperature) .gt. 1.d6)
-      w(ixO^S,e_) = 1.d6/unit_temperature*w(ixO^S,rho_)/(hd_gamma - 1) &
+      w(ixO^S,e_) = 1.d6/unit_temperature*w(ixO^S,rho_)/(eos%gamma - 1) &
           + 0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1)/w(ixO^S,rho_)
     end where
 
@@ -651,7 +652,7 @@ contains
     !> drho/dt = -2 rho v_r/r
     source(ixO^S,rho_) = -two*w(ixO^S,rho_)*v(ixO^S,rdir)/radius(ixO^S)
 
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
 
     !> dm_r/dt = +(rho*v_p**2 + 2pth)/r -2 (rho*v_r**2 + pth)/r
     !> dm_phi/dt = - 3*rho*v_p m_r/r
@@ -726,7 +727,7 @@ contains
     double precision :: n, rho0, Temp0
 
     !> Get OPAL opacities by reading from table
-      call hd_get_temperature_from_etot(w,x,ixI^L,ixO^L,Temp)
+      call eos%get_temperature_from_etot(w,x,ixI^L,ixO^L,Temp)
 
     {do ix^D=ixOmin^D,ixOmax^D\ }
         rho0 = w(ix^D,rho_)*unit_density
@@ -855,7 +856,7 @@ contains
     gradv(ixO^S) = abs(gradv(ixO^S))
 
     !> Get CAK opacities by reading from table
-      call hd_get_temperature_from_etot(w,x,ixI^L,ixO^L,Temp)
+      call eos%get_temperature_from_etot(w,x,ixI^L,ixO^L,Temp)
 
     {do ix^D=ixOmin^D,ixOmax^D\ }
         rho0 = w(ix^D,rho_)*unit_density
@@ -1242,7 +1243,7 @@ enddo
     call fld_get_opacity(w, x, ixI^L, ixO^L, kappa)
     call fld_get_radflux(w, x, ixI^L, ixO^L, rad_flux,nth_for_gradient)
 
-    call hd_get_temperature_from_etot(w, x, ixI^L, ixO^L, Tgas)
+    call eos%get_temperature_from_etot(w, x, ixI^L, ixO^L, Tgas)
     call hd_get_trad(w, x, ixI^L, ixO^L, Trad)
 
     call get_kappa_OPAL(ixI^L,ixO^L,w,x,OPAL)
@@ -1258,7 +1259,7 @@ enddo
 
     pp_rf(ixO^S) = two*rad_flux(ixO^S,1)/x(ixO^S,1)*dt
 
-    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nth_for_gradient)
+    call fld_get_fluxlimiter(w, x, ixI^L, ixO^L, lambda, fld_R, nth_for_gradient,fld_fl)
 
     Lum(ixO^S) = 4*dpi*rad_flux(ixO^S,1)*(x(ixO^S,1)*unit_length)**2*unit_radflux/L_sun
 
@@ -1268,7 +1269,7 @@ enddo
     w(ixO^S,i_v2) = w(ixO^S,mom(2))/w(ixO^S,rho_)
     w(ixO^S,i_v3) = w(ixO^S,mom(3))/w(ixO^S,rho_)
     w(ixO^S,i_p) = (w(ixO^S,e_) - 0.5d0 * sum(w(ixO^S, mom(:))**2, dim=ndim+1) / w(ixO^S, rho_)) &
-          *(hd_gamma - 1)
+          *(eos%gamma - 1)
 
     w(ixO^S,i_Trad) = Trad(ixO^S)*unit_temperature
     w(ixO^S,i_Tgas) = Tgas(ixO^S)*unit_temperature

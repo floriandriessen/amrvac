@@ -1,5 +1,6 @@
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   use mod_fld
   use mod_multigrid_coupling
 
@@ -91,7 +92,7 @@ contains
 
     if(first.and.mype==0) then
       print *,'Torrilhon test'
-      print *,'bx=',bx,' gamma=',mhd_gamma
+      print *,'bx=',bx,' gamma=',eos%gamma
       print *,'LEFT:  by =',byleft,' bz=',bzleft
       print *,'LEFT:  rho=',rholeft,' p=',pleft
       print *,'LEFT:  T  =',Tleft,' Erad=',arad_norm*(Tleft)**4
@@ -124,7 +125,7 @@ contains
        w(ixG^S,r_e) = arad_norm*(Tright**4.0d0)
     endwhere
 
-    call mhd_to_conserved(ixG^L,ix^L,w,x)
+    call eos%to_conserved(ixG^L,ix^L,w,x)
   end subroutine initonegrid_usr
 
   subroutine refine_shock(igrid,level,ixG^L,ix^L,qt,w,x,refine,coarsen)
@@ -158,7 +159,7 @@ contains
     double precision :: lamb(ixI^S), R(ixI^S)
 
     wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
-    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2)
+    call fld_get_fluxlimiter(wlocal,x,ixI^L,ixO^L,lamb,R,2,fld_fl)
     w(ixO^S,nw+1)=lamb(ixO^S)
     w(ixO^S,nw+2)=R(ixO^S)
   end subroutine specialvar_output
@@ -176,9 +177,9 @@ contains
 
     double precision :: Trad(ixI^S),Tgas(ixI^S),pth(ixI^S)
 
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
     call mhd_get_trad(w,x,ixI^L,ixO^L,Trad)
-    call mhd_get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
+    call eos%get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
     w(ixO^S,Tgas_)=Tgas(ixO^S)
     w(ixO^S,Trad_)=Trad(ixO^S)
     w(ixO^S,pres_)=pth(ixO^S)

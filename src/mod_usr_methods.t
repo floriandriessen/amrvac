@@ -13,6 +13,7 @@ module mod_usr_methods
 
   ! Boundary condition related
   procedure(special_bc), pointer      :: usr_special_bc       => null()
+  procedure(special_prepare_bc), pointer      :: usr_prepare_boundary       => null()
   procedure(special_mg_bc), pointer   :: usr_special_mg_bc    => null()
 
   procedure(internal_bc), pointer     :: usr_internal_bc      => null()
@@ -42,8 +43,10 @@ module mod_usr_methods
 
   ! Source terms
   procedure(source), pointer          :: usr_source           => null()
+  procedure(source), pointer          :: usr_source_after     => null()
   procedure(get_dt), pointer          :: usr_get_dt           => null()
   procedure(phys_gravity), pointer    :: usr_gravity          => null()
+  procedure(sub_get_heating), pointer :: usr_get_heating      => null()
 
   ! Usr defined dust drag force
   procedure(phys_dust_get_dt), pointer :: usr_dust_get_dt     => null()
@@ -125,7 +128,7 @@ module mod_usr_methods
 
      !> special boundary types, users must assign conservative
      !> variables in boundaries
-     subroutine special_bc(qt,ixI^L,ixO^L,iB,w,x)
+     subroutine special_bc(qdt,qt,ixI^L,ixO^L,iB,w,x)
        use mod_global_parameters
        !> Shape of input arrays
        integer, intent(in)             :: ixI^L
@@ -133,9 +136,14 @@ module mod_usr_methods
        integer, intent(in)             :: ixO^L
        !> Integer indicating direction of boundary
        integer, intent(in)             :: iB
-       double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+       double precision, intent(in)    :: qdt,qt, x(ixI^S,1:ndim)
        double precision, intent(inout) :: w(ixI^S,1:nw)
      end subroutine special_bc
+
+     subroutine special_prepare_bc(qt,qdt)
+       use mod_global_parameters
+       double precision, intent(in) :: qt, qdt
+     end subroutine special_prepare_bc
 
      !> Special boundary type for radiation hydrodynamics module, only used to
      !> set the boundary conditions for the radiation energy.
@@ -152,10 +160,10 @@ module mod_usr_methods
     !> want to introduce an extra variable (nwextra, to be distinguished from nwaux)
     !> which can be used to identify the internal boundary region location.
     !> Its effect should always be local as it acts on the mesh.
-    subroutine internal_bc(level,qt,ixI^L,ixO^L,w,x)
+    subroutine internal_bc(level,qt,qdt,ixI^L,ixO^L,w,x)
       use mod_global_parameters
       integer, intent(in)             :: ixI^L,ixO^L,level
-      double precision, intent(in)    :: qt
+      double precision, intent(in)    :: qt, qdt
       double precision, intent(inout) :: w(ixI^S,1:nw)
       double precision, intent(in)    :: x(ixI^S,1:ndim)
     end subroutine internal_bc
@@ -315,7 +323,8 @@ module mod_usr_methods
       use mod_global_parameters
       integer, intent(in)          :: ixI^L, ixO^L, idirmin
       double precision, intent(in) :: w(ixI^S,nw), x(ixI^S,1:ndim)
-      double precision             :: current(ixI^S,7-2*ndir:3), eta(ixI^S)
+      double precision, intent(in) :: current(ixI^S,7-2*ndir:3)
+      double precision, intent(out) :: eta(ixI^S)
     end subroutine special_resistivity
 
 
@@ -601,6 +610,14 @@ module mod_usr_methods
       !endif
 
     end subroutine set_field
+
+    !> Calculate volumetric heating rate for TRAC broadening
+    subroutine sub_get_heating(Qgrid,ixI^L,ixO^L,w,x)
+      use mod_global_parameters
+      integer, intent(in)          :: ixI^L, ixO^L
+      double precision, intent(in) :: x(ixI^S,1:ndim), w(ixI^S,1:nw)
+      double precision, intent(out):: Qgrid(ixI^S)
+    end subroutine sub_get_heating
 
   end interface
 

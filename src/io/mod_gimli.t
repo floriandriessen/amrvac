@@ -214,38 +214,36 @@ contains
 
         filename = trim(base_filename) // "_c.log"
 
-        if (mype == 0) then
-
-            if (.not. visited) then
-            ! Delete the log when not doing a restart run
-                if (restart_from_file == undefined .or. reset_time) then
-                    open(unit=my_unit,file=trim(filename),form='formatted',status='replace')
-                end if
-                visited = .true.
+        if (.not. visited) then
+        ! Delete the log when not doing a restart run
+            if (restart_from_file == undefined .or. reset_time) then
+                open(unit=my_unit,file=trim(filename),form='formatted',status='replace')
+                write(my_unit,'(a)') ''
                 if (mhd_bool == 1) then
-                    write(my_unit,'(a)') 'global_time Tmax Tmin vmax B1max B2max B3max mag_avg'
+                    write(my_unit,'(a)') '#Global_time Tmax Tmin vmax B1max B2max B3max mag_avg'
                 else
-                    write(my_unit,'(a)') 'global_time Tmax Tmin vmax'
+                    write(my_unit,'(a)') '#Global_time Tmax Tmin vmax'
                 end if
             end if
+            visited = .true.
+        end if
 
-            if (mype == 0) then
-                write(filename,"(a)") filename
-                inquire(file=filename,exist=alive)
-                if(alive) then
-                    open(unit=my_unit,file=filename,form='formatted',status='old',access='append')
-                else
-                    open(unit=my_unit,file=filename,form='formatted',status='new')
-                end if
-            end if
+        if (mype == 0) then
+        write(filename,"(a)") filename
+        inquire(file=filename,exist=alive)
+        if(alive) then
+            open(unit=my_unit,file=filename,form='formatted',status='old',access='append')
+        else
+            open(unit=my_unit,file=filename,form='formatted',status='new')
+        endif
 
-            ! if number of output doubles is increase, don't forget to change the fmt_string above
-            if (mhd_bool == 1) then
-                write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax, B1max, B2max, B3max, magn_avg
-            else
-                write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax
-            end if
-            close(my_unit)
+        ! if number of output doubles is increase, don't forget to change the fmt_string above
+        if (mhd_bool == 1) then
+            write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax, B1max, B2max, B3max, magn_avg
+        else
+            write(my_unit, fmt_string) global_time, Tmax, Tmin, vmax
+        end if
+        close(my_unit)
         end if
     end subroutine analytics_log
 
@@ -261,14 +259,14 @@ contains
     ! Calculate both min and max of temperature on grid in one go.
     subroutine get_minmax_temperature(Tmax, Tmin)
         use mod_global_parameters
-        use mod_physics, only: phys_get_pthermal, phys_get_rho, phys_get_Rfactor
+        use mod_physics, only: phys_get_pthermal, phys_get_rho
 
         double precision, intent(out) :: Tmax, Tmin
 
-        integer                       :: iigrid, igrid
+        integer                       :: iigrid, igrid, iw
         double precision              :: Tmax_mype, Tmax_recv, Tmin_mype, Tmin_recv
-        double precision              :: wlocal(ixG^T,1:nw), xlocal(ixG^T,1:ndim)
-        double precision              :: Te(ixG^T), pth(ixG^T), rho(ixG^T), Rfactor(ixG^T)
+        double precision              :: w(ixG^T,1:nw), wlocal(ixG^T,1:nw), xlocal(ixG^T,1:nw)
+        double precision              :: Te(ixG^T), pth(ixG^T), rho(ixG^T)
 
         Tmax_mype = -bigdouble
         Tmin_mype = bigdouble
@@ -281,8 +279,7 @@ contains
             xlocal(ixG^T,1:ndim) = ps(igrid)%x(ixG^T,1:ndim)
             call phys_get_pthermal(wlocal,xlocal,ixG^LL,ixG^LL,pth)
             call phys_get_rho(wlocal,xlocal,ixG^LL,ixG^LL,rho)
-            call phys_get_Rfactor(wlocal,xlocal,ixG^LL,ixG^LL,Rfactor)
-            Te(ixG^T) = pth(ixG^T)/(rho(ixG^T)*Rfactor(ixG^T))
+            Te(ixG^T) = pth(ixG^T)/rho(ixG^T)
 
             ! Compare values on current grid to temporary max/min
             Tmax_mype = max(Tmax_mype,maxval(Te(ixM^T)))
@@ -306,7 +303,7 @@ contains
 
         double precision, intent(out) :: vmax
 
-        integer                       :: iigrid, igrid
+        integer                       :: iigrid, igrid, iw
         double precision              :: vmax_mype,vmax_recv
         double precision              :: v_vec(ixG^T,1:ndir), v(ixG^T)
 
@@ -337,7 +334,7 @@ contains
 
         double precision, intent(out) :: B1max, B2max, B3max
 
-        integer                       :: iigrid, igrid
+        integer                       :: iigrid, igrid, iw
         double precision              :: B1max_mype, B1max_recv
         double precision              :: B2max_mype, B2max_recv
         double precision              :: B3max_mype, B3max_recv
@@ -368,9 +365,6 @@ contains
         B1max = B1max_recv
         B2max = B2max_recv
         B3max = B3max_recv
-
-        if (B2max == -bigdouble) B2max = 0.d0
-        if (B3max == -bigdouble) B3max = 0.d0
 
     end subroutine get_max_B
 

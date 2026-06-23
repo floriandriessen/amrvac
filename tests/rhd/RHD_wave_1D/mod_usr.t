@@ -2,6 +2,7 @@ module mod_usr
 
   ! Include a physics module
   use mod_hd
+  use mod_eos, only: eos
   use mod_fld
 
   implicit none
@@ -77,7 +78,7 @@ contains
 113    close(unitpar)
     end do
 
-    p0 = eg0*(hd_gamma - one)
+    p0 = eg0*(eos%gamma - one)
     if(mype==0)then
     print *,'============================================'
     write(*,*) 'INPUT GIVEN IN cgs units is'
@@ -101,12 +102,12 @@ contains
     T0_norm   = p0_norm/(rho0_norm*RR)
     Er0_norm = arad_norm*T0_norm**4.d0
     
-    csound_norm=dsqrt(hd_gamma*p0/rho0)/unit_velocity
+    csound_norm=dsqrt(eos%gamma*p0/rho0)/unit_velocity
 
     if(mype==0)then
     write(*,*) 'derived dimensionless rad/gas energy ratio =',Er0_norm/eg0_norm
-    write(*,*) 'derived ratio r=E/(4gamma e) =',Er0_norm/(4.d0*hd_gamma*eg0_norm)
-    write(*,*) 'derived Boltzmann ratio Bo=4 gamma cs e/(cE) =',4.0d0*hd_gamma*csound_norm*eg0_norm/(c_norm*Er0_norm)
+    write(*,*) 'derived ratio r=E/(4gamma e) =',Er0_norm/(4.d0*eos%gamma*eg0_norm)
+    write(*,*) 'derived Boltzmann ratio Bo=4 gamma cs e/(cE) =',4.0d0*eos%gamma*csound_norm*eg0_norm/(c_norm*Er0_norm)
     endif
 
     ! here we compute the wave-related parameters
@@ -122,7 +123,7 @@ contains
     wavenumber=2.0d0*dpi/wvlength
     omega=wavenumber*csound_norm
     A_v   = A_rho*omega/wavenumber
-    A_p   = hd_gamma*p0_norm*A_rho
+    A_p   = eos%gamma*p0_norm*A_rho
 
     if(mype==0)then
     print *,'wavelength in physical units is=',wvlength*unit_length
@@ -166,10 +167,10 @@ contains
 
   end subroutine initial_conditions
 
-  subroutine Initialize_Wave(level,qt,ixI^L,ixO^L,w,x)
+  subroutine Initialize_Wave(level,qt,qdt,ixI^L,ixO^L,w,x)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L,ixO^L,level
-    double precision, intent(in)    :: qt
+    double precision, intent(in)    :: qt, qdt
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
@@ -186,7 +187,7 @@ contains
       w(ixI^S, mom(3)) = 0.d0
       }
       w(ixI^S, mom(1)) = w(ixI^S,rho_)*vel(ixI^S)
-      w(ixI^S, e_)     = pres(ixI^S)/(hd_gamma-1.0d0)+half*w(ixI^S,rho_)*vel(ixI^S)**2
+      w(ixI^S, e_)     = pres(ixI^S)/(eos%gamma-1.0d0)+half*w(ixI^S,rho_)*vel(ixI^S)**2
       w(ixI^S, r_e)    = arad_norm*(pres(ixI^S)/(w(ixI^S,rho_)*RR))**4
     endwhere
 
@@ -200,9 +201,9 @@ contains
 
     double precision :: Trad(ixI^S),Tgas(ixI^S),pth(ixI^S)
 
-    call hd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
     call hd_get_trad(w,x,ixI^L,ixO^L,Trad)
-    call hd_get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
+    call eos%get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
     w(ixO^S,Tgas_)=Tgas(ixO^S)
     w(ixO^S,Trad_)=Trad(ixO^S)
     w(ixO^S,pres_)=pth(ixO^S)

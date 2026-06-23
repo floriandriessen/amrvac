@@ -1,5 +1,6 @@
 module mod_usr
-  use mod_mhd 
+  use mod_rmhd
+  use mod_eos, only: eos
 
   implicit none
 
@@ -49,13 +50,6 @@ contains
     ! Active the physics module
     call mhd_activate() 
 
-    ! to add selected variables to the .dat file
-    Tgas_ = var_set_extravar("Tgas", "Tgas")
-    Trad_ = var_set_extravar("Trad", "Trad")
-    pres_ = var_set_extravar("pres", "pres")
-    velx_ = var_set_extravar("velx", "velx")
-    amr_ = var_set_extravar("level", "level")
-
   end subroutine usr_init
 
   subroutine set_params_and_mg_boundary_conds()
@@ -73,8 +67,10 @@ contains
 
     eg0_norm =p0_norm/(mhd_gamma-1.0d0)+half*(Bx0_n**2+By0_n**2+Bz0_n**2) 
 
-    csound_norm=dsqrt(mhd_gamma*p0/rho0)/unit_velocity
-    vax_norm=dsqrt(Bx0_n**2/rho0_norm)
+    eg0 = p0/(eos%gamma - one) + half*(B0x*B0x + B0y*B0y + B0z*B0z)/(4.0*dpi) 
+    ca = dsqrt(eos%gamma*p0/rho0) 
+    a0 = dsqrt(p0/rho0)
+    ca = a0 !isothermal
 
     va_norm = dsqrt((Bx0_n**2 + By0_n**2+ Bz0_n**2)/rho0_norm)
 
@@ -88,12 +84,44 @@ contains
     p0_by_Er0 = p0_norm/Er0_norm 
     p0_by_p0_B = p0_norm/p0_B 
 
-    if(mype==0)then
-      write(*,*) 'derived dimensionless rad/gas energy ratio =',Er0_norm/eg0_norm
-      write(*,*) 'derived ratio r=E/(4gamma e) =',Er0_norm/(4.d0*mhd_gamma*eg0_norm)
-      write(*,*) 'derived Boltzmann ratio Bo=4 gamma cs e/(cE) =',4.0d0*mhd_gamma*csound_norm*eg0_norm/(c_norm*Er0_norm)
-      print*, 'derived ratio p0_by_Er0', p0_by_Er0
-      print*, 'derived ratio (inverse plasma beta) p0_by_p0_B', p0_by_p0_B
+    cslow = dsqrt(0.5d0*((va*va + ca*ca) - dsqrt((va*va + ca*ca)*(va*va + ca*ca) - 4.0d0*ca*ca*vax*vax)))
+    cfast = dsqrt(0.5d0*((va*va + ca*ca) + dsqrt((va*va + ca*ca)*(va*va + ca*ca) - 4.0d0*ca*ca*vax*vax)))
+
+    wvl = tau_wave/(rho0*fld_kappa0)
+    omega = 2.d0*dpi*cslow/wvl
+    wavenumber = 2.d0*dpi/wvl
+
+    Bo = 4*eos%gamma*ca*eg0/(const_c*Er0) 
+    r_Bo = Er0/(4*eos%gamma*eg0)
+
+    !-------------------
+    tau_c = const_c*fld_kappa0*rho0/omega
+    tau_a = a0*fld_kappa0*rho0/omega
+
+    if (mype .eq. 0) then
+      print*, 'rho0', rho0
+      print*, 'p0', p0
+      print*, 'ca', ca
+      print*, 'a0', a0
+      print*, 'eg0', eg0
+      print*, 'T0', T0
+      print*, 'va', va
+      print*, 'vax', vax
+      print*, 'cslow', cslow
+      print*, 'cfast', cfast
+      print*, 'wvl', wvl
+      print*, 'omega', omega
+      print*, 'wavenumber', wavenumber
+      print*, 'Bo', Bo
+      print*, 'r_Bo', r_Bo
+      print*, 'B0x', B0x
+      print*, 'B0y', B0y
+      print*, 'B0z', B0z
+      print*, 'p0_B', p0_B
+      print*, 'Er0', Er0
+      print*, 'Er for radiative equilibrium', (const_rad_a*(T0**4.d0))
+      print*, 'p0_by_Er0', p0_by_Er0
+      print*, 'p0_by_p0_B', p0_by_p0_B
     endif
 
     ! here we compute the wave-related parameters
@@ -121,24 +149,19 @@ contains
       A_vy = (By0_n/Bx0_n)*(omega/wavenumber)*(ampl/rho0_norm)/(1.0d0 - (omega**2)/((vax**2)*(wavenumber**2)))
       A_vz = (Bz0_n/Bx0_n)*(omega/wavenumber)*(ampl/rho0_norm)/(1.0d0 - (omega**2)/((vax**2)*(wavenumber**2)))
     endif
-    A_Er = 0.0d0 
-    A_e = A_p/(mhd_gamma-one) + By0_n*A_By + Bz0_n*A_Bz
-  
-    if(mype==0)then
-    print *,'wavelength in physical units is=',wvlength*unit_length
-    write(*,*) 'derived dimensionless wavelength for wave =',wvlength
-    write(*,*) 'derived dimensionless omega and k for wave =',omega,wavenumber
-    write(*,*) 'normalized sound speed is   =',csound_norm
-    write(*,*) 'normalized alfven x speed is=',vax_norm
-    write(*,*) 'normalized alfven   speed is=',va_norm
-    write(*,*) 'normalized slow     speed is=',cslow_n
-    write(*,*) 'normalized fast     speed is=',cfast_n
-    write(*,*) 'check on input and derivation based on ',rho_kappa_lambda,rho0,unit_density,fld_kappa0
-    write(*,*) 'dispersion relation asks for omega=',omega,' to equal k= ',wavenumber,' times vax=',vax_norm
-    write(*,*) 'and sets amplitude perturbations A_rho-A_p=',A_rho,A_p
-    write(*,*) 'and sets amplitude perturbations A_vx,A_vy,A_vz=',A_vx,A_vy,A_vz
-    write(*,*) 'and sets amplitude perturbations A_By,A_Bz=',A_By,A_Bz
-    write(*,*) 'and sets amplitude perturbations A_e,A_Er=',A_e,A_Er
+    A_Er = 0.0d0 !4.0d0*Er0*(A_p/p0 - A_rho/rho0)
+    A_e = A_p/(eos%gamma-one) + B0y*A_By + B0z*A_Bz
+
+    if (mype .eq. 0) then
+      print*, 'A_rho', A_rho
+      print*, 'A_v', A_v
+      print*, 'A_p', A_p
+      print*, 'A_e', A_e
+      print*, 'A_Er', A_Er
+      print*, 'A_By', A_By
+      print*, 'A_Bz', A_Bz
+      print*, 'A_vy', A_vy
+      print*, 'A_vz', A_vz
     endif
 
   end subroutine set_params_and_mg_boundary_conds
@@ -247,6 +270,26 @@ contains
     integer, intent(in)             :: ixI^L,ixO^L
     double precision, intent(in)    :: qt,x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
+    integer :: ii
+    select case (iB)
+    case(2)
+      !> Convert energy to pressure
+      call eos%to_primitive(ixI^L,ixB^L,w,x)
+      !w(ixBmin1,rho_) = w(ixBmin1-1,rho_)
+      !w(ixBmin1,mom(1)) = w(ixBmin1-1,mom(1))
+      !w(ixBmin1,mom(2)) = w(ixBmin1-1,mom(2))
+      !w(ixBmin1,mom(3)) = w(ixBmin1-1,mom(3))
+      !w(ixBmin1,e_) = w(ixBmin1-1,e_)
+      !w(ixBmin1,mag(1)) = w(ixBmin1-1,mag(1))
+      !w(ixBmin1,mag(2)) = w(ixBmin1-1,mag(2))
+      !w(ixBmin1,mag(3)) = w(ixBmin1-1,mag(3))
+      w(ixBmin1,r_e) = Er0 !w(ixBmin1-1,r_e)
+      !> Convert pressure to energy
+      call eos%to_conserved(ixI^L,ixB^L,w,x)
+    case default
+      call mpistop('boundary not known')
+      end select
+  end subroutine boundary_conditions
 
     double precision :: Trad(ixI^S),Tgas(ixI^S),pth(ixI^S)
 

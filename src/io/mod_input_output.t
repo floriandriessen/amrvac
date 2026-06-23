@@ -1,6 +1,7 @@
 !> Module for reading input and writing output
 module mod_input_output
   use mod_comm_lib, only: mpistop
+  use mod_basic_types, only: name_len
 
   implicit none
   public
@@ -8,6 +9,9 @@ module mod_input_output
 
   !> coefficient for rk2_alfa
   double precision, private :: rk2_alfa
+
+  !> debug field-dump variable names (set by debug_alloc, used by save_wdebug)
+  character(len=name_len), allocatable :: wdebug_names(:)
 
   !> List of compatible versions
   integer, parameter :: compatible_versions(3) = [3, 4, 5]
@@ -179,6 +183,7 @@ contains
     use mod_geometry
     use mod_source
     use mod_input_output_helper, only: get_names_from_string
+    use mod_timing, only: write_timing_log, timing_log_interval
 
     double precision, dimension(nsavehi) :: tsave_log, tsave_dat, tsave_slice, &
          tsave_collapsed, tsave_custom
@@ -246,7 +251,8 @@ contains
          dtsave_log, dtsave_dat, dtsave_slice, dtsave_collapsed, dtsave_custom, &
          ditsave_log, ditsave_dat, ditsave_slice, ditsave_collapsed, ditsave_custom,&
          tsavestart_log, tsavestart_dat, tsavestart_slice, tsavestart_collapsed,&
-         tsavestart_custom, tsavestart
+         tsavestart_custom, tsavestart, &
+         write_timing_log, timing_log_interval
 
     namelist /stoplist/ it_init,time_init,it_max,time_max,dtmin,reset_it,reset_time,&
          wall_time_max,final_dt_reduction
@@ -276,7 +282,8 @@ contains
          amr_wavefilter,max_blocks,block_nx^D,domain_nx^D,iprob,xprob^L, &
          w_refine_weight, prolongprimitive,coarsenprimitive, &
          typeprolonglimit, &
-         logflag,tfixgrid,itfixgrid,ditregrid
+         logflag,tfixgrid,itfixgrid,ditregrid, &
+         lb_diagnose,lb_automatic,lb_interval,lb_alpha
     namelist /paramlist/  courantpar, dtpar, dtdiffpar, &
          typecourant, slowsteps
 
@@ -1644,8 +1651,10 @@ contains
       boundspeed=2
     case('cmaxleftright')
       boundspeed=3
+    case('pvrs')
+      boundspeed=4
     case default
-      call mpistop("set typeboundspeed='Einfeldt' or 'cmaxmean' or 'cmaxleftright'")
+      call mpistop("set typeboundspeed='Einfeldt' or 'cmaxmean' or 'cmaxleftright' or 'pvrs'")
     end select
 
     if (mype==0) write(unitterm, '(A30)', advance='no') 'Refine estimation: '
@@ -2178,6 +2187,127 @@ contains
 
     call MPI_BARRIER(icomm, ierrmpi)
   end subroutine write_snapshot
+
+  !> Enable the debug field dump: register n named slots. Capture fields with
+  !> ps(igrid)%wdebug(...,islot) anywhere in a block loop (lazy per-block
+  !> allocation at the capture site), then flush with save_wdebug.
+  subroutine debug_alloc(n, names)
+    use mod_global_parameters
+    integer, intent(in)          :: n
+    character(len=*), intent(in) :: names(n)
+    integer :: i
+    n_wdebug = n
+    if (allocated(wdebug_names)) deallocate(wdebug_names)
+    allocate(wdebug_names(n))
+    do i = 1, n
+      wdebug_names(i) = trim(adjustl(names(i)))
+    end do
+    wdebug_on = .true.
+  end subroutine debug_alloc
+
+  !> Flush ps(:)%wdebug to a standalone cell-centred .dat (no staggered),
+  !> readable by the standard AMRVAC .dat readers. Collective; call at a
+  !> barrier-safe point (end of a step), NOT inside a block loop.
+  subroutine save_wdebug(suffix)
+    use mod_forest
+    use mod_global_parameters
+    use mod_physics
+    use mod_input_output_helper, only: count_ix, block_shape_io, create_output_file, snapshot_write_header1
+    use mod_functions_forest, only: write_forest
+    character(len=*), intent(in)  :: suffix
+    logical                       :: stagger_save
+    double precision, allocatable :: w_buffer(:)
+    integer                       :: file_handle, igrid, Morton_no, iwrite
+    integer                       :: ipe, ix_buffer(2*ndim+1), n_values
+    integer                       :: ixO^L, n_ghost(2*ndim)
+    integer                       :: iorecvstatus(MPI_STATUS_SIZE)
+    integer                       :: igrecvstatus(MPI_STATUS_SIZE)
+    integer                       :: istatus(MPI_STATUS_SIZE)
+    integer(kind=MPI_OFFSET_KIND) :: offset_tree_info, offset_block_data, offset_offsets
+    integer, allocatable          :: block_ig(:, :), block_lvl(:)
+    integer(kind=MPI_OFFSET_KIND), allocatable :: block_offset(:)
+    type(tree_node), pointer      :: pnode
+
+    if (n_wdebug <= 0) return
+    call MPI_BARRIER(icomm, ierrmpi)
+
+    n_values = count_ix(ixG^LL) * n_wdebug
+    allocate(w_buffer(n_values))
+    allocate(block_ig(ndim, nleafs), block_lvl(nleafs), block_offset(nleafs+1))
+
+    if (mype == 0) then
+      call create_output_file(file_handle, it, ".dat", trim(suffix))
+      offset_tree_info = -1; offset_block_data = -1
+      stagger_save = stagger_grid; stagger_grid = .false.
+      call snapshot_write_header1(file_handle, offset_tree_info, offset_block_data, wdebug_names, n_wdebug)
+      stagger_grid = stagger_save
+      call MPI_File_get_position(file_handle, offset_tree_info, ierrmpi)
+      call write_forest(file_handle)
+      do Morton_no = Morton_start(0), Morton_stop(npe-1)
+        igrid = sfc(1, Morton_no); ipe = sfc(2, Morton_no)
+        pnode => igrid_to_node(igrid, ipe)%node
+        block_ig(:, Morton_no) = [ pnode%ig^D ]
+        block_lvl(Morton_no) = pnode%level
+        block_offset(Morton_no) = 0
+      end do
+      call MPI_FILE_WRITE(file_handle, block_lvl, size(block_lvl), MPI_INTEGER, istatus, ierrmpi)
+      call MPI_FILE_WRITE(file_handle, block_ig, size(block_ig), MPI_INTEGER, istatus, ierrmpi)
+      call MPI_File_get_position(file_handle, offset_offsets, ierrmpi)
+      call MPI_FILE_WRITE(file_handle, block_offset(1:nleafs), nleafs, MPI_OFFSET, istatus, ierrmpi)
+      call MPI_File_get_position(file_handle, offset_block_data, ierrmpi)
+      block_offset(1) = offset_block_data
+      iwrite = 0
+    end if
+
+    do Morton_no = Morton_start(mype), Morton_stop(mype)
+      igrid = sfc_to_igrid(Morton_no); itag = Morton_no
+      call block_shape_io(igrid, n_ghost, ixO^L, n_values)
+      n_values = count_ix(ixO^L) * n_wdebug
+      if (allocated(ps(igrid)%wdebug)) then
+        w_buffer(1:n_values) = pack(ps(igrid)%wdebug(ixO^S, 1:n_wdebug), .true.)
+      else
+        w_buffer(1:n_values) = 0.0d0
+      end if
+      ix_buffer(1) = n_values
+      ix_buffer(2:) = n_ghost
+      if (mype /= 0) then
+        call MPI_SEND(ix_buffer, 2*ndim+1, MPI_INTEGER, 0, itag, icomm, ierrmpi)
+        call MPI_SEND(w_buffer, n_values, MPI_DOUBLE_PRECISION, 0, itag, icomm, ierrmpi)
+      else
+        iwrite = iwrite+1
+        call MPI_FILE_WRITE(file_handle, ix_buffer(2:), 2*ndim, MPI_INTEGER, istatus, ierrmpi)
+        call MPI_FILE_WRITE(file_handle, w_buffer, n_values, MPI_DOUBLE_PRECISION, istatus, ierrmpi)
+        block_offset(iwrite+1) = block_offset(iwrite) + &
+             int(n_values, MPI_OFFSET_KIND) * size_double + 2 * ndim * size_int
+      end if
+    end do
+
+    if (mype == 0) then
+      do ipe = 1, npe-1
+        do Morton_no = Morton_start(ipe), Morton_stop(ipe)
+          iwrite = iwrite+1; itag = Morton_no
+          call MPI_RECV(ix_buffer, 2*ndim+1, MPI_INTEGER, ipe, itag, icomm, igrecvstatus, ierrmpi)
+          n_values = ix_buffer(1)
+          call MPI_RECV(w_buffer, n_values, MPI_DOUBLE_PRECISION, ipe, itag, icomm, iorecvstatus, ierrmpi)
+          call MPI_FILE_WRITE(file_handle, ix_buffer(2:), 2*ndim, MPI_INTEGER, istatus, ierrmpi)
+          call MPI_FILE_WRITE(file_handle, w_buffer, n_values, MPI_DOUBLE_PRECISION, istatus, ierrmpi)
+          block_offset(iwrite+1) = block_offset(iwrite) + &
+               int(n_values, MPI_OFFSET_KIND) * size_double + 2 * ndim * size_int
+        end do
+      end do
+      call MPI_FILE_SEEK(file_handle, offset_offsets, MPI_SEEK_SET, ierrmpi)
+      call MPI_FILE_WRITE(file_handle, block_offset(1:nleafs), nleafs, MPI_OFFSET, istatus, ierrmpi)
+      call MPI_FILE_SEEK(file_handle, 0_MPI_OFFSET_KIND, MPI_SEEK_SET, ierrmpi)
+      stagger_save = stagger_grid; stagger_grid = .false.
+      call snapshot_write_header1(file_handle, offset_tree_info, offset_block_data, wdebug_names, n_wdebug)
+      stagger_grid = stagger_save
+      call MPI_FILE_CLOSE(file_handle, ierrmpi)
+    end if
+    deallocate(w_buffer, block_ig, block_lvl, block_offset)
+    call MPI_BARRIER(icomm, ierrmpi)
+    if (mype==0) write(*,*) 'save_wdebug: wrote ', n_wdebug, ' field(s) suffix=', trim(suffix), ' it=', it
+  end subroutine save_wdebug
+
 
   !> Routine to read in snapshots (.dat files). When it cannot recognize the
   !> file version, it will automatically try the 'old' reader.

@@ -7,6 +7,11 @@ module mod_advance
   !> Whether to conserve fluxes at the current sub-step
   logical :: fix_conserve_at_step = .true.
 
+  !> Per-rank compute-only accumulator for lb_diagnose (sums the iigrid
+  !> block-loop wall time across all substages within one full advance call,
+  !> excluding ghostcell exchanges and flux conservation collectives).
+  double precision :: lb_compute_accum = 0.0d0
+
   public :: advance
   public :: process
   public :: process_advanced
@@ -17,14 +22,71 @@ contains
   subroutine advance(iit)
     use mod_global_parameters
     use mod_particles, only: handle_particles
+    use mod_eos
     use mod_source, only: add_split_source
+    use mod_supertimestepping, only: lb_tc_accum
+    use mod_radiative_cooling, only: lb_cool_accum
 
     integer, intent(in) :: iit
 
     integer :: iigrid, igrid, idimsplit
 
+    ! ---- per-rank load-balance diagnostic (gated by lb_diagnose) ----
+    double precision :: t_advance_start, t_advance_local
+    double precision :: t_dummy(1)
+    double precision, allocatable, save :: t_all_ranks(:)
+    double precision, allocatable, save :: c_all_ranks(:)
+    double precision, allocatable, save :: tc_all_ranks(:)
+    double precision, allocatable, save :: cool_all_ranks(:)
+    double precision :: cmax, cmean, ratioc
+    double precision :: tcmax, tcmean, ratiotc
+    double precision :: coolmax, coolmean, ratiocool
+    integer, save :: lb_log_unit = -1
+    logical, save :: lb_first_call = .true.
+    integer :: ipe
+    double precision :: tmax, tmean, ratio
+    character(len=256) :: lb_log_name
+    ! ----------------------------------------------------------------
+
+    if (lb_diagnose) then
+      if (lb_first_call .and. mype==0) then
+        allocate(t_all_ranks(npe))
+        allocate(c_all_ranks(npe))
+        allocate(tc_all_ranks(npe))
+        allocate(cool_all_ranks(npe))
+        write(lb_log_name,'(a,a)') trim(base_filename), 'rank_timing.log'
+        open(newunit=lb_log_unit, file=trim(lb_log_name), status='replace', action='write')
+        write(lb_log_unit,'(a)',advance='no') '# it time '
+        do ipe=0,npe-1
+          write(lb_log_unit,'(a,i0,a)',advance='no') 't_rank',ipe,' '
+        end do
+        do ipe=0,npe-1
+          write(lb_log_unit,'(a,i0,a)',advance='no') 'c_rank',ipe,' '
+        end do
+        do ipe=0,npe-1
+          write(lb_log_unit,'(a,i0,a)',advance='no') 't_tc_rank',ipe,' '
+        end do
+        do ipe=0,npe-1
+          write(lb_log_unit,'(a,i0,a)',advance='no') 't_cool_rank',ipe,' '
+        end do
+        write(lb_log_unit,'(a)') 'tmax tmean R cmax cmean Rc tcmax tcmean Rtc coolmax coolmean Rcool'
+        flush(lb_log_unit)
+        lb_first_call = .false.
+      else if (lb_first_call) then
+        lb_first_call = .false.
+      end if
+      t_advance_start = MPI_WTIME()
+      lb_compute_accum = 0.0d0
+      lb_tc_accum = 0.0d0
+      lb_cool_accum = 0.0d0
+    end if
+
+    ! Per-block cost reset for the cost-weighted load balancer.
+    ! Cleared every step before the iigrid loops fill it.
+    if (lb_automatic) block_cost = 0.0d0
+
     ! split source addition
-    call add_split_source(prior=.true.)
+    call add_split_source(prior=.true.) !> calculates temperature based on conservative state
 
     if(dimsplit) then
        if((iit/2)*2==iit .or. typedimsplit=='xy') then
@@ -45,9 +107,88 @@ contains
     end if
 
     ! split source addition
-    call add_split_source(prior=.false.)
+    call add_split_source(prior=.false.) !> calculates temperature based on conservative state
 
     if(use_particles) call handle_particles
+
+    !$OMP PARALLEL DO PRIVATE(igrid)
+    do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
+      call eos%update_eos(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)
+    end do
+    !$OMP END PARALLEL DO
+
+    ! Cost-weighted load balancer: per-block measurements in block_cost
+    ! (per-rank, per-igrid) are folded into the global Morton-indexed
+    ! costlist via EWMA blend inside get_Morton_range_costed when
+    ! load_balance is next invoked. No end-of-advance work needed here.
+
+    if (lb_diagnose) then
+      t_advance_local = MPI_WTIME() - t_advance_start
+      if (mype==0) then
+        call MPI_GATHER(t_advance_local,1,MPI_DOUBLE_PRECISION, &
+                        t_all_ranks,1,MPI_DOUBLE_PRECISION,0,icomm,ierrmpi)
+        call MPI_GATHER(lb_compute_accum,1,MPI_DOUBLE_PRECISION, &
+                        c_all_ranks,1,MPI_DOUBLE_PRECISION,0,icomm,ierrmpi)
+        call MPI_GATHER(lb_tc_accum,1,MPI_DOUBLE_PRECISION, &
+                        tc_all_ranks,1,MPI_DOUBLE_PRECISION,0,icomm,ierrmpi)
+        call MPI_GATHER(lb_cool_accum,1,MPI_DOUBLE_PRECISION, &
+                        cool_all_ranks,1,MPI_DOUBLE_PRECISION,0,icomm,ierrmpi)
+        tmax = maxval(t_all_ranks)
+        tmean = sum(t_all_ranks)/dble(npe)
+        cmax = maxval(c_all_ranks)
+        cmean = sum(c_all_ranks)/dble(npe)
+        tcmax = maxval(tc_all_ranks)
+        tcmean = sum(tc_all_ranks)/dble(npe)
+        coolmax = maxval(cool_all_ranks)
+        coolmean = sum(cool_all_ranks)/dble(npe)
+        if (tmean > 0.0d0) then
+          ratio = tmax/tmean
+        else
+          ratio = 1.0d0
+        end if
+        if (cmean > 0.0d0) then
+          ratioc = cmax/cmean
+        else
+          ratioc = 1.0d0
+        end if
+        if (tcmean > 0.0d0) then
+          ratiotc = tcmax/tcmean
+        else
+          ratiotc = 1.0d0
+        end if
+        if (coolmean > 0.0d0) then
+          ratiocool = coolmax/coolmean
+        else
+          ratiocool = 1.0d0
+        end if
+        write(lb_log_unit,'(i10,1x,es16.8,1x)',advance='no') it, global_time
+        do ipe=1,npe
+          write(lb_log_unit,'(es14.6,1x)',advance='no') t_all_ranks(ipe)
+        end do
+        do ipe=1,npe
+          write(lb_log_unit,'(es14.6,1x)',advance='no') c_all_ranks(ipe)
+        end do
+        do ipe=1,npe
+          write(lb_log_unit,'(es14.6,1x)',advance='no') tc_all_ranks(ipe)
+        end do
+        do ipe=1,npe
+          write(lb_log_unit,'(es14.6,1x)',advance='no') cool_all_ranks(ipe)
+        end do
+        write(lb_log_unit,'(12(es14.6,1x))') &
+             tmax, tmean, ratio, cmax, cmean, ratioc, &
+             tcmax, tcmean, ratiotc, coolmax, coolmean, ratiocool
+        flush(lb_log_unit)
+      else
+        call MPI_GATHER(t_advance_local,1,MPI_DOUBLE_PRECISION, &
+                        t_dummy,1,MPI_DOUBLE_PRECISION,0,icomm,ierrmpi)
+        call MPI_GATHER(lb_compute_accum,1,MPI_DOUBLE_PRECISION, &
+                        t_dummy,1,MPI_DOUBLE_PRECISION,0,icomm,ierrmpi)
+        call MPI_GATHER(lb_tc_accum,1,MPI_DOUBLE_PRECISION, &
+                        t_dummy,1,MPI_DOUBLE_PRECISION,0,icomm,ierrmpi)
+        call MPI_GATHER(lb_cool_accum,1,MPI_DOUBLE_PRECISION, &
+                        t_dummy,1,MPI_DOUBLE_PRECISION,0,icomm,ierrmpi)
+      end if
+    end if
 
   end subroutine advance
 
@@ -608,6 +749,7 @@ contains
     use mod_ghostcells_update
     use mod_fix_conserve
     use mod_physics
+    use mod_eos
 
     integer, intent(in) :: idim^LIM
     type(state), target :: psa(max_blocks) !< Compute fluxes based on this state
@@ -618,6 +760,7 @@ contains
     integer, intent(in) :: method(nlevelshi)
 
     double precision :: qdt
+    double precision :: lb_t0_advect1, lb_t0_block
     integer :: iigrid, igrid
 
     istep = istep+1
@@ -628,14 +771,19 @@ contains
 
     qdt=dtfactor*dt
     ! opedit: Just advance the active grids:
-    !$OMP PARALLEL DO PRIVATE(igrid)
+    if (lb_diagnose) lb_t0_advect1 = MPI_WTIME()
+    !$OMP PARALLEL DO PRIVATE(igrid,lb_t0_block)
     do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
+      if (lb_automatic) lb_t0_block = MPI_WTIME()
       block=>ps(igrid)
       ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
+      call eos%update_eos(ixG^LL,ixG^LL,psa(igrid)%w,psa(igrid)%x)
       call advect1_grid(igrid,method(block%level),qdt,dtfactor,ixG^LL,idim^LIM,&
         qtC,psa(igrid),qt,psb(igrid),rnode(rpdx1_:rnodehi,igrid),ps(igrid)%x)
+      if (lb_automatic) block_cost(igrid) = block_cost(igrid) + (MPI_WTIME() - lb_t0_block)
     end do
     !$OMP END PARALLEL DO
+    if (lb_diagnose) lb_compute_accum = lb_compute_accum + (MPI_WTIME() - lb_t0_advect1)
 
     ! opedit: Send flux for all grids, expects sends for all
     ! nsend_fc(^D), set in connectivity.t.

@@ -2,6 +2,7 @@
 ! test thermal conduction in a ring
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   implicit none
   double precision :: integral_time=0.d0, k_perp
 
@@ -73,7 +74,7 @@ contains
     w(ixO^S,mag(1))=B(ixO^S)*dcos(theta(ixO^S)+0.5*dpi)
     w(ixO^S,mag(2))=B(ixO^S)*dsin(theta(ixO^S)+0.5*dpi)
 
-    call mhd_to_conserved(ixI^L,ixO^L,w,x)
+    call eos%to_conserved(ixI^L,ixO^L,w,x)
 
   end subroutine initonegrid_usr
 
@@ -90,7 +91,7 @@ contains
 
     double precision :: r(ixI^S), pth(ixI^S)
 
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
     pth(ixO^S)=pth(ixO^S)/w(ixO^S,rho_)
 
     r(ixO^S)=dsqrt(x(ixO^S,1)**2+x(ixO^S,2)**2)
@@ -195,7 +196,7 @@ contains
     double precision :: r(ixI^S), pth(ixI^S),L(ixI^S)
     integer :: ix^D
 
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
     pth(ixO^S)=pth(ixO^S)/w(ixO^S,rho_)
 
     r(ixO^S)=dsqrt(x(ixO^S,1)**2+x(ixO^S,2)**2)
@@ -286,7 +287,7 @@ contains
 
     dxinv=1.d0/dxlevel
 
-    call mhd_get_pthermal(w,x,ixI^L,ixI^L,tmp1)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixI^L,tmp1)
     ! compute the temperature
     Te(ixI^S)=tmp1(ixI^S)/w(ixI^S,rho_)
     ! ixC is cell-corner index
@@ -402,7 +403,7 @@ contains
        winit_nopert(ixI^S,rho_)= 1.0d0
        winit_nopert(ixI^S,mom(1))=0.0d0
        winit_nopert(ixI^S,mom(2))=0.0d0
-       winit_nopert(ixI^S,e_)=1.0d0/(mhd_gamma - 1.0d0)
+       winit_nopert(ixI^S,e_)=1.0d0/(eos%gamma - 1.0d0)
        B(ixI^S)=Busr/r(ixI^S)
        winit_nopert(ixI^S,mag(1))=B(ixI^S)*dcos(theta(ixI^S)+0.5*dpi)
        winit_nopert(ixI^S,mag(2))=B(ixI^S)*dsin(theta(ixI^S)+0.5*dpi)
@@ -417,7 +418,7 @@ contains
     endif
 
     ! now also add extra primitive variables in output dat file
-    call mhd_to_primitive(ixI^L,ixO^L,wlocal,x)
+    call eos%to_primitive(ixI^L,ixO^L,wlocal,x)
     w(ixO^S,temp_)=wlocal(ixO^S,p_)/wlocal(ixO^S,rho_)
     w(ixO^S,press_)=wlocal(ixO^S,p_)
     w(ixO^S,velx_)=wlocal(ixO^S,mom(1))

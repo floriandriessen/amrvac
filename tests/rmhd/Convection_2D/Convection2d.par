@@ -74,14 +74,17 @@
  /
 
  &mhd_list
-        mhd_gamma=1.66666667d0
         mhd_thermal_conduction=.true.
         mhd_viscosity=.true.
         mhd_gravity=.true.
-        He_abundance = 0.d0 
         mhd_energy = .true.
         mhd_radiation_fld = .true.
 /
+
+ &eos_list
+  gamma = 1.66666667d0
+  He_abundance = 0.d0
+ /
 
  &fld_list
         fld_Radforce_split = .false.

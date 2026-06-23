@@ -8,6 +8,7 @@ module mod_ffhd_phys
   use mod_radiative_cooling, only: rc_fluid
   use mod_thermal_emission, only: te_fluid
   use mod_physics
+  use mod_eos
   use mod_comm_lib, only: mpistop
 
   implicit none
@@ -50,10 +51,7 @@ module mod_ffhd_phys
   integer, public, protected              :: ffhd_trac_finegrid=4
 
   !> Whether plasma is partially ionized
-  logical, public, protected              :: ffhd_partial_ionization = .false.
-  character(len=32), public, protected    :: ffhd_ionization_table = "chromosphere"
-  !> Whether hydrogen ionization energy is included in the thermal energy
-  logical, public, protected              :: ffhd_include_ionization_energy = .false.
+
   !> Index of the density (in the w array)
   integer, public, protected              :: rho_
 
@@ -66,13 +64,16 @@ module mod_ffhd_phys
   !> Index of the gas pressure (-1 if not present) should equal e_
   integer, public, protected              :: p_
 
+  !> Indices of temperature and electron number density (LTE stored aux state)
+  integer, public, protected :: Te_
+  integer, public, protected :: Ne_
+
   !> Index of the cutoff temperature for the TRAC method
   integer, public, protected              :: Tcoff_
   integer, public, protected              :: Tweight_
   integer, public, protected              :: q_
 
-  !> The adiabatic index
-  double precision, public                :: ffhd_gamma = 5.d0/3.0d0
+  !> The adiabatic index (now owned by eos%; use eos%gamma)
 
   !> The adiabatic constant
   double precision, public                :: ffhd_adiab = 1.0d0
@@ -80,8 +81,7 @@ module mod_ffhd_phys
   !> The thermal conductivity kappa in hyperbolic thermal conduction
   double precision, public                :: hyperbolic_tc_kappa
 
-  !> Helium abundance over Hydrogen
-  double precision, public, protected  :: He_abundance=0.1d0
+  !> Helium abundance over Hydrogen (now owned by eos%; use eos%He_abundance)
   !> Ionization fraction of H
   !> H_ion_fr = H+/(H+ + H)
   double precision, public, protected  :: H_ion_fr=1d0
@@ -96,12 +96,7 @@ module mod_ffhd_phys
   ! and it is p = RR * rho * T
   double precision, public, protected  :: RR=1d0
   ! remove the below flag  and assume default value = .false.
-  ! when eq state properly implemented everywhere
-  ! and not anymore through units
-  logical, public, protected :: eq_state_units = .true.
 
-  !> gamma minus one and its inverse
-  double precision :: gamma_1, inv_gamma_1
 
   !define the function interface for the kinetic energy
   abstract interface
@@ -118,7 +113,7 @@ module mod_ffhd_phys
 
   procedure(sub_convert), pointer      :: ffhd_to_primitive        => null()
   procedure(sub_convert), pointer      :: ffhd_to_conserved        => null()
-  procedure(sub_small_values), pointer :: ffhd_handle_small_values => null()
+  procedure(sub_small_values), pointer, public :: ffhd_handle_small_values => null()
   procedure(sub_get_pthermal), pointer :: ffhd_get_pthermal        => null()
   procedure(sub_get_pthermal), pointer :: ffhd_get_Rfactor         => null()
   procedure(sub_get_pthermal), pointer :: ffhd_get_temperature     => null()
@@ -127,7 +122,9 @@ module mod_ffhd_phys
   ! Public methods
   public :: ffhd_phys_init
   public :: ffhd_kin_en
+  public :: ffhd_get_ei
   public :: ffhd_get_pthermal
+  public :: ffhd_get_Rfactor
   public :: ffhd_get_temperature
   public :: ffhd_get_v
   public :: ffhd_get_rho
@@ -137,6 +134,14 @@ module mod_ffhd_phys
   public :: ffhd_get_csound2
   public :: ffhd_e_to_ei
   public :: ffhd_ei_to_e
+  ! concrete routines referenced by the mod_ffhd_eos seam
+  public :: ffhd_to_conserved_origin
+  public :: ffhd_to_primitive_origin
+  public :: ffhd_get_pthermal_origin
+  public :: ffhd_get_temperature_from_etot
+  public :: ffhd_get_temperature_from_eint
+  public :: ffhd_get_temperature_from_Te
+  public :: Rfactor_from_constant_ionization
 
 contains
 
@@ -145,12 +150,11 @@ contains
     character(len=*), intent(in) :: files(:)
     integer                      :: n
 
-    namelist /ffhd_list/ ffhd_energy, ffhd_gamma, ffhd_adiab, &
+    ! gamma and eos%He_abundance migrated to &eos_list (eos%gamma / eos%He_abundance)
+    namelist /ffhd_list/ ffhd_energy, ffhd_adiab, &
       ffhd_thermal_conduction, ffhd_hyperbolic_tc, ffhd_hyperbolic_tc_sat, ffhd_radiative_cooling, ffhd_gravity,&
-      He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2, eq_state_units, SI_unit,&
-      B0field, Busr, ffhd_partial_ionization, ffhd_ionization_table, &
-      ffhd_include_ionization_energy, ffhd_trac, ffhd_trac_type, &
-      ffhd_trac_mask, ffhd_trac_finegrid
+      H_ion_fr, He_ion_fr, He_ion_fr2, SI_unit,&
+      B0field, Busr, ffhd_trac, ffhd_trac_type, ffhd_trac_mask, ffhd_trac_finegrid
 
     do n = 1, size(files)
        open(unitpar, file=trim(files(n)), status="old")
@@ -172,7 +176,7 @@ contains
     call MPI_FILE_WRITE(fh, n_par, 1, MPI_INTEGER, st, er)
 
     names(1) = "gamma"
-    values(1) = ffhd_gamma
+    values(1) = eos%gamma
     call MPI_FILE_WRITE(fh, values, n_par, MPI_DOUBLE_PRECISION, st, er)
     call MPI_FILE_WRITE(fh, names, n_par * name_len, MPI_CHARACTER, st, er)
   end subroutine ffhd_write_info
@@ -184,9 +188,7 @@ contains
     use mod_gravity, only: gravity_init
     use mod_supertimestepping, only: sts_init, add_sts_method,&
             set_conversion_methods_to_head, set_error_handling_to_head
-    use mod_ionization_degree, only: ionization_degree_init,&
-        ionization_get_Rfactor_from_temperature, ionization_is_temperature_only, &
-        ionization_solve_p_Rfactor, ionization_get_eps_derivative_T
+    use mod_eos_PI_tables
     use mod_usr_methods, only: usr_Rfactor
     integer :: itr, idir
 
@@ -209,16 +211,10 @@ contains
         ffhd_trac=.false.
         if(mype==0) write(*,*) 'WARNING: set ffhd_trac=F when ffhd_energy=F'
       end if
-      if(ffhd_partial_ionization) then
-        ffhd_partial_ionization=.false.
-        if(mype==0) write(*,*) 'WARNING: set ffhd_partial_ionization=F when ffhd_energy=F'
-      end if
-    end if
-    if(.not.eq_state_units) then
-      if(ffhd_partial_ionization) then
-        ffhd_partial_ionization=.false.
-        if(mype==0) write(*,*) 'WARNING: set ffhd_partial_ionization=F when eq_state_units=F'
-      end if
+      ! PI/LTE carry a thermodynamic state and so need the energy equation; only
+      ! FI is meaningful without it (also guarded in ffhd_link_eos).
+      if (eos%eos_type /= 'FI') &
+        call mpistop("eos_type "//trim(eos%eos_type)//" requires ffhd_energy=T")
     end if
 
     if(ffhd_hyperbolic_tc) then
@@ -231,9 +227,9 @@ contains
     phys_internal_e=.false.
     phys_trac=ffhd_trac
     phys_trac_type=ffhd_trac_type
-    phys_partial_ionization=ffhd_partial_ionization
+    ! eos_type='PI' is the single partial-ionisation selector (no legacy flag).
 
-    phys_gamma = ffhd_gamma
+    phys_gamma = eos%gamma
     phys_total_energy=ffhd_energy
     phys_trac_finegrid=ffhd_trac_finegrid
 
@@ -273,8 +269,23 @@ contains
       q_=-1
     end if
 
+    !> LTE stores Ne_/Te_ as advection-free extra vars (repopulated each step by
+    !> eos%update_eos); PI keeps Te_ as an auxiliary var for the ionisation
+    !> degree. Mirrors mhd: register here (before stop_indices) so FI leaves
+    !> nwaux=0 and the var layout byte-identical.
+    if (eos%eos_type == 'LTE') then
+      Ne_ = var_set_ne()
+      Te_ = var_set_te()
+    else if (eos%eos_type == 'PI') then !  PI stores Te via var_set_te (sets iw_te) so the generic mod_eos_PI getters address it like LTE
+      Ne_ = -1
+      Te_ = var_set_te()
+    else
+      Ne_ = -1
+      Te_ = -1
+    end if
+
     ! set number of variables which need update ghostcells
-    nwgc=nwflux
+    nwgc=nwflux+nwaux
 
     ! set the index of the last flux variable for species 1
     stop_indices(1)=nwflux
@@ -322,7 +333,7 @@ contains
     phys_handle_small_values => ffhd_handle_small_values_origin
     ffhd_handle_small_values => ffhd_handle_small_values_origin
     phys_check_w             => ffhd_check_w_origin
-
+ 
     if(.not.ffhd_energy) then
       phys_get_pthermal      => ffhd_get_pthermal_iso
       ffhd_get_pthermal      => ffhd_get_pthermal_iso
@@ -331,26 +342,11 @@ contains
       ffhd_get_pthermal      => ffhd_get_pthermal_origin
     end if
 
-    ! choose Rfactor in ideal gas law
-    if(ffhd_partial_ionization) then
-      ffhd_get_Rfactor => Rfactor_from_current_state_ionization
-    else if(associated(usr_Rfactor)) then
-      ffhd_get_Rfactor=>usr_Rfactor
-    else
-      ffhd_get_Rfactor=>Rfactor_from_constant_ionization
-    end if
-    ffhd_get_temperature => ffhd_get_temperature_from_etot
+    ! Rfactor / temperature getter dispatch now lives in ffhd_link_eos (per eos_type)
 
     ! derive units from basic units
     call ffhd_physical_units()
-    ! initialize ionization degree table
-    if (ffhd_partial_ionization) then
-      call ionization_degree_init(He_abundance, &
-           1.d0 + H_ion_fr + He_abundance * &
-           (1.d0 + He_ion_fr*(1.d0 + He_ion_fr2)), &
-           ffhd_ionization_table, &
-           include_energy=ffhd_include_ionization_energy)
-    end if
+
     if(ffhd_hyperbolic_tc) then
       if(SI_unit)then
         ! parallel conduction Spitzer
@@ -373,65 +369,45 @@ contains
     ! initialize thermal conduction module
     if(ffhd_thermal_conduction) then
       call sts_init()
-      call tc_init_params(ffhd_gamma)
+      call tc_init_params(eos%gamma)
 
       allocate(tc_fl)
       call tc_get_hd_params(tc_fl,tc_params_read_ffhd)
       call add_sts_method(ffhd_get_tc_dt_ffhd,ffhd_sts_set_source_tc_ffhd,e_,1,e_,1,.false.)
-      tc_fl%get_temperature_from_conserved => ffhd_get_temperature_from_etot
-      tc_fl%get_temperature_from_eint => ffhd_get_temperature_from_eint
       call set_conversion_methods_to_head(ffhd_e_to_ei, ffhd_ei_to_e)
       call set_error_handling_to_head(ffhd_tc_handle_small_e)
-      tc_fl%get_rho => ffhd_get_rho
       tc_fl%e_ = e_
       tc_fl%Tcoff_ = Tcoff_
+      ! get_temperature_*/get_rho/get_ne_nH/get_var_Rfactor/scalars wired in ffhd_bind_eos_to_source
     end if
 
     ! Initialize radiative cooling module
     if(ffhd_radiative_cooling) then
-      call radiative_cooling_init_params(ffhd_gamma,He_abundance)
+      call radiative_cooling_init_params(eos%gamma,eos%He_abundance)
       allocate(rc_fl)
       call radiative_cooling_init(rc_fl,rc_params_read)
-      rc_fl%get_rho => ffhd_get_rho
-      rc_fl%get_pthermal => ffhd_get_pthermal
-      rc_fl%get_temperature => ffhd_get_temperature
-      rc_fl%get_var_Rfactor => ffhd_get_Rfactor
-      if (ffhd_include_ionization_energy) then
-        rc_fl%get_eint => ffhd_get_eint
-        rc_fl%get_pthermal_eint_Rfactor_from_rho_T => &
-             ffhd_get_p_eint_Rfactor_from_rho_T
-        rc_fl%get_eps_derivative_from_T => &
-             ionization_get_eps_derivative_T
-      end if
-      if (ffhd_partial_ionization) then
-        rc_fl%get_pthermal_Rfactor_from_rho_T => &
-            ionization_solve_p_Rfactor
-
-        if (ionization_is_temperature_only()) then
-          rc_fl%get_Rfactor_from_temperature => &
-              ionization_get_Rfactor_from_temperature
-        end if
-      end if
       rc_fl%e_ = e_
       rc_fl%Tcoff_ = Tcoff_
-      rc_fl%has_equi = .false.
       rc_fl%subtract_equi = .false.
-      if (ffhd_include_ionization_energy) then
-        call radiative_cooling_build_eion_table(rc_fl)
-      end if
+      ! get_rho/get_pthermal/get_var_Rfactor/get_Te/get_ne_nH + EoS scalars/kernels
+      ! wired in ffhd_bind_eos_to_source
     end if
 
 {^IFTHREED
     allocate(te_fl_ffhd)
-    te_fl_ffhd%get_rho=> ffhd_get_rho
-    te_fl_ffhd%get_temperature => ffhd_get_temperature
     phys_te_images => ffhd_te_images
+    ! te_fl_ffhd%get_rho/get_pthermal/get_var_Rfactor/get_ne_nH wired in ffhd_bind_eos_to_source
 }
 
     ! Initialize gravity module
     if(ffhd_gravity) then
       call gravity_init()
     end if
+
+    ! The PI ionisation backend (both ionE modes) is initialised centrally in
+    ! eos_finalise_PI (mod_eos_PI) -- mirrors hd/mhd, which no longer call
+    ! ionization_degree_init from the phys module (one source of truth; calling
+    ! it here too triggers "ionization_degree_init called more than once").
   end subroutine ffhd_phys_init
 
 {^IFTHREED
@@ -469,10 +445,10 @@ contains
   function ffhd_get_tc_dt_ffhd(w,ixI^L,ixO^L,dx^D,x) result(dtnew)
     !Check diffusion time limit dt < dx_i**2/((gamma-1)*tc_k_para_i/rho)
     !where                      tc_k_para_i=tc_k_para*B_i**2/B**2
-    !and temperature is obtained through the active EOS callback
+    !and                        T=p/rho
     use mod_global_parameters
     use mod_thermal_conduction, only: get_tc_dt_mhd
-
+ 
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: dx^D, x(ixI^S,1:ndim)
     double precision, intent(in) :: w(ixI^S,1:nw)
@@ -539,16 +515,16 @@ contains
     type(rc_fluid), intent(inout) :: fl
     integer                      :: n
     integer :: ncool = 4000
-
+  
     !> Name of cooling curve
     character(len=std_len)  :: coolcurve='JCcorona'
-
+  
     !> Fixed temperature not lower than tlow
     logical    :: Tfix=.false.
-
+  
     !> Lower limit of temperature
     double precision   :: tlow=bigdouble
-
+  
     !> Add cooling source in a split way (.true.) or un-split way (.false.)
     logical    :: rc_split=.false.
     logical    :: rad_damp=.false.
@@ -576,47 +552,18 @@ contains
   subroutine ffhd_check_params
     use mod_global_parameters
     use mod_usr_methods
-    use mod_ionization_degree, only: ionization_is_temperature_only, &
-         ionization_check_eint_table
     use mod_convert, only: add_convert_method
     use mod_geometry, only: coordinate
 
 
-    gamma_1=ffhd_gamma-1.d0
     if (.not. ffhd_energy) then
-       if (ffhd_gamma <= 0.0d0) call mpistop ("Error: ffhd_gamma <= 0")
+       if (eos%gamma <= 0.0d0) call mpistop ("Error: eos%gamma <= 0")
        if (ffhd_adiab < 0.0d0) call mpistop ("Error: ffhd_adiab < 0")
-       small_pressure = ffhd_adiab*small_density**ffhd_gamma
+       small_pressure = ffhd_adiab*small_density**eos%gamma
     else
-       if (ffhd_gamma <= 0.0d0 .or. ffhd_gamma == 1.0d0) &
-            call mpistop ("Error: ffhd_gamma <= 0 or ffhd_gamma == 1")
-       inv_gamma_1=1.d0/gamma_1
-       small_e = small_pressure * inv_gamma_1
-    end if
-
-    if (ffhd_include_ionization_energy) then
-      if (.not. ffhd_partial_ionization) then
-        call mpistop("ffhd_include_ionization_energy requires partial ionization")
-      end if
-      if (.not. ffhd_energy) then
-        call mpistop("ffhd_include_ionization_energy requires ffhd_energy")
-      end if
-      if (.not. ionization_is_temperature_only()) then
-        call mpistop("FFHD ionization energy requires a T-only ionization table")
-      end if
-      call ionization_check_eint_table(inv_gamma_1)
-      if (allocated(flux_method)) then
-        if (any(flux_method == fs_tvd) .or. &
-            any(flux_method == fs_tvdmu)) then
-          call mpistop("FFHD ionization energy forbids Roe/TVD schemes")
-        end if
-      end if
-      if (allocated(typepred1)) then
-        if (any(typepred1 == fs_tvd) .or. &
-            any(typepred1 == fs_tvdmu)) then
-          call mpistop("FFHD ionization energy forbids Roe/TVD predictors")
-        end if
-      end if
+       if (eos%gamma <= 0.0d0 .or. eos%gamma == 1.0d0) &
+            call mpistop ("Error: eos%gamma <= 0 or eos%gamma == 1")
+       small_e = small_pressure * eos%inv_gamma_minus_1
     end if
 
     if (number_equi_vars > 0 .and. .not. associated(usr_set_equi_vars)) then
@@ -643,8 +590,6 @@ contains
            write(*,*)'number of extra vars   for wextra=',nw_extra
            write(*,*)'number of auxiliary I/O variables=',nwauxio
            write(*,*)'    ffhd_energy=',ffhd_energy
-           write(*,*)'    ffhd_include_ionization_energy=', &
-                ffhd_include_ionization_energy
            write(*,*)'    ffhd_gravity=',ffhd_gravity
            write(*,*)'    ffhd_radiative_cooling=',ffhd_radiative_cooling
            write(*,*)'    ffhd_hyperbolic_tc=',ffhd_hyperbolic_tc
@@ -667,18 +612,27 @@ contains
       mp=mp_cgs
       kB=kB_cgs
     end if
-    if(eq_state_units) then
-      a=1d0+4d0*He_abundance
-      if(ffhd_partial_ionization) then
-        b=1d0+H_ion_fr+He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
-      else
-        b=2d0+3d0*He_abundance
-      end if
-      RR=1d0
-    else
+    
+    ! Normalisation dispatch keyed solely on eos%eos_type (FI is the default, so
+    ! legacy parfiles that set neither eos_type nor any flag land in the FI/PI
+    ! absorbed-(a,b), RR=1 branch -- the historical eq_state_units=.true. result).
+    if (eos%eos_type == 'LTE') then
+      !> Remove the assumed FI normalisation from the units; handle in EoS.
       a=1d0
       b=1d0
-      RR=(1d0+H_ion_fr+He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0))/(1d0+4d0*He_abundance)
+      eos%nH2rhoFactor = 1d0+4d0*eos%He_abundance
+      RR=(2d0+3d0*eos%He_abundance)/(1d0+4d0*eos%He_abundance)
+    else
+      !> FI / PI: absorbed-(a,b), RR=1. The (1+4He) factor is absorbed into
+      !> unit_density, so nH2rhoFactor stays at the eos_init default of 1 (else
+      !> get_ne_nH would double-divide rho and under-cool by (1+4He)^2).
+      a=1d0+4d0*eos%He_abundance
+      if(eos%eos_type=='PI') then
+        b=1d0+H_ion_fr+eos%He_abundance*(He_ion_fr*(He_ion_fr2+1d0)+1d0)
+      else
+        b=2d0+3d0*eos%He_abundance
+      end if
+      RR=1d0
     end if
     if(unit_density/=1.d0 .or. unit_numberdensity/=1.d0) then
       if(unit_density/=1.d0) then
@@ -753,8 +707,6 @@ contains
     integer, intent(in) :: ixI^L, ixO^L
     double precision, intent(in) :: w(ixI^S,nw)
     double precision :: tmp(ixI^S)
-    double precision :: kinetic, eint, T, pthermal, Rfactor
-    integer :: ix^D
     logical, intent(inout) :: flag(ixI^S,1:nw)
 
     flag=.false.
@@ -764,58 +716,20 @@ contains
       if(primitive) then
         where(w(ixO^S,e_) < small_pressure) flag(ixO^S,e_) = .true.
       else
-        {do ix^DB = ixO^LIM^DB\}
-          if (w(ix^D,rho_) <= zero) then
-            flag(ix^D,e_) = .true.
-            tmp(ix^D)=-bigdouble
-            cycle
-          end if
-          kinetic=half*w(ix^D,mom(1))**2/w(ix^D,rho_)
-          eint=w(ix^D,e_)-kinetic
-          if (ffhd_include_ionization_energy) then
-            if (w(ix^D,rho_) > zero .and. eint > zero) then
-              call ffhd_get_state_from_eint_scalar( &
-                   w(ix^D,rho_), eint, T, pthermal, Rfactor)
-              tmp(ix^D)=pthermal
-            else
-              tmp(ix^D)=-bigdouble
-            end if
-          else
-            tmp(ix^D)=eint
-          end if
-        {end do\}
-        if (ffhd_include_ionization_energy) then
-          where(tmp(ixO^S) < small_pressure) flag(ixO^S,e_) = .true.
-        else
-          where(tmp(ixO^S) < small_e) flag(ixO^S,e_) = .true.
-        end if
+        tmp(ixO^S)=w(ixO^S,e_)-ffhd_kin_en(w,ixI^L,ixO^L)
+        where(tmp(ixO^S) < small_e) flag(ixO^S,e_) = .true.
       end if
     end if
   end subroutine ffhd_check_w_origin
 
   subroutine ffhd_to_conserved_origin(ixI^L,ixO^L,w,x)
     use mod_global_parameters
-    use mod_ionization_degree, only: ionization_get_state_scalar
     integer, intent(in)             :: ixI^L, ixO^L
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: T, pcheck, eint, Rfactor
-    integer :: ix^D
-
     if(ffhd_energy) then
-      if (ffhd_include_ionization_energy) then
-        {do ix^DB = ixO^LIM^DB\}
-          call ionization_get_state_scalar( &
-               w(ix^D,rho_), w(ix^D,p_), T, Rfactor)
-          call ffhd_get_p_eint_Rfactor_from_rho_T( &
-               w(ix^D,rho_), T, pcheck, eint, Rfactor)
-          w(ix^D,e_)=eint+half*w(ix^D,mom(1))**2*w(ix^D,rho_)
-        {end do\}
-      else
-        w(ixO^S,e_)=w(ixO^S,p_)*inv_gamma_1+&
-             half*w(ixO^S,mom(1))**2*w(ixO^S,rho_)
-      end if
+      w(ixO^S,e_)=w(ixO^S,p_)*eos%inv_gamma_minus_1+half*w(ixO^S,mom(1))**2*w(ixO^S,rho_)
     end if
     w(ixO^S,mom(1))=w(ixO^S,rho_)*w(ixO^S,mom(1))
   end subroutine ffhd_to_conserved_origin
@@ -826,26 +740,13 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    double precision :: eint, T, pthermal, Rfactor
-    integer :: ix^D
-
     if(fix_small_values) then
       call ffhd_handle_small_values(.false., w, x, ixI^L, ixO^L, 'ffhd_to_primitive_origin')
     end if
 
     w(ixO^S,mom(1)) = w(ixO^S,mom(1))/w(ixO^S,rho_)
     if(ffhd_energy) then
-      if (ffhd_include_ionization_energy) then
-        {do ix^DB = ixO^LIM^DB\}
-          eint=w(ix^D,e_)-half*w(ix^D,rho_)*w(ix^D,mom(1))**2
-          call ffhd_get_state_from_eint_scalar( &
-               w(ix^D,rho_), eint, T, pthermal, Rfactor)
-          w(ix^D,p_)=pthermal
-        {end do\}
-      else
-        w(ixO^S,p_)=gamma_1*(w(ixO^S,e_)-&
-             half*w(ixO^S,rho_)*w(ixO^S,mom(1))**2)
-      end if
+      w(ixO^S,p_)=eos%gamma_minus_1*(w(ixO^S,e_)-half*w(ixO^S,rho_)*w(ixO^S,mom(1))**2)
     end if
   end subroutine ffhd_to_primitive_origin
 
@@ -855,7 +756,7 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    w(ixI^S,e_)=w(ixI^S,e_)+ffhd_kin_en(w,ixI^L,ixI^L)
+    w(ixO^S,e_)=w(ixO^S,e_)+ffhd_kin_en(w,ixI^L,ixO^L)
   end subroutine ffhd_ei_to_e
 
   subroutine ffhd_e_to_ei(ixI^L,ixO^L,w,x)
@@ -864,11 +765,27 @@ contains
     double precision, intent(inout) :: w(ixI^S, nw)
     double precision, intent(in)    :: x(ixI^S, 1:ndim)
 
-    w(ixI^S,e_)=w(ixI^S,e_)-ffhd_kin_en(w,ixI^L,ixI^L)
+    ! Restrict to ixO^L (mirrors hd/mhd): update_eos_LTE calls phys_e_to_ei
+    ! over the mesh interior while ixI^S still spans unfilled corner ghosts
+    ! (rho=0 -> SIGFPE in ffhd_kin_en). FI is unaffected (update_eos_FI no-op;
+    ! the TC STS heads pass the range they need).
+    w(ixO^S,e_)=w(ixO^S,e_)-ffhd_kin_en(w,ixI^L,ixO^L)
     if(fix_small_values) then
-      call ffhd_handle_small_ei(w,x,ixI^L,ixI^L,e_,'ffhd_e_to_ei')
+      call ffhd_handle_small_ei(w,x,ixI^L,ixO^L,e_,'ffhd_e_to_ei')
     end if
   end subroutine ffhd_e_to_ei
+
+  !> Internal energy eint = E_total - E_kinetic (single field-aligned momentum).
+  !> Wired to phys_get_ei; the LTE+ionE radiative cooling uses it to recover the
+  !> gas internal energy from the conserved state.
+  function ffhd_get_ei(w, ixI^L, ixO^L) result(ei)
+    use mod_global_parameters
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, nw)
+    double precision             :: ei(ixO^S)
+
+    ei(ixO^S) = w(ixO^S,e_) - ffhd_kin_en(w,ixI^L,ixO^L)
+  end function ffhd_get_ei
 
   subroutine ffhd_handle_small_values_origin(primitive, w, x, ixI^L, ixO^L, subname)
     use mod_global_parameters
@@ -880,9 +797,7 @@ contains
     character(len=*), intent(in)    :: subname
 
     logical :: flag(ixI^S,1:nw)
-    double precision :: kinetic(ixI^S)
-    double precision :: eint, T, pthermal, Rfactor
-    integer :: ix^D
+    double precision :: tmp2(ixI^S)
 
     call phys_check_w(primitive, ixI^L, ixI^L, w, flag)
 
@@ -897,20 +812,9 @@ contains
           if(primitive) then
             where(flag(ixO^S,e_)) w(ixO^S,p_) = small_pressure
           else
-            if (ffhd_include_ionization_energy) then
-              kinetic=ffhd_kin_en(w,ixI^L,ixO^L)
-              {do ix^DB = ixO^LIM^DB\}
-                if (flag(ix^D,rho_) .or. flag(ix^D,e_)) then
-                  call ffhd_get_eint_from_rho_p_scalar( &
-                       w(ix^D,rho_), small_pressure, eint)
-                  w(ix^D,e_)=eint+kinetic(ix^D)
-                end if
-              {end do\}
-            else
-              where(flag(ixO^S,e_))
-                w(ixO^S,e_) = small_e+ffhd_kin_en(w,ixI^L,ixO^L)
-              end where
-            end if
+            where(flag(ixO^S,e_))
+              w(ixO^S,e_) = small_e+ffhd_kin_en(w,ixI^L,ixO^L)
+            end where
           end if
         end if
       case ("average")
@@ -919,51 +823,15 @@ contains
           if(primitive) then
             call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
           else
-            if (ffhd_include_ionization_energy) then
-              kinetic=ffhd_kin_en(w,ixI^L,ixI^L)
-              {do ix^DB = ixI^LIM^DB\}
-                eint=w(ix^D,e_)-kinetic(ix^D)
-                if (eint > zero) then
-                  call ffhd_get_state_from_eint_scalar( &
-                       w(ix^D,rho_), eint, T, pthermal, Rfactor)
-                  w(ix^D,p_)=pthermal
-                else
-                  w(ix^D,p_)=small_pressure
-                end if
-              {end do\}
-              call small_values_average(ixI^L, ixO^L, w, x, flag, p_)
-              kinetic=ffhd_kin_en(w,ixI^L,ixI^L)
-              {do ix^DB = ixI^LIM^DB\}
-                call ffhd_get_eint_from_rho_p_scalar( &
-                     w(ix^D,rho_), w(ix^D,p_), eint)
-                w(ix^D,e_)=eint+kinetic(ix^D)
-              {end do\}
-            else
-              w(ixI^S,e_)=w(ixI^S,e_)-ffhd_kin_en(w,ixI^L,ixI^L)
-              call small_values_average(ixI^L, ixO^L, w, x, flag, e_)
-              w(ixI^S,e_)=w(ixI^S,e_)+ffhd_kin_en(w,ixI^L,ixI^L)
-            end if
+            w(ixI^S,e_)=w(ixI^S,e_)-ffhd_kin_en(w,ixI^L,ixI^L)
+            call small_values_average(ixI^L, ixO^L, w, x, flag, e_)
+            w(ixI^S,e_)=w(ixI^S,e_)+ffhd_kin_en(w,ixI^L,ixI^L)
           end if
         end if
       case default
         if(.not.primitive) then
           if(ffhd_energy) then
-            if (ffhd_include_ionization_energy) then
-              kinetic=ffhd_kin_en(w,ixI^L,ixO^L)
-              {do ix^DB = ixO^LIM^DB\}
-                eint=w(ix^D,e_)-kinetic(ix^D)
-                if (w(ix^D,rho_) > zero .and. eint > zero) then
-                  call ffhd_get_state_from_eint_scalar( &
-                       w(ix^D,rho_), eint, T, pthermal, Rfactor)
-                  w(ix^D,p_)=pthermal
-                else
-                  w(ix^D,p_)=-bigdouble
-                end if
-              {end do\}
-            else
-              w(ixO^S,p_)=gamma_1*(w(ixO^S,e_)-&
-                   ffhd_kin_en(w,ixI^L,ixO^L))
-            end if
+            w(ixO^S,p_)=eos%gamma_minus_1*(w(ixO^S,e_)-ffhd_kin_en(w,ixI^L,ixO^L))
           end if
           w(ixO^S,mom(1))=w(ixO^S,mom(1))/w(ixO^S,rho_)
         end if
@@ -1005,21 +873,16 @@ contains
     double precision, intent(in) :: wprim(ixI^S, nw), x(ixI^S,1:ndim)
     double precision, intent(inout) :: cmax(ixI^S)
 
-    double precision :: csound2
-    integer :: ix^D
-
     if(ffhd_energy) then
-      if (ffhd_include_ionization_energy) then
-        {do ix^DB = ixO^LIM^DB\}
-          call ffhd_get_csound2_prim_scalar( &
-               wprim(ix^D,rho_), wprim(ix^D,p_), csound2)
-          cmax(ix^D)=dsqrt(csound2)
-        {end do\}
+      if (eos%ionE) then
+        ! LTE/PI energy: Gamma_1(p,rho)*p/rho from the EoS (wprim is primitive)
+        call eos%get_csound2(wprim,x,ixI^L,ixO^L,cmax)
+        cmax(ixO^S)=dsqrt(cmax(ixO^S))
       else
-        cmax(ixO^S)=dsqrt(ffhd_gamma*wprim(ixO^S,p_)/wprim(ixO^S,rho_))
+        cmax(ixO^S)=dsqrt(eos%gamma*wprim(ixO^S,p_)/wprim(ixO^S,rho_))
       end if
     else
-      cmax(ixO^S)=dsqrt(ffhd_gamma*ffhd_adiab*wprim(ixO^S,rho_)**gamma_1)
+      cmax(ixO^S)=dsqrt(eos%gamma*ffhd_adiab*wprim(ixO^S,rho_)**eos%gamma_minus_1)
     end if
     cmax(ixO^S)=dabs(wprim(ixO^S,mom(1))*block%B0(ixO^S,idim,0))+cmax(ixO^S)
 
@@ -1148,7 +1011,7 @@ contains
         lts(ix^D)=min(^D&block%ds({ix^D},^D))*lts(ix^D)
         lts(ix^D)=max(one,(exp(lts(ix^D))/ltrc)**ltrp)
      {end do\}
-
+  
       ! need one ghost layer for thermal conductivity
       ixP^L=ixO^L^LADD1;
      {do ix^DB=ixPmin^DB,ixPmax^DB\}
@@ -1181,7 +1044,7 @@ contains
     double precision, intent(inout) :: cmax(ixI^S,1:number_species)
     double precision, intent(inout), optional :: cmin(ixI^S,1:number_species)
     double precision, intent(in)    :: Hspeed(ixI^S,1:number_species)
-    double precision :: wmean(ixI^S,nw)
+    double precision :: wmean(ixI^S,nw), wmeanp(ixI^S,nw)
     double precision, dimension(ixI^S) :: umean, dmean, csoundL, csoundR, tmp1,tmp2,tmp3
 
     select case (boundspeed)
@@ -1194,8 +1057,8 @@ contains
       umean(ixO^S)=(wLp(ixO^S,mom(1))*tmp1(ixO^S)&
                    +wRp(ixO^S,mom(1))*tmp2(ixO^S))*tmp3(ixO^S)
       umean(ixO^S)=umean(ixO^S)*block%B0(ixO^S,idim,idim)
-      call ffhd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
-      call ffhd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
+      call ffhd_csound2_cbounds(wLC,wLp,x,ixI^L,ixO^L,csoundL)
+      call ffhd_csound2_cbounds(wRC,wRp,x,ixI^L,ixO^L,csoundR)
       dmean(ixO^S)=(tmp1(ixO^S)*csoundL(ixO^S)+tmp2(ixO^S)*csoundR(ixO^S)) * &
            tmp3(ixO^S) + 0.5d0*tmp1(ixO^S)*tmp2(ixO^S)*tmp3(ixO^S)**2 * &
                              ((wRp(ixO^S,mom(1))-wLp(ixO^S,mom(1)))*block%B0(ixO^S,idim,idim))**2
@@ -1209,7 +1072,12 @@ contains
     case (2)
       wmean(ixO^S,1:nwflux)=0.5d0*(wLC(ixO^S,1:nwflux)+wRC(ixO^S,1:nwflux))
       tmp1(ixO^S)=wmean(ixO^S,mom(1))*block%B0(ixO^S,idim,idim)/wmean(ixO^S,rho_)
-      call ffhd_get_csound2(wmean,x,ixI^L,ixO^L,csoundR)
+      if (eos%ionE) then
+        wmeanp(ixO^S,1:nwflux)=0.5d0*(wLp(ixO^S,1:nwflux)+wRp(ixO^S,1:nwflux))
+        call eos%get_csound2(wmeanp,x,ixI^L,ixO^L,csoundR)
+      else
+        call ffhd_get_csound2(wmean,x,ixI^L,ixO^L,csoundR)
+      end if
       csoundR(ixO^S) = dsqrt(csoundR(ixO^S))
       if(present(cmin)) then
         cmax(ixO^S,1)=max(tmp1(ixO^S)+csoundR(ixO^S),zero)
@@ -1219,8 +1087,8 @@ contains
       end if
     case (3)
       ! Miyoshi 2005 JCP 208, 315 equation (67)
-      call ffhd_get_csound2(wLC,x,ixI^L,ixO^L,csoundL)
-      call ffhd_get_csound2(wRC,x,ixI^L,ixO^L,csoundR)
+      call ffhd_csound2_cbounds(wLC,wLp,x,ixI^L,ixO^L,csoundL)
+      call ffhd_csound2_cbounds(wRC,wRp,x,ixI^L,ixO^L,csoundR)
       csoundL(ixO^S)=max(dsqrt(csoundL(ixO^S)),dsqrt(csoundR(ixO^S)))
       if(present(cmin)) then
         cmin(ixO^S,1)=min(wLp(ixO^S,mom(1))*block%B0(ixO^S,idim,idim),&
@@ -1234,6 +1102,23 @@ contains
     end select
   end subroutine ffhd_get_cbounds
 
+  !> Sound speed^2 at a Riemann interface. FI uses the conserved-state pthermal
+  !> path (bit-identical to the legacy ffhd_get_csound2(wC) call); LTE uses the
+  !> primitive Gamma_1*p/rho via eos% because the stored Te_/Ne_ are NOT
+  !> reconstructed onto interface states (they are advection-free extra vars).
+  subroutine ffhd_csound2_cbounds(wC,wp,x,ixI^L,ixO^L,cs2)
+    use mod_global_parameters
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: wC(ixI^S,nw), wp(ixI^S,nw), x(ixI^S,1:ndim)
+    double precision, intent(out):: cs2(ixI^S)
+
+    if (eos%ionE) then
+      call eos%get_csound2(wp,x,ixI^L,ixO^L,cs2)
+    else
+      call ffhd_get_csound2(wC,x,ixI^L,ixO^L,cs2)
+    end if
+  end subroutine ffhd_csound2_cbounds
+
   subroutine ffhd_get_pthermal_iso(w,x,ixI^L,ixO^L,pth)
     use mod_global_parameters
 
@@ -1243,7 +1128,7 @@ contains
     double precision, intent(out):: pth(ixI^S)
 
     call ffhd_get_rho(w,x,ixI^L,ixO^L,pth)
-    pth(ixO^S)=ffhd_adiab*pth(ixO^S)**ffhd_gamma
+    pth(ixO^S)=ffhd_adiab*pth(ixO^S)**eos%gamma
   end subroutine ffhd_get_pthermal_iso
 
   subroutine ffhd_get_pthermal_origin(w,x,ixI^L,ixO^L,pth)
@@ -1254,32 +1139,8 @@ contains
     double precision, intent(in) :: x(ixI^S,1:ndim)
     double precision, intent(out):: pth(ixI^S)
     integer                      :: iw, ix^D
-    double precision :: kinetic(ixO^S), inv_rho(ixO^S), eint, T, Rfactor
 
-    if (ffhd_include_ionization_energy) then
-      where (w(ixO^S,rho_) > zero)
-        inv_rho(ixO^S)=one/w(ixO^S,rho_)
-      elsewhere
-        inv_rho(ixO^S)=zero
-      end where
-      kinetic=ffhd_kin_en(w,ixI^L,ixO^L,inv_rho)
-      {do ix^DB = ixO^LIM^DB\}
-        if (w(ix^D,rho_) <= zero) then
-          pth(ix^D)=small_pressure
-          cycle
-        end if
-        eint=w(ix^D,e_)-kinetic(ix^D)
-        if (eint > zero) then
-          call ffhd_get_state_from_eint_scalar( &
-               w(ix^D,rho_), eint, T, pth(ix^D), Rfactor)
-        else
-          pth(ix^D)=gamma_1*eint
-        end if
-      {end do\}
-    else
-      kinetic=ffhd_kin_en(w,ixI^L,ixO^L)
-      pth(ixO^S)=gamma_1*(w(ixO^S,e_)-kinetic)
-    end if
+    pth(ixO^S)=eos%gamma_minus_1*(w(ixO^S,e_)-ffhd_kin_en(w,ixI^L,ixO^L))
     if (fix_small_values) then
       {do ix^DB= ixO^LIM^DB\}
          if(pth(ix^D)<small_pressure) then
@@ -1306,22 +1167,15 @@ contains
     end if
   end subroutine ffhd_get_pthermal_origin
 
-  subroutine Rfactor_from_current_state_ionization( &
-       w, x, ixI^L, ixO^L, Rfactor)
+  subroutine ffhd_get_temperature_from_Te(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
+    integer, intent(in)          :: ixI^L, ixO^L
+    double precision, intent(in) :: w(ixI^S, 1:nw)
+    double precision, intent(in) :: x(ixI^S, 1:ndim)
+    double precision, intent(out):: res(ixI^S)
 
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,1:nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out) :: Rfactor(ixI^S)
-
-    double precision :: rho(ixI^S), pth(ixI^S), T(ixI^S)
-
-    call ffhd_get_rho(w, x, ixI^L, ixO^L, rho)
-    call ffhd_get_pthermal(w, x, ixI^L, ixO^L, pth)
-    call ffhd_get_ionization_state_from_prho( &
-         ixI^L, ixO^L, rho, pth, T, Rfactor)
-  end subroutine Rfactor_from_current_state_ionization
+    res(ixO^S) = w(ixO^S, Te_)
+  end subroutine ffhd_get_temperature_from_Te
 
   subroutine ffhd_get_temperature_from_eint(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
@@ -1329,36 +1183,11 @@ contains
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
-    double precision :: R(ixI^S), pth(ixI^S)
-    double precision :: Tcell, Rcell
-    integer :: ix^D
+    double precision :: R(ixI^S)
 
-    if (ffhd_include_ionization_energy) then
-      {do ix^DB = ixO^LIM^DB\}
-        call ffhd_get_state_from_eint_scalar( &
-             w(ix^D,rho_), w(ix^D,e_), Tcell, pth(ix^D), Rcell)
-        res(ix^D)=Tcell
-      {end do\}
-    else if(ffhd_partial_ionization) then
-      pth(ixO^S) = gamma_1 * w(ixO^S, e_)
-      call ffhd_get_ionization_state_from_prho(ixI^L, ixO^L, &
-           w(ixI^S,rho_), pth, res, R)
-    else
-      call ffhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-      res(ixO^S) = gamma_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
-    end if
+    call ffhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+    res(ixO^S) = eos%gamma_minus_1 * w(ixO^S, e_)/(w(ixO^S,rho_)*R(ixO^S))
   end subroutine ffhd_get_temperature_from_eint
-
-  subroutine ffhd_get_ionization_state_from_prho(ixI^L, ixO^L, rho, pth, T, Rfactor)
-    use mod_global_parameters
-    use mod_ionization_degree, only: ionization_get_state
-
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: rho(ixI^S), pth(ixI^S)
-    double precision, intent(out) :: T(ixI^S), Rfactor(ixI^S)
-
-    call ionization_get_state(ixI^L, ixO^L, rho, pth, T, Rfactor)
-  end subroutine ffhd_get_ionization_state_from_prho
 
   subroutine ffhd_get_temperature_from_etot(w, x, ixI^L, ixO^L, res)
     use mod_global_parameters
@@ -1366,40 +1195,12 @@ contains
     double precision, intent(in) :: w(ixI^S, 1:nw)
     double precision, intent(in) :: x(ixI^S, 1:ndim)
     double precision, intent(out):: res(ixI^S)
-    double precision :: R(ixI^S), pth(ixI^S)
-    double precision :: kinetic(ixO^S), inv_rho(ixO^S)
-    double precision :: eint, Tcell, Rcell
-    integer :: ix^D
 
-    if (ffhd_include_ionization_energy) then
-      where (w(ixO^S,rho_) > zero)
-        inv_rho(ixO^S)=one/w(ixO^S,rho_)
-      elsewhere
-        inv_rho(ixO^S)=zero
-      end where
-      kinetic=ffhd_kin_en(w,ixI^L,ixO^L,inv_rho)
-      {do ix^DB = ixO^LIM^DB\}
-        if (w(ix^D,rho_) <= zero) then
-          res(ix^D)=small_temperature
-          cycle
-        end if
-        eint=w(ix^D,e_)-kinetic(ix^D)
-        call ffhd_get_state_from_eint_scalar( &
-             w(ix^D,rho_), eint, Tcell, pth(ix^D), Rcell)
-        res(ix^D)=Tcell
-      {end do\}
-      return
-    end if
+    double precision :: R(ixI^S)
 
-    call ffhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
-
-    if(ffhd_partial_ionization) then
-      call ffhd_get_ionization_state_from_prho(ixI^L, ixO^L, &
-           w(ixI^S,rho_), pth, res, R)
-    else
-      call ffhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
-      res(ixO^S)=pth(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
-    end if
+    call ffhd_get_Rfactor(w,x,ixI^L,ixO^L,R)
+    call ffhd_get_pthermal(w,x,ixI^L,ixO^L,res)
+    res(ixO^S)=res(ixO^S)/(R(ixO^S)*w(ixO^S,rho_))
   end subroutine ffhd_get_temperature_from_etot
 
   subroutine ffhd_get_csound2(w,x,ixI^L,ixO^L,csound2)
@@ -1408,22 +1209,14 @@ contains
     double precision, intent(in)    :: w(ixI^S,nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
     double precision, intent(out)   :: csound2(ixI^S)
-    double precision    :: rho(ixI^S), temperature(ixI^S)
-    integer :: ix^D
-
+    double precision    :: rho(ixI^S)
+    
     call ffhd_get_rho(w,x,ixI^L,ixO^L,rho)
     if(ffhd_energy) then
-      if (ffhd_include_ionization_energy) then
-        call ffhd_get_temperature_from_etot(w,x,ixI^L,ixO^L,temperature)
-        {do ix^DB = ixO^LIM^DB\}
-          call ffhd_get_csound2_T_scalar(temperature(ix^D),csound2(ix^D))
-        {end do\}
-      else
-        call ffhd_get_pthermal(w,x,ixI^L,ixO^L,csound2)
-        csound2(ixO^S)=ffhd_gamma*csound2(ixO^S)/rho(ixO^S)
-      end if
+      call ffhd_get_pthermal(w,x,ixI^L,ixO^L,csound2)
+      csound2(ixO^S)=eos%gamma*csound2(ixO^S)/rho(ixO^S)
     else
-      csound2(ixO^S)=ffhd_gamma*ffhd_adiab*rho(ixO^S)**gamma_1
+      csound2(ixO^S)=eos%gamma*ffhd_adiab*rho(ixO^S)**eos%gamma_minus_1
     end if
   end subroutine ffhd_get_csound2
 
@@ -1444,7 +1237,7 @@ contains
     if(ffhd_energy) then
       ptotal(ixO^S)=w(ixO^S,p_)
     else
-      ptotal(ixO^S)=ffhd_adiab*w(ixO^S,rho_)**ffhd_gamma
+      ptotal(ixO^S)=ffhd_adiab*w(ixO^S,rho_)**eos%gamma
     end if
 
     ! Get flux of momentum
@@ -1489,6 +1282,13 @@ contains
            w,x,ffhd_energy,qsourcesplit,active)
     end if
 
+    ! update temperature from new pressure, density, and old ionization degree
+    if(eos%eos_type == 'PI') then
+      if(.not.qsourcesplit) then
+        active = .true.
+        call eos%update_eos(ixI^L,ixO^L,w,x)
+      end if
+    end if
   end subroutine ffhd_add_source
 
   subroutine add_punitb(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
@@ -1516,28 +1316,6 @@ contains
     w(ixO^S,mom(1))=w(ixO^S,mom(1))+qdt*wCTprim(ixO^S,p_)*divb(ixO^S)
   end subroutine add_punitb
 
-  subroutine ffhd_get_eint(w,x,ixI^L,ixO^L,eint)
-    use mod_global_parameters
-
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,1:nw)
-    double precision, intent(in) :: x(ixI^S,1:ndim)
-    double precision, intent(out) :: eint(ixI^S)
-    double precision :: inv_rho(ixO^S), kinetic(ixO^S)
-
-    where (w(ixO^S,rho_) > zero)
-      inv_rho(ixO^S)=one/w(ixO^S,rho_)
-    elsewhere
-      inv_rho(ixO^S)=zero
-    end where
-    kinetic=ffhd_kin_en(w,ixI^L,ixO^L,inv_rho)
-    where (w(ixO^S,rho_) > zero)
-      eint(ixO^S)=w(ixO^S,e_)-kinetic
-    elsewhere
-      eint(ixO^S)=w(ixO^S,e_)
-    end where
-  end subroutine ffhd_get_eint
-
   subroutine ffhd_get_rho(w,x,ixI^L,ixO^L,rho)
     use mod_global_parameters
     integer, intent(in)           :: ixI^L, ixO^L
@@ -1546,61 +1324,6 @@ contains
 
     rho(ixO^S) = w(ixO^S,rho_)
   end subroutine ffhd_get_rho
-
-  subroutine ffhd_get_state_from_eint_scalar( &
-       rho, eint, T, pthermal, Rfactor, iz_H, iz_He)
-    use mod_ionization_degree, only: ionization_get_state_from_eint
-
-    double precision, intent(in) :: rho, eint
-    double precision, intent(out) :: T, pthermal, Rfactor
-    double precision, intent(out), optional :: iz_H, iz_He
-
-    call ionization_get_state_from_eint( &
-         rho, eint, inv_gamma_1, T, pthermal, Rfactor, iz_H, iz_He)
-  end subroutine ffhd_get_state_from_eint_scalar
-
-  subroutine ffhd_get_p_eint_Rfactor_from_rho_T( &
-       rho, T, pthermal, eint, Rfactor)
-    use mod_ionization_degree, only: ionization_get_p_eint_from_rho_T
-
-    double precision, intent(in) :: rho, T
-    double precision, intent(out) :: pthermal, eint, Rfactor
-
-    call ionization_get_p_eint_from_rho_T( &
-         rho, T, inv_gamma_1, pthermal, eint, Rfactor)
-  end subroutine ffhd_get_p_eint_Rfactor_from_rho_T
-
-  subroutine ffhd_get_eint_from_rho_p_scalar(rho, pthermal, eint)
-    use mod_ionization_degree, only: ionization_get_state_scalar
-
-    double precision, intent(in) :: rho, pthermal
-    double precision, intent(out) :: eint
-    double precision :: T, pcheck, Rfactor
-
-    call ionization_get_state_scalar(rho, pthermal, T, Rfactor)
-    call ffhd_get_p_eint_Rfactor_from_rho_T( &
-         rho, T, pcheck, eint, Rfactor)
-  end subroutine ffhd_get_eint_from_rho_p_scalar
-
-  subroutine ffhd_get_csound2_T_scalar(T, csound2)
-    use mod_ionization_degree, only: ionization_get_csound2_T
-
-    double precision, intent(in) :: T
-    double precision, intent(out) :: csound2
-
-    call ionization_get_csound2_T(T, inv_gamma_1, csound2)
-  end subroutine ffhd_get_csound2_T_scalar
-
-  subroutine ffhd_get_csound2_prim_scalar(rho, pthermal, csound2)
-    use mod_ionization_degree, only: ionization_get_state_scalar
-
-    double precision, intent(in) :: rho, pthermal
-    double precision, intent(out) :: csound2
-    double precision :: T, Rfactor
-
-    call ionization_get_state_scalar(rho, pthermal, T, Rfactor)
-    call ffhd_get_csound2_T_scalar(T, csound2)
-  end subroutine ffhd_get_csound2_prim_scalar
 
   subroutine ffhd_handle_small_ei(w, x, ixI^L, ixO^L, ie, subname)
     use mod_global_parameters
@@ -1611,56 +1334,25 @@ contains
     character(len=*), intent(in)    :: subname
     integer :: idir
     logical :: flag(ixI^S,1:nw)
-    double precision              :: rho(ixI^S), eint_floor(ixI^S)
-    double precision              :: T, pthermal, Rfactor
-    integer :: ix^D
+    double precision              :: rho(ixI^S)
 
     flag=.false.
-    if (ffhd_include_ionization_energy) then
-      {do ix^DB = ixO^LIM^DB\}
-        call ffhd_get_eint_from_rho_p_scalar( &
-             max(w(ix^D,rho_), small_density), small_pressure, &
-             eint_floor(ix^D))
-        if (w(ix^D,ie)<eint_floor(ix^D)) flag(ix^D,ie)=.true.
-      {end do\}
-    else
-      where(w(ixO^S,ie)<small_e) flag(ixO^S,ie)=.true.
-    end if
+    where(w(ixO^S,ie)<small_e) flag(ixO^S,ie)=.true.
     if(any(flag(ixO^S,ie))) then
       select case (small_values_method)
       case ("replace")
-        if (ffhd_include_ionization_energy) then
-          where(flag(ixO^S,ie)) w(ixO^S,ie)=eint_floor(ixO^S)
-        else
-          where(flag(ixO^S,ie)) w(ixO^S,ie)=small_e
-        end if
+        where(flag(ixO^S,ie)) w(ixO^S,ie)=small_e
       case ("average")
         call small_values_average(ixI^L, ixO^L, w, x, flag, ie)
-        if (ffhd_include_ionization_energy) then
-          where(flag(ixO^S,ie) .and. w(ixO^S,ie)<eint_floor(ixO^S))
-            w(ixO^S,ie)=eint_floor(ixO^S)
-          end where
-        end if
       case default
-        if (ffhd_include_ionization_energy) then
-          {do ix^DB = ixO^LIM^DB\}
-            if (w(ix^D,rho_) > zero .and. w(ix^D,ie) > zero) then
-              call ffhd_get_state_from_eint_scalar( &
-                   w(ix^D,rho_), w(ix^D,ie), T, pthermal, Rfactor)
-              w(ix^D,e_)=pthermal
-            else
-              w(ix^D,e_)=-bigdouble
-            end if
-          {end do\}
-        else
-          w(ixO^S,e_)=w(ixO^S,e_)*gamma_1
-        end if
+        w(ixO^S,e_)=w(ixO^S,e_)*eos%gamma_minus_1
         call ffhd_get_rho(w,x,ixI^L,ixO^L,rho)
         w(ixO^S,mom(1)) = w(ixO^S,mom(1))/rho(ixO^S)
         call small_values_error(w, x, ixI^L, ixO^L, flag, subname)
       end select
     end if
   end subroutine ffhd_handle_small_ei
+
 
   subroutine ffhd_get_dt(wprim,ixI^L,ixO^L,dtnew,dx^D,x)
     use mod_global_parameters
@@ -1702,6 +1394,7 @@ contains
     end if
   end function ffhd_kin_en_origin
 
+
   subroutine Rfactor_from_constant_ionization(w,x,ixI^L,ixO^L,Rfactor)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
@@ -1714,19 +1407,23 @@ contains
 
   subroutine add_hyperbolic_tc_source(qdt,ixI^L,ixO^L,wCT,w,x,wCTprim)
     use mod_global_parameters
-    use mod_ionization_degree, only: ionization_get_eps_derivative_T
+
     integer, intent(in) :: ixI^L,ixO^L
     double precision, intent(in) :: qdt
     double precision, dimension(ixI^S,1:ndim), intent(in) :: x
     double precision, dimension(ixI^S,1:nw), intent(in) :: wCT,wCTprim
     double precision, dimension(ixI^S,1:nw), intent(inout) :: w
 
-    double precision, dimension(ixI^S) :: Te
+    double precision, dimension(ixI^S) :: Te, R
     double precision :: sigma_T5,sigma_T7,sigmaT5_bgradT,f_sat,tau
-    double precision :: eps,deps_dT,heatcap_T
     integer :: ix^D
 
-    call ffhd_get_temperature(wCT, x, ixI^L, ixI^L, Te)
+    ! EoS-aware temperature: T = p/(R*rho). For FI R=RR (=1 under eq_state_units)
+    ! recovers p/rho; for LTE R=Rfactor_from_LTE varies, so LTE+HTC is physically
+    ! consistent. Computed over ixI^L (the +-2 stencil reaches ghost layers;
+    ! their R uses the update_eos_4_bc-refreshed aux state, as in mhd).
+    call ffhd_get_Rfactor(wCT,x,ixI^L,ixI^L,R)
+    Te(ixI^S)=wCTprim(ixI^S,p_)/(R(ixI^S)*wCT(ixI^S,rho_))
     ! temperature on face T_(i+1/2)=(7(T_i+T_(i+1))-(T_(i-1)+T_(i+2)))/12
     ! T_(i+1/2)-T_(i-1/2)=(8(T_(i+1)-T_(i-1))-T_(i+2)+T_(i-2))/12
    {^IFTWOD
@@ -1747,24 +1444,14 @@ contains
         sigmaT5_bgradT=sigma_T5*(&
            block%B0(ix^D,1,0)*((8.d0*(Te(ix1+1,ix2)-Te(ix1-1,ix2))-Te(ix1+2,ix2)+Te(ix1-2,ix2))/12.d0)/block%ds(ix^D,1)&
           +block%B0(ix^D,2,0)*((8.d0*(Te(ix1,ix2+1)-Te(ix1,ix2-1))-Te(ix1,ix2+2)+Te(ix1,ix2-2))/12.d0)/block%ds(ix^D,2))
-        if (ffhd_include_ionization_energy) then
-          if (wCT(ix^D,rho_) <= zero .or. Te(ix^D) <= zero) then
-            call mpistop("invalid state in FFHD hyperbolic thermal conduction")
-          end if
-          call ionization_get_eps_derivative_T( &
-               Te(ix^D), inv_gamma_1, eps, deps_dT)
-          heatcap_T=wCT(ix^D,rho_)*Te(ix^D)*deps_dT
-        else
-          heatcap_T=wCTprim(ix^D,p_)*inv_gamma_1
-        end if
         if(ffhd_hyperbolic_tc_sat) then
           ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
           f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*wCT(ix^D,rho_)*(wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0))
-          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(heatcap_T*cmax_global**2))
+          tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*eos%inv_gamma_minus_1*cmax_global**2))
           w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
         else
           w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-           max(4.d0*dt, sigma_T7*courantpar**2/(heatcap_T*cmax_global**2))
+           max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*eos%inv_gamma_minus_1*cmax_global**2))
         end if
       end do
     end do
@@ -1789,24 +1476,14 @@ contains
              block%B0(ix^D,1,0)*((8.d0*(Te(ix1+1,ix2,ix3)-Te(ix1-1,ix2,ix3))-Te(ix1+2,ix2,ix3)+Te(ix1-2,ix2,ix3))/12.d0)/block%ds(ix^D,1)&
             +block%B0(ix^D,2,0)*((8.d0*(Te(ix1,ix2+1,ix3)-Te(ix1,ix2-1,ix3))-Te(ix1,ix2+2,ix3)+Te(ix1,ix2-2,ix3))/12.d0)/block%ds(ix^D,2)&
             +block%B0(ix^D,3,0)*((8.d0*(Te(ix1,ix2,ix3+1)-Te(ix1,ix2,ix3-1))-Te(ix1,ix2,ix3+2)+Te(ix1,ix2,ix3-2))/12.d0)/block%ds(ix^D,3))
-          if (ffhd_include_ionization_energy) then
-            if (wCT(ix^D,rho_) <= zero .or. Te(ix^D) <= zero) then
-              call mpistop("invalid state in FFHD hyperbolic thermal conduction")
-            end if
-            call ionization_get_eps_derivative_T( &
-                 Te(ix^D), inv_gamma_1, eps, deps_dT)
-            heatcap_T=wCT(ix^D,rho_)*Te(ix^D)*deps_dT
-          else
-            heatcap_T=wCTprim(ix^D,p_)*inv_gamma_1
-          end if
           if(ffhd_hyperbolic_tc_sat) then
             ! 5 phi rho c^3, phi=0.3, c=sqrt(p/rho) isothermal sound speed
             f_sat=one/(one+dabs(sigmaT5_bgradT)/(1.5d0*wCT(ix^D,rho_)*(wCTprim(ix^D,p_)/wCT(ix^D,rho_))**1.5d0))
-            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(heatcap_T*cmax_global**2))
+            tau=max(4.d0*dt, f_sat*sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*eos%inv_gamma_minus_1*cmax_global**2))
             w(ix^D,q_)=w(ix^D,q_)-qdt*(f_sat*sigmaT5_bgradT+wCT(ix^D,q_))/tau
           else
             w(ix^D,q_)=w(ix^D,q_)-qdt*(sigmaT5_bgradT+wCT(ix^D,q_))/&
-             max(4.d0*dt, sigma_T7*courantpar**2/(heatcap_T*cmax_global**2))
+             max(4.d0*dt, sigma_T7*courantpar**2/(wCTprim(ix^D,p_)*eos%inv_gamma_minus_1*cmax_global**2))
           end if
         end do
       end do

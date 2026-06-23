@@ -2,6 +2,7 @@ module mod_usr
 
   ! Include a physics module
   use mod_hd
+  use mod_eos, only: eos
   use mod_fld
   use mod_multigrid_coupling
 
@@ -81,7 +82,7 @@ contains
     Er1_norm = arad_norm*T1_norm**4.d0
     v1_norm = v1/unit_velocity
     momc_n=rho1*v1/(unit_density*unit_velocity)
-    eg1_norm=p1_norm/(hd_gamma-1.0d0)+half*rho1_norm*v1_norm**2
+    eg1_norm=p1_norm/(eos%gamma-1.0d0)+half*rho1_norm*v1_norm**2
 
     v2_norm = v2/unit_velocity
     ! this computes T2 ensuring that the momentum flux is exactly equal
@@ -95,9 +96,9 @@ contains
 
     ! this computes T2 ensuring that the energy flux is exactly equal
     ! use the Halley root finder for the 4th order polynomial in T2 (normalized)
-    c1B_norm=3.0d0*RR*rho2_norm*hd_gamma/(arad_norm*4.0d0*(hd_gamma-1.d0))
+    c1B_norm=3.0d0*RR*rho2_norm*eos%gamma/(arad_norm*4.0d0*(eos%gamma-1.d0))
     c0B_norm=(3.0d0/(4.0d0*arad_norm))* &
-       ((hd_gamma*RR*rho1_norm*T1_norm/(hd_gamma-1.d0) &
+       ((eos%gamma*RR*rho1_norm*T1_norm/(eos%gamma-1.d0) &
          +4.0d0*Er1_norm/3.0d0+half*momc_n**2/rho1_norm)*rho2_norm/rho1_norm &
        -half*momc_n**2/rho2_norm)
     T2B_norm=T1_norm ! this is a bad guess
@@ -117,7 +118,7 @@ contains
      
     T2=T2_norm*unit_temperature
     p2_norm=T2_norm*rho2_norm*RR
-    eg2_norm=p2_norm/(hd_gamma-1.0d0)+half*rho2_norm*v2_norm**2
+    eg2_norm=p2_norm/(eos%gamma-1.0d0)+half*rho2_norm*v2_norm**2
     Er2_norm = arad_norm*T2_norm**4.d0
 
     ! here we set the dirichlet (or other) conditions for the MG solver
@@ -210,10 +211,10 @@ contains
   end subroutine initial_conditions
 
 
-  subroutine boundary_conditions(qt,ixI^L,ixB^L,iB,w,x)
+  subroutine boundary_conditions(qdt,qt,ixI^L,ixB^L,iB,w,x)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixB^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in)    :: qdt, qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
 
     select case (iB)

@@ -234,6 +234,38 @@ module mod_global_parameters
   !> A global MPI error return code
   integer :: ierrmpi
 
+  !> Per-rank load-balance timing diagnostic toggle (off by default).
+  !> When .true., per-rank wall times are gathered every step and written
+  !> to <basename>_rank_timing.log.
+  logical :: lb_diagnose = .false.
+
+  !> Cost-weighted automatic load balancer toggle (off by default).
+  !> When .true., the SFC partitioner cuts on cumulative measured per-block
+  !> cost rather than on equal block counts.
+  logical :: lb_automatic = .false.
+
+  !> Rebalance every lb_interval cycles when lb_automatic is on.
+  integer :: lb_interval = 10
+
+  !> Exponential-moving-average decay for the per-block cost.
+  !> costlist <- lb_alpha*costlist + (1-lb_alpha)*measured.
+  !> 0 = no memory (volatile), 1 = no update.
+  double precision :: lb_alpha = 0.9d0
+
+  !> Per-step per-block (per-rank, indexed by igrid) cost accumulator.
+  !> Reset at start of each advance call; filled inside iigrid loops by the
+  !> per-block timer wrappers in mod_advance.t and mod_supertimestepping.t.
+  double precision, dimension(:), allocatable :: block_cost
+
+  !> Persistent global per-Morton-leaf EWMA cost. Sized to max_blocks*npe
+  !> (the upper bound on nleafs); only the first nleafs entries are
+  !> meaningful. Morton numbering is invariant across load_balance
+  !> migration, so costlist values are correctly preserved when blocks
+  !> change rank. Refinement events insert/remove Morton indices, after
+  !> which the EWMA recovers over ~5 cycles. Indexed 1..nleafs. Updated
+  !> by EWMA blend inside get_Morton_range_costed.
+  double precision, dimension(:), allocatable :: costlist
+
   !> MPI file handle for logfile
   integer :: log_fh
   !> MPI type for block including ghost cells and its size
@@ -395,6 +427,8 @@ module mod_global_parameters
 
   integer :: phys_trac_type=1
   integer :: phys_trac_finegrid=4
+  integer :: phys_trac_nzones=1
+  double precision :: phys_trac_zone_splits(10)=-1.d0
 
   !> integer switchers for type courant
   integer, parameter :: type_maxsum=1
@@ -667,6 +701,9 @@ module mod_global_parameters
 
   !> Use TRAC for MHD or 1D HD
   logical :: phys_trac=.false.
+
+  !> Use escape probability for radiative cooling modification
+  logical :: phys_escape_prob=.false.
 
   !> Whether to apply flux conservation at refinement boundaries
   logical :: fix_conserve_global = .true.

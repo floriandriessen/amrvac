@@ -46,10 +46,13 @@
  /
 
  &hd_list
-  He_abundance = 0.0d0
   hd_energy = .true.
-  hd_gamma = 1.6666667d0
   hd_radiation_fld = .true.
+ /
+
+ &eos_list
+  gamma = 1.6666667d0
+  He_abundance = 0.0d0
  /
 
  &fld_list

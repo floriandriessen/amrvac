@@ -1,5 +1,6 @@
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   use mod_lookup_table
   use mod_bc_data
   !SI units, constants
@@ -140,7 +141,7 @@ contains
     ! in subroutine mhd_phys_init (in mod_mhd_phys.t) which in turn calls
     ! subroutine mhd_physical_units (also in mod_mhd_phys.t)
     !  There, the parameters SI_unit, eq_state_units, mhd_partial_ionization enter
-    !  Sometime we use He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2
+    !  Sometime we use eos%He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2
     !  Moreover, we use 3 out of
     !      unit_density, unit_numberdensity, unit_length, unit_time, unit_velocity,
     !      unit_pressure, unit_magneticfield, unit_temperature,
@@ -149,14 +150,13 @@ contains
     printsettingformat='(1x,A50,ES15.7)'
     if(mype==0) then
       write(*,*)'----------------PARAMETERS--   ----------------------'
-      write(*,printsettingformat) "mhd_gamma ",mhd_gamma
+      write(*,printsettingformat) "eos%gamma ",eos%gamma
       write(*,printsettingformat) "mhd_eta ",mhd_eta
       write(*,*)'----------------BEGIN UNITS  ------------------------'
       write(*,*)'----------------UNIT CONTROLS------------------------'
       write(*,*) "SI_unit",SI_unit
-      write(*,*) "eq_state_units",eq_state_units
-      write(*,*) "mhd_partial_ionization",mhd_partial_ionization
-      write(*,printsettingformat) "He_abundance",He_abundance
+      write(*,*) "eos_type",eos%eos_type
+      write(*,printsettingformat) "eos%He_abundance",eos%He_abundance
       write(*,printsettingformat) "H_ion_fr",H_ion_fr
       write(*,printsettingformat) "He_ion_fr",He_ion_fr
       write(*,printsettingformat) "He_ion_fr2",He_ion_fr2
@@ -285,7 +285,9 @@ contains
 
     end if
 
-    mhd_gamma= 3.0d0/2.0d0
+    !> gamma is set in the parfile (&eos_list gamma=1.5d0), read once at
+    !> eos_init so the derived gamma constants stay consistent. Do not set
+    !> eos%gamma from user code.
     call set_units(Lunit_in, Tunit_in, Rhounit_in, Vunit_in, Bunit_in, Eunit_in, Punit_in)
 
     w_convert_factor(rho_) = Rhounit_in ! in km/m^3
@@ -576,7 +578,7 @@ contains
   end do
 
     !Convert to conserved values
-    call mhd_to_conserved(ixG^L,ix^L,w,x)
+    call eos%to_conserved(ixG^L,ix^L,w,x)
 
     if(mhd_n_tracer ==  1) then
        w(ix^S, tracer(1)) = 0.0d0
@@ -832,10 +834,10 @@ end subroutine set_output_vars
     end if
   end subroutine mask_cap
 
-  subroutine specialbound_usr(qt,ixI^L,ixO^L,iB,w,x)
+  subroutine specialbound_usr(qdt,qt,ixI^L,ixO^L,iB,w,x)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixO^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in) :: qdt,qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     integer             :: ix3,ix2
     double precision    :: vr_bc, vt_bc, vp_bc, br_bc, bt_bc, bp_bc, md_bc,rho_bc, temp_bc, p_bc, theta, phi
@@ -862,7 +864,7 @@ end subroutine set_output_vars
 ! Should we want a radial velocity in the inertial frame, we need to set v3 = -omega_frame * r  and B3 = -omega_frame * r * sin\theta / v1
 ! we cannot use asymm BC for v3 and B3 in the par file, since that will kill any component in the corot-frame
       
-      call mhd_to_primitive(ixI^L,ixO^L,w,x)
+      call eos%to_primitive(ixI^L,ixO^L,w,x)
       do ix3 = ixOmin3, ixOmax3
           do ix2 = ixOmin2,ixOmax2
             ! bc_data_set() has already filled ghost cells; keep its value at the
@@ -884,7 +886,7 @@ end subroutine set_output_vars
               ! w(i,ix2,ix3,p_) = p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )
 
               ! (B) polytropic:
-              w(i,ix2,ix3,p_)  =  p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )**mhd_gamma
+              w(i,ix2,ix3,p_)  =  p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )**eos%gamma
 
             end do
 
@@ -977,7 +979,7 @@ end subroutine set_output_vars
         end do
 
         ! convert back to conserved values
-        call mhd_to_conserved(ixI^L, ixO^L, w, x)
+        call eos%to_conserved(ixI^L, ixO^L, w, x)
     end select
   end subroutine specialbound_usr
 

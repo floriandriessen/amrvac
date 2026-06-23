@@ -1,5 +1,6 @@
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   use mod_global_parameters, only: par_files,mype,refine_max_level
   use mod_magnetic_topology, only: mt_params_read,mt_run_topology_task
   use mod_usr_methods, only: usr_special_convert,usr_refine_grid
@@ -53,7 +54,7 @@ contains
     w(ixO^S,mag(2))=B1(ixO^S,2)+B2(ixO^S,2)
     w(ixO^S,mag(3))=B1(ixO^S,3)+B2(ixO^S,3)
 
-    call mhd_to_conserved(ixI^L,ixO^L,w,x)
+    call eos%to_conserved(ixI^L,ixO^L,w,x)
   end subroutine initonegrid_usr
 
   subroutine topology_bench_special_convert(qunitconvert)

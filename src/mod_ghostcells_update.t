@@ -111,6 +111,17 @@ module mod_ghostcells_update
     double precision, dimension(:^D&,:), allocatable :: w
   end type wbuffer
 
+  abstract interface
+    subroutine update_eos_bc_sub(ixI^L, ixO^L, w, x)
+      use mod_global_parameters
+      integer, intent(in)             :: ixI^L, ixO^L
+      double precision, intent(inout) :: w(ixI^S, nw)
+      double precision, intent(in)    :: x(ixI^S, 1:ndim)
+    end subroutine update_eos_bc_sub
+  end interface
+
+  procedure(update_eos_bc_sub), pointer     :: update_eos_4_bc      => null()
+
 contains
 
   subroutine init_bc()
@@ -350,6 +361,7 @@ contains
   subroutine getbc(time,qdt,psb,nwstart,nwbc)
     use mod_global_parameters
     use mod_physics
+    use mod_usr_methods, only: usr_prepare_boundary
     use mod_coarsen, only: coarsen_grid
     use mod_boundary_conditions, only: getintbc, bc_phys
     use mod_comm_lib, only: mpistop
@@ -376,7 +388,7 @@ contains
 
     ! fill internal physical boundary
     if (internalboundary) then 
-       call getintbc(time,ixG^LL)
+       call getintbc(time,qdt,ixG^LL)
     end if
 
     ! prepare coarse values to send to coarser neighbors
@@ -544,6 +556,9 @@ contains
 
     ! fill physical boundary ghost cells after internal ghost-cell values exchange
     if(bcphys) then
+      if(associated(usr_prepare_boundary)) then
+        call usr_prepare_boundary(time, qdt)
+      endif
       !$OMP PARALLEL DO SCHEDULE(dynamic) PRIVATE(igrid)
       do iigrid=1,igridstail; igrid=igrids(iigrid);
         if(.not.phyboundblock(igrid)) cycle
@@ -608,6 +623,10 @@ contains
             else 
               if (neighbor_type(i^D,igrid) /= neighbor_boundary) cycle
             end if
+            !> Refresh the EoS-derived ghost fields before extrapolation; the hook
+            !> is set (in amrvac.t) only when the EoS needs it, e.g. LTE.
+            if (associated(update_eos_4_bc)) &
+               call update_eos_4_bc(ixG^LL,ixM^LL,psb(igrid)%w,psb(igrid)%x)
             call bc_phys(iside,idims,time,qdt,psb(igrid),ixG^LL,ixB^L)
           end do
         end do
@@ -1259,7 +1278,8 @@ contains
 
       !> do prolongation for fine blocks after receipt data from coarse neighbors
       subroutine bc_prolong(igrid,i^D)
-        use mod_physics, only: phys_to_primitive, phys_to_conserved
+        use mod_physics, only: phys_to_primitive, phys_to_conserved, &
+             phys_to_prolong, phys_from_prolong
 
         double precision :: dxFi^D, dxCo^D, xFimin^D, xComin^D, invdxCo^D
         integer :: i^D,igrid
@@ -1314,11 +1334,6 @@ contains
         end if
 
         if(prolongprimitive) then
-          ! following line again assumes equidistant grid, but 
-          ! just computes indices, so also ok for stretched case
-          ! reason for +1-1 and +1+1: the coarse representation has 
-          ! also nghostcells at each side. During
-          ! prolongation, we need cells to left and right, hence -1/+1
           block=>psc(igrid)
           ixComin^D=int((xFimin^D+(dble(ixFimin^D)-half)*dxFi^D-xComin^D)*invdxCo^D)+1-1;
           ixComax^D=int((xFimin^D+(dble(ixFimax^D)-half)*dxFi^D-xComin^D)*invdxCo^D)+1+1;

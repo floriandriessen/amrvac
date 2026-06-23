@@ -54,6 +54,16 @@ module mod_variables
   !> Index of the radiation energy density
   integer :: iw_r_e = -1
 
+  !> Index of electron number density
+  integer :: iw_ne = -1
+
+  !> Index of temperature
+  integer :: iw_te = -1
+
+  !> Index of heat flux
+  integer :: iw_q = -1
+
+
   !> Indices of the magnetic field components
   integer, allocatable, protected :: iw_mag(:)
 
@@ -221,6 +231,37 @@ contains
     cons_wnames(nwflux) = 'e'
     prim_wnames(nwflux) = 'p'
   end function var_set_energy
+
+  function var_set_ne() result(iw)
+    integer :: iw
+
+    nw                  = nw + 1
+    iw_ne               = nw
+    iw                  = nw
+    prim_wnames(nw) = 'Ne'
+    cons_wnames(nw) = 'Ne'
+  end function var_set_ne
+
+  function var_set_te() result(iw)
+    integer :: iw
+
+    nw                  = nw + 1
+    iw_te               = nw
+    iw                  = nw
+    prim_wnames(nw) = 'Te'
+    cons_wnames(nw) = 'Te'
+  end function var_set_te
+  
+  function var_set_q() result(iw)
+    integer :: iw
+
+    nwflux              = nwflux + 1
+    nw                  = nw + 1
+    iw_q                = nwflux
+    iw                  = nwflux
+    prim_wnames(nwflux) = 'q'
+    cons_wnames(nwflux) = 'q'
+  end function var_set_q
 
   function var_set_radiation_energy() result(iw)
     integer :: iw

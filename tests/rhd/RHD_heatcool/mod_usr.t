@@ -2,6 +2,7 @@ module mod_usr
 
   ! Include a physics module
   use mod_hd
+  use mod_eos, only: eos
   use mod_fld
 
   implicit none
@@ -88,7 +89,7 @@ end subroutine usr_params_read
     logical, save:: first=.true.
 
     Tgas_eq = ((E_r0/unit_Erad)/arad_norm)**(1.d0/4.d0)
-    e_eq= RR*(rho0/unit_density)*Tgas_eq/(hd_gamma-one)
+    e_eq= RR*(rho0/unit_density)*Tgas_eq/(eos%gamma-one)
 
     ! Set initial values for w
     w(ixI^S, rho_) = rho0/unit_density
@@ -127,7 +128,7 @@ end subroutine usr_params_read
 
     w(ixO^S,delta_e_)=w(ixO^S,e_)/e_eq
     call hd_get_trad(w,x,ixI^L,ixO^L,Trad)
-    call hd_get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
+    call eos%get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
     w(ixO^S,delta_T_)=Tgas(ixO^S)-Trad(ixO^S)
     w(ixO^S,delta_Trel_)=(Tgas(ixO^S)-Trad(ixO^S))/Tgas_eq
     ! output the AMR level (assuming uniform grid blocks)

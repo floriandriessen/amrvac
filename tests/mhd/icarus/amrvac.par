@@ -120,3 +120,7 @@
         magnetogram_time = '2015-06-25T01:04:00' 
         amr_start_hour=0
 /
+
+ &eos_list
+        gamma=1.5d0
+ /

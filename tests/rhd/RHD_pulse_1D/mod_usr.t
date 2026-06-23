@@ -3,6 +3,7 @@ module mod_usr
   ! Include a physics module
   use mod_hd
   use mod_fld
+  use mod_eos, only: eos
 
   implicit none
 
@@ -92,7 +93,7 @@ contains
     w(ixI^S,p_) = temp(ixI^S)*w(ixI^S,rho_)
     w(ixI^S,r_e) = arad_norm*(temp(ixI^S)**4.d0)
 
-    call hd_to_conserved(ixI^L,ixI^L,w,x)
+    call eos%to_conserved(ixI^L,ixI^L,w,x)
 
   if(mype==0.and.first)then
     print *,'===IN INITIAL CONDITIONS========================================='

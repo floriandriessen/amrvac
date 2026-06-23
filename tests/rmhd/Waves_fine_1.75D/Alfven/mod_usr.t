@@ -1,5 +1,6 @@
 module mod_usr
   use mod_mhd 
+  use mod_eos, only: eos
 
   implicit none
 
@@ -71,9 +72,9 @@ contains
     By0_n = By0/unit_magneticfield
     Bz0_n = Bz0/unit_magneticfield
 
-    eg0_norm =p0_norm/(mhd_gamma-1.0d0)+half*(Bx0_n**2+By0_n**2+Bz0_n**2) 
+    eg0_norm =p0_norm/(eos%gamma-1.0d0)+half*(Bx0_n**2+By0_n**2+Bz0_n**2) 
 
-    csound_norm=dsqrt(mhd_gamma*p0/rho0)/unit_velocity
+    csound_norm=dsqrt(eos%gamma*p0/rho0)/unit_velocity
     vax_norm=dsqrt(Bx0_n**2/rho0_norm)
 
     va_norm = dsqrt((Bx0_n**2 + By0_n**2+ Bz0_n**2)/rho0_norm)
@@ -90,8 +91,8 @@ contains
 
     if(mype==0)then
       write(*,*) 'derived dimensionless rad/gas energy ratio =',Er0_norm/eg0_norm
-      write(*,*) 'derived ratio r=E/(4gamma e) =',Er0_norm/(4.d0*mhd_gamma*eg0_norm)
-      write(*,*) 'derived Boltzmann ratio Bo=4 gamma cs e/(cE) =',4.0d0*mhd_gamma*csound_norm*eg0_norm/(c_norm*Er0_norm)
+      write(*,*) 'derived ratio r=E/(4gamma e) =',Er0_norm/(4.d0*eos%gamma*eg0_norm)
+      write(*,*) 'derived Boltzmann ratio Bo=4 gamma cs e/(cE) =',4.0d0*eos%gamma*csound_norm*eg0_norm/(c_norm*Er0_norm)
       print*, 'derived ratio p0_by_Er0', p0_by_Er0
       print*, 'derived ratio (inverse plasma beta) p0_by_p0_B', p0_by_p0_B
     endif
@@ -150,7 +151,7 @@ contains
 113    close(unitpar)
     end do
 
-    eintg0 = p0/(mhd_gamma - one)
+    eintg0 = p0/(eos%gamma - one)
     if(mype==0)then
     print *,'============================================'
     write(*,*) 'INPUT GIVEN IN cgs units is'
@@ -202,10 +203,10 @@ contains
 
   end subroutine initial_conditions
 
-  subroutine Initialize_Wave(level,qt,ixI^L,ixO^L,w,x)
+  subroutine Initialize_Wave(level,qt,qdt,ixI^L,ixO^L,w,x)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L,ixO^L,level
-    double precision, intent(in)    :: qt
+    double precision, intent(in)    :: qt, qdt
     double precision, intent(inout) :: w(ixI^S,1:nw)
     double precision, intent(in)    :: x(ixI^S,1:ndim)
 
@@ -225,7 +226,7 @@ contains
       w(ixI^S, mag(1)) = Bx0_n
       w(ixI^S, mag(2)) = By0_n + A_By*dsin(wavenumber*x(ixI^S,1)-omega*qt)
       w(ixI^S, mag(3)) = Bz0_n + A_Bz*dsin(wavenumber*x(ixI^S,1)-omega*qt)
-      w(ixI^S, e_)     = pres(ixI^S)/(mhd_gamma-1.0d0)+half*w(ixI^S,rho_)* &
+      w(ixI^S, e_)     = pres(ixI^S)/(eos%gamma-1.0d0)+half*w(ixI^S,rho_)* &
                                (velx(ixI^S)**2+vely(ixI^S)**2+velz(ixI^S)**2) &
          +half*(Bx0_n*Bx0_n+w(ixI^S, mag(2))*w(ixI^S, mag(2)) + w(ixI^S, mag(3))*w(ixI^S, mag(3)))
     endwhere
@@ -240,9 +241,9 @@ contains
 
     double precision :: Trad(ixI^S),Tgas(ixI^S),pth(ixI^S)
 
-    call mhd_get_pthermal(w,x,ixI^L,ixO^L,pth)
+    call eos%get_thermal_pressure(w,x,ixI^L,ixO^L,pth)
     call mhd_get_trad(w,x,ixI^L,ixO^L,Trad)
-    call mhd_get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
+    call eos%get_temperature_from_etot(w,x,ixI^L,ixO^L,Tgas)
     w(ixO^S,Tgas_)=Tgas(ixO^S)
     w(ixO^S,Trad_)=Trad(ixO^S)
     w(ixO^S,pres_)=pth(ixO^S)

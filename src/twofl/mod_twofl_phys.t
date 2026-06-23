@@ -785,7 +785,6 @@ contains
         rc_fl_c%get_rho => get_rhoc_tot
         rc_fl_c%get_pthermal => twofl_get_pthermal_c
         rc_fl_c%get_var_Rfactor => Rfactor_c
-        rc_fl_c%get_temperature => twofl_get_temperature_c
         rc_fl_c%e_ = e_c_
         rc_fl_c%Tcoff_ = Tcoff_c_
         rc_fl_c%has_equi = has_equi_pe_c0 .and. has_equi_rho_c0
@@ -803,12 +802,13 @@ contains
       endif
     end if
 
-    {^IFTHREED
-        allocate(te_fl_c)
-        te_fl_c%get_rho => get_rhoc_tot
-        te_fl_c%get_temperature => twofl_get_temperature_c
-        phys_te_images => twofl_te_images
-    }
+{^IFTHREED
+    allocate(te_fl_c)
+    te_fl_c%get_rho=> get_rhoc_tot
+    te_fl_c%get_pthermal=> twofl_get_pthermal_c
+    te_fl_c%get_var_Rfactor => Rfactor_c
+    phys_te_images => twofl_te_images
+}
 
     ! Initialize viscosity module
     !if (twofl_viscosity) call viscosity_init(phys_wider_stencil)
@@ -7149,17 +7149,5 @@ contains
     Rfactor(ixO^S)=Rc
 
   end subroutine Rfactor_c
-
-  subroutine twofl_get_temperature_c(w, x, ixI^L, ixO^L, T)
-    use mod_global_parameters
-    integer, intent(in) :: ixI^L, ixO^L
-    double precision, intent(in) :: w(ixI^S,1:nw), x(ixI^S,1:ndim)
-    double precision, intent(out) :: T(ixI^S)
-    double precision :: rho(ixI^S), pth(ixI^S)
-
-    call get_rhoc_tot(w, x, ixI^L, ixO^L, rho)
-    call twofl_get_pthermal_c(w, x, ixI^L, ixO^L, pth)
-    T(ixO^S) = pth(ixO^S)/(Rc*rho(ixO^S))
-  end subroutine twofl_get_temperature_c
 
 end module mod_twofl_phys
