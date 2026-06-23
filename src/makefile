@@ -480,6 +480,9 @@ mod_load_balance.o: mod_forest.mod
 mod_load_balance.o: mod_functions_forest.mod
 mod_load_balance.o: mod_global_parameters.mod
 mod_load_balance.o: mod_space_filling_curve.mod
+mod_magnetic_topology.o: mod_comm_lib.mod
+mod_magnetic_topology.o: mod_global_parameters.mod
+mod_magnetic_topology.o: mod_trace_field.mod
 mod_magnetofriction.o: mod_amr_grid.mod
 mod_magnetofriction.o: mod_comm_lib.mod
 mod_magnetofriction.o: mod_fix_conserve.mod
