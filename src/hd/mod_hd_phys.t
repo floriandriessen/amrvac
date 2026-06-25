@@ -595,9 +595,9 @@ contains
           if(mype==0) write(*,*) 'WB + ionE: forcing p2eint_method = bisect'
         end if
         if (eos%method == 'entropy' .and. mype == 0) then
-          write(*,*) 'WB + ionE + entropy: p2eint_method stays "table" &
-                     &(eint_from_p_bisect uses legacy log_p table not built &
-                     &for entropy method)'
+          write(*,*) 'WB + ionE + entropy: p2eint_method stays "table"'
+          write(*,*) 'eint_from_p_bisect uses legacy log_p table'
+          write(*,*) 'not built for entropy method'
         end if
         if(mype==0) write(*,*) 'Well-balanced reconstruction enabled'
       end if
