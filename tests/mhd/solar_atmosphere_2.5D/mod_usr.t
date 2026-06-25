@@ -1,6 +1,5 @@
 module mod_usr
   use mod_mhd
-  use mod_eos, only: eos
   implicit none
   double precision, allocatable :: pbc(:),rbc(:)
   double precision :: usr_grav,vmax,La
@@ -172,7 +171,7 @@ contains
       w(ixO^S,mag(3))=-B0*dcos(kx*x(ixO^S,1))*dexp(-ly*x(ixO^S,2))*dsin(theta)
     endif
 
-    call eos%to_conserved(ixI^L,ixO^L,w,x)
+    call mhd_to_conserved(ixI^L,ixO^L,w,x)
 
   end subroutine initonegrid_usr
 
@@ -368,7 +367,7 @@ contains
           end do
         end do
       end if
-      call eos%to_conserved(ixI^L,ixO^L,w,x)
+      call mhd_to_conserved(ixI^L,ixO^L,w,x)
     case(4)
       ixOs^L=ixO^L;
       ixOsmin2=ixOmin2-1;ixOsmax2=ixOmin2-1;
@@ -432,7 +431,7 @@ contains
           end do
         end do
       end if
-      call eos%to_conserved(ixI^L,ixO^L,w,x)
+      call mhd_to_conserved(ixI^L,ixO^L,w,x)
     case default
        call mpistop("Special boundary is not defined for this region")
     end select

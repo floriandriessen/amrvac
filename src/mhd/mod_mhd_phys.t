@@ -220,16 +220,16 @@ module mod_mhd_phys
   end interface
 
   procedure(mask_subroutine), pointer  :: usr_mask_ambipolar => null()
-  ! procedure(sub_convert), pointer      :: mhd_to_primitive  => null()
-  ! procedure(sub_convert), pointer      :: mhd_to_conserved  => null()
+  procedure(sub_convert), pointer      :: mhd_to_primitive  => null()
+  procedure(sub_convert), pointer      :: mhd_to_conserved  => null()
   procedure(sub_small_values), pointer :: mhd_handle_small_values => null()
   ! Public methods
   public :: usr_mask_ambipolar
   public :: mhd_phys_init
   public :: mhd_get_v
   public :: mhd_get_rho
-  ! public :: mhd_to_conserved
-  ! public :: mhd_to_primitive
+  public :: mhd_to_conserved
+  public :: mhd_to_primitive
   public :: mhd_e_to_ei
   public :: mhd_ei_to_e
   public :: mhd_face_to_center

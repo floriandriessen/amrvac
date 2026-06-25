@@ -237,6 +237,8 @@ contains
         end if
 
         ! phys_e_to_ei / phys_ei_to_e assigned in mhd_phys_init (mod_mhd_phys.t)
+        mhd_to_primitive => eos%to_primitive
+        mhd_to_conserved => eos%to_conserved
 
     end subroutine mhd_link_eos
 

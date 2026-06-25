@@ -44,8 +44,8 @@ contains
         ! mode (ionE) overrides them with the PI-energy variants at the end
         ! of this routine; FI conversions stay pristine.
         if (eos%eos_type == 'FI' .or. eos%eos_type == 'PI') then
-            eos%to_conserved => hd_to_conserved
-            eos%to_primitive => hd_to_primitive
+            eos%to_conserved => hd_to_conserved_origin
+            eos%to_primitive => hd_to_primitive_origin
         else if (eos%eos_type == 'LTE') then
             eos%to_conserved => hd_to_conserved_LTE
             eos%to_primitive => hd_to_primitive_LTE
@@ -103,6 +103,8 @@ contains
             ! Te_ from eint each substep (uses HD's Te_ index: PI registers
             ! Te via var_set_auxvar, so the generic iw_te is unset).
         end if
+        hd_to_primitive          => eos%to_primitive
+        hd_to_conserved          => eos%to_conserved
 
     end subroutine hd_link_eos
 
@@ -176,7 +178,7 @@ contains
     end subroutine bind_eos_to_source
 
     !> Transform primitive variables into conservative ones
-    subroutine hd_to_conserved(ixI^L, ixO^L, w, x)
+    subroutine hd_to_conserved_origin(ixI^L, ixO^L, w, x)
         use mod_global_parameters
         use mod_dust, only: dust_to_conserved
         integer, intent(in)             :: ixI^L, ixO^L
@@ -203,10 +205,10 @@ contains
 
         timeeos_conv=timeeos_conv+(MPI_WTIME()-timeeos0)
 
-    end subroutine hd_to_conserved
+    end subroutine hd_to_conserved_origin
 
     !> Transform conservative variables into primitive ones
-    subroutine hd_to_primitive(ixI^L, ixO^L, w, x)
+    subroutine hd_to_primitive_origin(ixI^L, ixO^L, w, x)
         use mod_global_parameters
         use mod_dust, only: dust_to_primitive
         integer, intent(in)             :: ixI^L, ixO^L
@@ -241,7 +243,7 @@ contains
 
         timeeos_conv=timeeos_conv+(MPI_WTIME()-timeeos0)
 
-    end subroutine hd_to_primitive
+    end subroutine hd_to_primitive_origin
 
     !> LTE primitive -> conserved conversion.
     !>

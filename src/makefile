@@ -357,6 +357,7 @@ mod_gravity.o: mod_geometry.mod
 mod_gravity.o: mod_global_parameters.mod
 mod_gravity.o: mod_usr_methods.mod
 mod_hd.o: mod_amrvac.mod
+mod_hd.o: mod_eos.mod
 mod_hd.o: mod_hd_eos.mod
 mod_hd.o: mod_hd_hllc.mod
 mod_hd.o: mod_hd_phys.mod
@@ -509,6 +510,7 @@ mod_mf_phys.o: mod_physics.mod
 mod_mf_phys.o: mod_usr_methods.mod
 mod_mf_phys.o: mod_variables.mod
 mod_mhd.o: mod_amrvac.mod
+mod_mhd.o: mod_eos.mod
 mod_mhd.o: mod_functions_bfield.mod
 mod_mhd.o: mod_mhd_eos.mod
 mod_mhd.o: mod_mhd_hllc.mod

@@ -4,6 +4,7 @@ module mod_mhd
   use mod_mhd_hllc
   use mod_mhd_roe
   use mod_mhd_eos
+  use mod_eos, only: eos
 
   use mod_amrvac
 

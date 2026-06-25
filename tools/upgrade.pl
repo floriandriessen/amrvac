@@ -50,12 +50,12 @@ my %simple_replacements = (
     qr/\btol\b/ => "refine_threshold",
     qr/\btolratio\b/ => "derefine_ratio",
     qr/\btypegridfill\b/ => "prolongation_method",
-    qr/\bb1_\b/ => "mag(1)",
-    qr/\bb2_\b/ => "mag(2)",
-    qr/\bb3_\b/ => "mag(3)",
-    qr/(\bv1_\b|\bm1_)/ => "mom(1)",
-    qr/(\bv2_\b|\bm2_)/ => "mom(2)",
-    qr/(\bv3_\b|\bm3_)/ => "mom(3)",
+    qr/\bmhd_to_primitive\b/ => "eos%to_primitive",
+    qr/\bmhd_to_conserved\b/ => "eos%to_conserved",
+    qr/\bhd_to_primitive\b/ => "eos%to_primitive",
+    qr/\bhd_to_conserved\b/ => "eos%to_conserved",
+    qr/\bffhd_to_primitive\b/ => "eos%to_primitive",
+    qr/\bffhd_to_conserved\b/ => "eos%to_conserved",
     qr/mygeo/ => "block",
     qr/normvar\(0\)/ => "length_convert_factor",
     qr/normvar\(rho_\)/ => "w_convert_factor(rho_)",
@@ -133,7 +133,6 @@ my %par_file_replacements = (
     qr/tsave\(5\)/ => "tsave_custom",
     qr/\btypetvdlf\b/ => "typeboundspeed",
     qr/\bitmax\b/ => "it_max",
-    qr/\bglm1\b/ => "glm",
     qr/ *typelimited *=.*\n/ => "", # Remove typelimited= ... lines
     );
 

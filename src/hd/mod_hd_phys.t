@@ -211,12 +211,14 @@ module mod_hd_phys
   double precision, public, protected  :: RR=1d0
   ! remove the below flag  and assume default value = .false.
   ! procedure(sub_get_pthermal), pointer :: hd_get_Rfactor   => null()
+  procedure(sub_convert), pointer      :: hd_to_primitive  => null()
+  procedure(sub_convert), pointer      :: hd_to_conserved  => null()
   ! Public methods
   public :: hd_phys_init
   public :: hd_kin_en
   public :: hd_get_csound2
-  ! public :: hd_to_conserved
-  ! public :: hd_to_primitive
+  public :: hd_to_conserved
+  public :: hd_to_primitive
   public :: hd_check_params
   public :: hd_check_w
   public :: hd_handle_small_values
@@ -439,8 +441,6 @@ contains
     phys_get_flux            => hd_get_flux
     phys_add_source_geom     => hd_add_source_geom
     phys_add_source          => hd_add_source
-    ! phys_to_conserved        => hd_to_conserved
-    ! phys_to_primitive        => hd_to_primitive
     phys_check_params        => hd_check_params
     phys_check_w             => hd_check_w
     ! phys_get_pthermal is set by hd_link_eos
