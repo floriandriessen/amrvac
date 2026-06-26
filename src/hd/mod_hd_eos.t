@@ -31,6 +31,9 @@ module mod_hd_eos
     implicit none
     private
 
+    procedure(sub_convert), pointer, public :: hd_to_primitive  => null()
+    procedure(sub_convert), pointer, public :: hd_to_conserved  => null()
+
     public :: hd_link_eos, hd_get_pthermal
 
 contains

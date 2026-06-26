@@ -35,10 +35,14 @@ module mod_mhd_eos
 
     !> Thermal pressure pointer: set by mhd_link_eos based on energy formulation.
     !> Internal to mod_mhd_eos — external callers use eos%get_thermal_pressure.
-    procedure(sub_get_pthermal), pointer :: mhd_get_pthermal  => null()
+    procedure(sub_get_pthermal), pointer, public :: mhd_get_pthermal  => null()
 
     !> Temperature pointer: set by mhd_link_eos based on EoS type and energy formulation.
     procedure(sub_get_pthermal), pointer, public :: mhd_get_temperature => null()
+    !> use habitual name of converting to primitive
+    procedure(sub_convert), pointer, public :: mhd_to_primitive  => null()
+    !> use habitual name of converting to conserved
+    procedure(sub_convert), pointer, public :: mhd_to_conserved  => null()
 
     public :: mhd_link_eos
 contains

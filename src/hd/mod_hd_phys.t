@@ -211,14 +211,10 @@ module mod_hd_phys
   double precision, public, protected  :: RR=1d0
   ! remove the below flag  and assume default value = .false.
   ! procedure(sub_get_pthermal), pointer :: hd_get_Rfactor   => null()
-  procedure(sub_convert), pointer      :: hd_to_primitive  => null()
-  procedure(sub_convert), pointer      :: hd_to_conserved  => null()
   ! Public methods
   public :: hd_phys_init
   public :: hd_kin_en
   public :: hd_get_csound2
-  public :: hd_to_conserved
-  public :: hd_to_primitive
   public :: hd_check_params
   public :: hd_check_w
   public :: hd_handle_small_values

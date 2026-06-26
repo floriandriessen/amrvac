@@ -564,7 +564,7 @@ contains
 
     wlocal(ixI^S,1:nw)=w(ixI^S,1:nw)
     ! output temperature
-    call eos%get_thermal_pressure(wlocal,x,ixI^L,ixI^L,pth)
+    call mhd_get_pthermal(wlocal,x,ixI^L,ixI^L,pth)
     Te(ixI^S)=pth(ixI^S)/w(ixI^S,rho_)
     w(ixO^S,nw+1)=Te(ixO^S)
 
