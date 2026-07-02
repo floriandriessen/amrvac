@@ -61,8 +61,7 @@ module mod_usr
   integer             :: cme_exists
       public :: bc_data_get_3d
 
-   ! Additional variables
-  integer                     :: dr1_, dt1_, dp1_
+
 
 contains
 
@@ -120,10 +119,7 @@ contains
     usr_source          => specialsource
     usr_create_particles => generate_particles
     usr_particle_position => move_particle
-    particles_define_additional_gridvars => define_additional_gridvars_usr
-    particles_fill_additional_gridvars => fill_additional_gridvars_usr
-    usr_update_payload => update_payload_usr
-    usr_modify_output      => set_output_vars
+  
 
 
     call set_coordinate_system('spherical_3D')
@@ -131,9 +127,7 @@ contains
 
     call mhd_activate()
 
-    dr1_ = var_set_extravar("dr1","dr1")
-    dt1_  = var_set_extravar("dt1","dt1")
-    dp1_  = var_set_extravar("dp1","dp1")
+   
 
 
 
@@ -301,52 +295,7 @@ contains
 
   end subroutine initglobaldata_usr
 
-  subroutine define_additional_gridvars_usr(ngridvars)
-    use mod_global_parameters
-    integer, intent(inout) :: ngridvars
- 
-    ! three extra variables defined above as dr1_ dt1_ dp1_ already accounted for
-    ! no need to raise ngridvars here, unless additional payload is created
 
-  end subroutine define_additional_gridvars_usr
-
-  subroutine fill_additional_gridvars_usr
-    use mod_global_parameters
-    use mod_usr_methods, only: usr_particle_fields
-
-    integer :: igrid, iigrid
-    double precision :: pth(ixG^T)
-    double precision :: w(ixG^T,1:nw)
-
-! No need for what follows anymore: extravars already accounted for in nw array
-! Here we would only add ADDITIONAL payloads beyond nw array
-!    do iigrid=1,igridstail; igrid=igrids(iigrid);
-!      w(ixG^T,1:nw) = ps(igrid)%w(ixG^T,1:nw)
-!      gridvars(igrid)%w(ixG^T,dr1_)=block%dx(ixG^T,1)
-!      gridvars(igrid)%w(ixG^T,dt1_)=block%dx(ixG^T,2)
-!      gridvars(igrid)%w(ixG^T,dp1_)=block%dx(ixG^T,3)
-!    end do
-
-  end subroutine fill_additional_gridvars_usr
-
-  subroutine update_payload_usr(igrid,xpart,upart,qpart,mpart,mypayload,mynpayload,particle_time)
-    use mod_global_parameters
-    integer, intent(in)           :: igrid,mynpayload
-    double precision, intent(in)  :: xpart(1:ndir),upart(1:ndir),qpart,mpart,particle_time
-    double precision, intent(out) :: mypayload(mynpayload)
-    double precision              :: xgrid(ixG^T,1:ndim)
-
-! No need for what follows anymore: extravars already accounted for in nw array
-! Here we would only handle ADDITIONAL payloads beyond nw array
-    !xgrid = ps(igrid)%x
-    ! put the solution at particle_time for comparison
-    !if (npayload > 0) then
-    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dr1_),xgrid,xpart,mypayload(1))
-    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dt1_),xgrid,xpart,mypayload(2))
-    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dp1_),xgrid,xpart,mypayload(3))
-    !end if
-
-  end subroutine update_payload_usr
 
   subroutine generate_particles(n_particles, x, v, q, m, follow)
     use mod_particles
@@ -618,40 +567,19 @@ contains
     call divvector(momentum,ixI^L,ixO^L,divmom)
     w(ixO^S,nw+3)=divmom(ixO^S)
 
-    w(ixO^S,nw+4)=block%dx(ixO^S,1)
-    w(ixO^S,nw+5)=block%dx(ixO^S,2)
-    w(ixO^S,nw+6)=block%dx(ixO^S,3)
 
-    r_boundary   = xprobmin1 !in R_sun
-
-    r    = x(ixO^S, 1)
-    theta = x(ixO^S, 2)
-    sin_theta = sin(theta)
-    w(ixO^S,nw+7) = (v(ixO^S,3) + &
-    omega_frame*(r)* sin_theta)*unit_velocity*1d-3 ! the unit in km/s
+   ! w(ixO^S,nw+4) = (v(ixO^S,3) + &
+   ! omega_frame*(r)* sin_theta)*unit_velocity*1d-3 ! the unit in km/s
 
   end subroutine specialvar_output
 
   subroutine specialvarnames_output(varnames)
     character(len=*) :: varnames
 
-    varnames='divB divV div_mom dr dt dp v3I'
+    varnames='divB divV div_mom'
   end subroutine specialvarnames_output
 
-subroutine set_output_vars(ixI^L,ixO^L,qt,w,x)
-use mod_global_parameters
 
-    integer, intent(in)             :: ixI^L,ixO^L
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
-    double precision, intent(inout) :: w(ixI^S,nw)
-
-
-    w(ixO^S,dr1_) = block%dx(ixO^S,1)
-    w(ixO^S,dt1_) = block%dx(ixO^S,2)
-    w(ixO^S,dp1_) = block%dx(ixO^S,3)
-
-   
-end subroutine set_output_vars
   
 
   subroutine specialsource(qdt,ixI^L,ixO^L,iw^LIM,qtC,wCT,qt,w,x)

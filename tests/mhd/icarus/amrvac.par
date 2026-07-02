@@ -10,7 +10,7 @@
         typefilelog = 'regression_test'
         slice_type    = 'csv'
         nocartesian   = .true.
-        nwauxio       = 7
+        nwauxio       = 3
 
 
 /
@@ -56,7 +56,7 @@
  &particles_list
        physics_type_particles='sample'
        num_particles=10
-       nusrpayload=0
+  
        dtsave_particles=0.225d0
        write_individual=.true.
        write_ensemble=.false.
