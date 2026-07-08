@@ -10,6 +10,12 @@
 !>  3. nphi, ntheta are long integers and other arrays are double precision.
 !>     theta contains  decreasing radians with increasing indice (Pi to 0) 
 !>     phi contains increasing radians with increasing indice (0 to 2*Pi)
+!>  4. By default, theta points are interpreted as cell centers and harmonic
+!>     coefficients use cell-area quadrature in mu=cos(theta). To reproduce the
+!>     old Gauss-Legendre quadrature, set
+!>     pfss_theta_quadrature='gauss_legendre' before calling harm_coef.
+!>     If a mapname.coef file already exists, it is reused and this setting does
+!>     not take effect until that coefficient file is regenerated.
 !> USAGE:
 !>   example for a magnetogram with name 'mdicr2020.dat':
 !>
@@ -41,6 +47,7 @@ module mod_pfss
   integer, allocatable :: lmaxarray(:)
   integer, public :: lmax=0
   logical, public :: trunc=.false.
+  character(len=20), public :: pfss_theta_quadrature='cell_area'
  
   public :: harm_coef
 {^IFTHREED
@@ -65,6 +72,9 @@ contains
     fharmcoef=mapname//'.coef'
     inquire(file=fharmcoef, exist=aexist)
     if(aexist) then
+      if(mype==0) write(*,'(2a)') &
+        'Using existing PFSS coefficient file; pfss_theta_quadrature is ignored: ',&
+        trim(fharmcoef)
       if(mype==0) then
         call MPI_FILE_OPEN(MPI_COMM_SELF,fharmcoef,MPI_MODE_RDONLY, &
                              MPI_INFO_NULL,file_handle,ierrmpi)
@@ -108,7 +118,14 @@ contains
         print*,'phi range:',minval(phi),maxval(phi)
         print*,'Brmax,Brmin',maxval(b_r0),minval(b_r0)
         allocate(cfwm(ym))
-        call cfweights(ym,dcos(theta),cfwm)
+        select case(trim(pfss_theta_quadrature))
+        case('cell_area')
+          call cfweights_cell_area(ym,theta,cfwm)
+        case('gauss_legendre')
+          call cfweights_gauss_legendre(ym,dcos(theta),cfwm)
+        case default
+          call mpistop("Unknown pfss_theta_quadrature")
+        end select
         allocate(flm(0:lmax,0:lmax))
         call coef(b_r0,xm,ym,dcos(theta),dsin(theta),cfwm)
         deallocate(b_r0)
@@ -164,7 +181,51 @@ contains
 
   end subroutine harm_coef
 
-  subroutine cfweights(ym,miu,cfwm)
+  subroutine cfweights_cell_area(ym,theta,cfwm)
+    use mod_global_parameters
+
+    integer, intent(in) :: ym
+    double precision, intent(in) :: theta(ym)
+    double precision, intent(out) :: cfwm(ym)
+
+    double precision,dimension(ym) :: miu
+    double precision :: edge_l,edge_r
+    integer :: i
+
+    miu=dcos(theta)
+    if(miu(1)<=miu(ym)) then
+      do i=1,ym
+        if(i==1) then
+          edge_l=-1.d0
+        else
+          edge_l=0.5d0*(miu(i-1)+miu(i))
+        end if
+        if(i==ym) then
+          edge_r=1.d0
+        else
+          edge_r=0.5d0*(miu(i)+miu(i+1))
+        end if
+        cfwm(i)=dabs(edge_r-edge_l)*(2.d0*dpi)
+      end do
+    else
+      do i=1,ym
+        if(i==1) then
+          edge_l=1.d0
+        else
+          edge_l=0.5d0*(miu(i-1)+miu(i))
+        end if
+        if(i==ym) then
+          edge_r=-1.d0
+        else
+          edge_r=0.5d0*(miu(i)+miu(i+1))
+        end if
+        cfwm(i)=dabs(edge_r-edge_l)*(2.d0*dpi)
+      end do
+    end if
+
+  end subroutine cfweights_cell_area
+
+  subroutine cfweights_gauss_legendre(ym,miu,cfwm)
     use mod_global_parameters
 
     integer, intent(in) :: ym
@@ -191,7 +252,7 @@ contains
     cfwm=2.d0/(sintheta*Pprime)**2
     cfwm=cfwm*(2.d0*dpi)
 
-  end subroutine cfweights
+  end subroutine cfweights_gauss_legendre
 
   subroutine coef(b_r0,xm,ym,miu,mius,cfwm)
     use mod_global_parameters
