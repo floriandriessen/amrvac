@@ -1,9 +1,10 @@
 F90=mpif90
 FFLAGS = -c
-# -fallow-argument-mismatch: silence gfortran 10+ checks on MPI choice-buffer
-# arguments (e.g. MPI_BCAST, MPI_FILE_WRITE) which dispatch on the MPI_<TYPE>
-# handle at runtime. Not masking a code bug; matches OpenMPI/MPICH guidance.
+# -fallow-argument-mismatch: silence gfortran 10+ checks on MPI
+# choice-buffer arguments. Add it only when the active mpif90 wrapper accepts
+# it, since gfortran 9 and non-GNU compilers reject the option.
+FALLOW_ARGUMENT_MISMATCH := $(shell tmp=$$(mktemp /tmp/amrvac_fallow_argument_mismatch.XXXXXX.f90); printf 'end\n' > $$tmp; if $(F90) -fallow-argument-mismatch -c $$tmp -o $$tmp.o >/dev/null 2>&1; then printf '%s' '-fallow-argument-mismatch'; fi; rm -f $$tmp $$tmp.o)
 F90FLAGS = -cpp -ffree-form -fimplicit-none -O3 -Wall -Wno-unused-dummy-argument	\
 -Wno-unused-function -Wno-unused -Wno-uninitialized -Wno-zerotrip -Wno-target-lifetime \
--fallow-argument-mismatch
+$(FALLOW_ARGUMENT_MISMATCH)
 LINK= $(F90)  $(F90FLAGS)
