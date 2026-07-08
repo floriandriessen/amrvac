@@ -1,8 +1,15 @@
 module mod_magnetic_topology
   use, intrinsic :: ieee_arithmetic, only: ieee_value,ieee_quiet_nan, &
        ieee_is_finite
-  use mod_global_parameters, only: ndim,npe,slab_uniform
+  use mod_global_parameters, only: ndim,npe,slab_uniform,periodB, &
+       xprobmin1,xprobmax1
+  {^IFTHREED
+  use mod_global_parameters, only: xprobmin2,xprobmax2,xprobmin3,xprobmax3
+  }
   use mod_comm_lib, only: mpistop
+  use mod_geometry, only: geo_coordinate => coordinate, &
+       geo_cartesian => Cartesian, geo_spherical => spherical, &
+       geo_cartesian_stretched => Cartesian_stretched
   use mod_trace_field, only: trace_length_result,trace_twist_result, &
        trace_mapping_result,trace_qperp_result,trace_topology_result, &
        trace_field_length_single,trace_field_length_multi, &
@@ -10,7 +17,30 @@ module mod_magnetic_topology
        trace_field_mapping_single,trace_field_mapping_multi, &
        trace_field_topology_multi, &
        trace_field_qperp_single,trace_field_qperp_multi, &
+       trace_field_rk2_short_boundary_q_multi, &
+       trace_field_spherical_rmin_q_multi, &
+       trace_field_spherical_rmin_q_qperp_multi, &
+       trace_field_spherical_qperp_multi, &
+       trace_spherical_curl_cache_build, &
+       trace_spherical_curl_cache_clear, &
+       trace_spherical_profile_set, &
+       trace_spherical_profile_reset, &
+       trace_spherical_profile_count_seeds, &
+       trace_spherical_profile_report, &
+       trace_cartesian_global_min_cell_size, &
+       trace_spherical_global_min_cell_size, &
+       trace_set_step_control, &
+       trace_set_integrator, &
+       trace_debug_cartesian_rk45_tangent_q0_multi, &
+       trace_rk2_stats_set_enabled, &
+       trace_rk2_stats_reset, &
+       trace_rk2_stats_report, &
+       trace_rk45_stats_set_enabled, &
+       trace_rk45_stats_reset, &
+       trace_rk45_stats_report, &
+       trace_status_active, &
        trace_status_boundary, &
+       trace_status_unsupported_geometry, &
        trace_face_none,trace_face_xmin,trace_face_xmax, &
        trace_face_ymin,trace_face_ymax,trace_face_zmin, &
        trace_face_zmax,trace_face_ambiguous
@@ -43,12 +73,36 @@ module mod_magnetic_topology
   character(len=mt_task_name_len) :: mt_output_file = ''
   character(len=mt_task_name_len) :: mt_output_prefix = ''
   character(len=mt_task_name_len) :: mt_seed_file = ''
+  character(len=mt_task_name_len) :: mt_seed_surface = ''
+  character(len=mt_task_name_len) :: mt_seed_layout = 'endpoint'
   character(len=mt_task_name_len) :: mt_vtk_detail = 'minimal'
+  character(len=mt_task_name_len) :: mt_step_control = 'global_cell_fraction'
+  character(len=mt_task_name_len) :: mt_trace_integrator = 'rk2'
   double precision :: mt_dL = -1.d0
+  double precision :: mt_step_fraction = 0.25d0
+  double precision :: mt_dL_min = 0.d0
+  double precision :: mt_rk45_atol = 1.d-8
+  double precision :: mt_rk45_rtol = 1.d-6
+  double precision :: mt_rk45_safety = 0.9d0
+  double precision :: mt_rk45_min_shrink = 0.2d0
+  double precision :: mt_rk45_max_grow = 5.d0
+  double precision :: mt_rk45_tangent_floor = 1.d0
+  double precision :: mt_rk45_tangent_rtol = 2.d-5
   integer :: mt_max_steps = -1
+  double precision :: mt_max_steps_factor = 2.d0
   double precision :: mt_b_min = -1.d0
+  double precision :: mt_seed_coord = mt_unset_real
+  double precision :: mt_seed_theta0 = mt_unset_real
+  double precision :: mt_seed_phi0 = mt_unset_real
+  double precision :: mt_seed_alpha = mt_unset_real
+  logical :: mt_compute_length = .true.
   logical :: mt_compute_twist = .false.
+  logical :: mt_compute_q = .false.
   logical :: mt_compute_qperp = .false.
+  logical :: mt_rk2_step_diagnostic = .false.
+  logical :: mt_rk45_step_diagnostic = .false.
+  logical :: mt_rk45_tangent_diagnostic = .false.
+  logical :: mt_rk2_fusion_diagnostic = .false.
   logical :: mt_write_csv = .false.
   character(len=mt_task_name_len) :: mt_plane = ''
   double precision :: mt_origin(3) = mt_unset_real
@@ -70,9 +124,13 @@ module mod_magnetic_topology
   double precision :: mt_s1max = mt_unset_real
   double precision :: mt_s2min = mt_unset_real
   double precision :: mt_s2max = mt_unset_real
+  double precision :: mt_s3min = mt_unset_real
+  double precision :: mt_s3max = mt_unset_real
   integer :: mt_n1 = -1
   integer :: mt_n2 = -1
+  integer :: mt_n3 = -1
   integer :: mt_chunk_nz = -1
+  logical :: mt_profile_spherical = .false.
 
   type, private :: mt_vti_array_desc
     character(len=mt_vti_name_len) :: name
@@ -96,6 +154,21 @@ module mod_magnetic_topology
     integer, allocatable :: nstep_forward_twist(:)
     integer, allocatable :: status_backward_twist(:)
     integer, allocatable :: status_forward_twist(:)
+    double precision, allocatable :: q(:)
+    double precision, allocatable :: logq(:)
+    double precision, allocatable :: N2_q(:)
+    double precision, allocatable :: bfactor_q(:)
+    double precision, allocatable :: length_forward_q(:)
+    double precision, allocatable :: length_backward_q(:)
+    double precision, allocatable :: Bseed_norm_q(:)
+    double precision, allocatable :: Bf_norm_q(:)
+    double precision, allocatable :: Bb_norm_q(:)
+    integer, allocatable :: valid_q(:)
+    integer, allocatable :: status_q(:)
+    integer, allocatable :: face_forward_q(:)
+    integer, allocatable :: face_backward_q(:)
+    integer, allocatable :: status_forward_q(:)
+    integer, allocatable :: status_backward_q(:)
     double precision, allocatable :: qperp(:)
     double precision, allocatable :: logqperp(:)
     double precision, allocatable :: N2(:)
@@ -124,13 +197,22 @@ contains
 
     namelist /magnetic_topology_list/ mt_enable,mt_mode,mt_output_file, &
          mt_output_prefix,mt_seed_file,mt_vtk_detail, &
-         mt_dL,mt_max_steps,mt_b_min, &
-         mt_compute_twist,mt_compute_qperp, &
+         mt_seed_surface,mt_seed_layout,mt_seed_coord, &
+         mt_seed_theta0,mt_seed_phi0,mt_seed_alpha, &
+         mt_step_control,mt_dL,mt_step_fraction,mt_dL_min, &
+         mt_trace_integrator,mt_rk45_atol,mt_rk45_rtol, &
+         mt_rk45_safety,mt_rk45_min_shrink,mt_rk45_max_grow, &
+         mt_rk45_tangent_floor,mt_rk45_tangent_rtol, &
+         mt_max_steps,mt_max_steps_factor,mt_b_min, &
+         mt_compute_length,mt_compute_twist,mt_compute_q,mt_compute_qperp, &
+         mt_rk2_step_diagnostic,mt_rk45_step_diagnostic, &
+         mt_rk45_tangent_diagnostic,mt_rk2_fusion_diagnostic, &
          mt_write_csv,mt_plane, &
          mt_origin,mt_e1,mt_e2,mt_xmin,mt_xmax,mt_ymin,mt_ymax, &
          mt_zmin,mt_zmax,mt_nx,mt_ny,mt_nz,mt_x0,mt_y0,mt_z0, &
          mt_s1min,mt_s1max,mt_n1,mt_s2min,mt_s2max,mt_n2, &
-         mt_chunk_nz
+         mt_s3min,mt_s3max,mt_n3, &
+         mt_chunk_nz,mt_profile_spherical
 
     call mt_set_default_params()
     do n=1,size(files)
@@ -143,11 +225,33 @@ contains
   subroutine mt_run_topology_task()
     ! Dispatch the namelist-selected topology/QSL postprocessing task.
     character(len=mt_task_name_len) :: mode
+    logical :: report_rk2,report_rk45
 
     if (.not.mt_enable) return
 
     mode=mt_lowercase(trim(mt_mode))
     call mt_validate_common_params(mode)
+    call mt_validate_trace_integrator(mode)
+    call mt_apply_trace_step_control()
+    call mt_apply_auto_max_steps()
+    call trace_set_integrator(mt_trace_integrator,mt_rk45_atol, &
+         mt_rk45_rtol,mt_rk45_safety,mt_rk45_min_shrink, &
+         mt_rk45_max_grow,mt_rk45_tangent_floor,mt_rk45_tangent_rtol)
+    report_rk2=mt_lowercase(trim(mt_trace_integrator))=='rk2' .and. &
+         mt_rk2_step_diagnostic
+    report_rk45=(mt_lowercase(trim(mt_trace_integrator))=='rk45_cartesian' &
+         .or. mt_lowercase(trim(mt_trace_integrator))=='rk45_spherical') &
+         .and. mt_rk45_step_diagnostic
+    call trace_rk2_stats_set_enabled(report_rk2)
+    call trace_rk45_stats_set_enabled(report_rk45)
+    if (report_rk2) call trace_rk2_stats_reset()
+    if (report_rk45) call trace_rk45_stats_reset()
+    if (mt_profile_spherical .and. &
+         trim(mode)/='spherical_surface_products' .and. &
+         trim(mode)/='spherical_cloud_products') then
+      write(*,'(a)') 'mt_run_topology_task: mt_profile_spherical applies '// &
+           'only to spherical topology modes'
+    endif
 
     select case (trim(mode))
     case ('axis_plane_full_vtu')
@@ -160,9 +264,17 @@ contains
       call mt_run_seed_products_task()
     case ('axis_plane_csv')
       call mt_run_axis_plane_csv_task()
+    case ('spherical_surface_products')
+      call mt_run_spherical_surface_products_task()
+    case ('spherical_cloud_products')
+      call mt_run_spherical_cloud_products_task()
     case default
       call mpistop('mt_run_topology_task: unknown mt_mode='//trim(mt_mode))
     end select
+    if (report_rk2) call trace_rk2_stats_report(trim(mode))
+    call trace_rk2_stats_set_enabled(.false.)
+    if (report_rk45) call trace_rk45_stats_report(trim(mode))
+    call trace_rk45_stats_set_enabled(.false.)
   end subroutine mt_run_topology_task
 
   subroutine mt_set_default_params()
@@ -171,12 +283,36 @@ contains
     mt_output_file=''
     mt_output_prefix=''
     mt_seed_file=''
+    mt_seed_surface=''
+    mt_seed_layout='endpoint'
     mt_vtk_detail='minimal'
+    mt_step_control='global_cell_fraction'
+    mt_trace_integrator='rk2'
     mt_dL=-1.d0
+    mt_step_fraction=0.25d0
+    mt_dL_min=0.d0
+    mt_rk45_atol=1.d-8
+    mt_rk45_rtol=1.d-6
+    mt_rk45_safety=0.9d0
+    mt_rk45_min_shrink=0.2d0
+    mt_rk45_max_grow=5.d0
+    mt_rk45_tangent_floor=1.d0
+    mt_rk45_tangent_rtol=2.d-5
     mt_max_steps=-1
+    mt_max_steps_factor=2.d0
     mt_b_min=-1.d0
+    mt_seed_coord=mt_unset_real
+    mt_seed_theta0=mt_unset_real
+    mt_seed_phi0=mt_unset_real
+    mt_seed_alpha=mt_unset_real
+    mt_compute_length=.true.
     mt_compute_twist=.false.
+    mt_compute_q=.false.
     mt_compute_qperp=.false.
+    mt_rk2_step_diagnostic=.false.
+    mt_rk45_step_diagnostic=.false.
+    mt_rk45_tangent_diagnostic=.false.
+    mt_rk2_fusion_diagnostic=.false.
     mt_write_csv=.false.
     mt_plane=''
     mt_origin=mt_unset_real
@@ -198,9 +334,13 @@ contains
     mt_s1max=mt_unset_real
     mt_s2min=mt_unset_real
     mt_s2max=mt_unset_real
+    mt_s3min=mt_unset_real
+    mt_s3max=mt_unset_real
     mt_n1=-1
     mt_n2=-1
+    mt_n3=-1
     mt_chunk_nz=-1
+    mt_profile_spherical=.false.
   end subroutine mt_set_default_params
 
   subroutine mt_validate_common_params(mode)
@@ -209,18 +349,125 @@ contains
     if (len_trim(mode)==0) then
       call mpistop('mt_run_topology_task requires mt_mode')
     endif
-    if (ndim/=3 .or. .not.slab_uniform) then
-      call mpistop('mt_run_topology_task requires 3D uniform Cartesian geometry')
-    endif
+    select case (trim(mode))
+    case ('spherical_surface_products','spherical_cloud_products')
+      if (ndim/=3) then
+        call mpistop(trim(mode)//' requires 3D spherical geometry')
+      endif
+      {^IFTHREED
+      if (geo_coordinate/=geo_spherical) then
+        call mpistop(trim(mode)//' requires 3D spherical geometry')
+      endif
+      if (periodB(3)) then
+        call mpistop(trim(mode)//' does not yet support periodic phi')
+      endif
+      }
+    case ('seed_products')
+      if (ndim/=3) then
+        call mpistop('seed_products requires 3D Cartesian or spherical geometry')
+      endif
+      {^IFTHREED
+      select case (geo_coordinate)
+      case (geo_cartesian,geo_cartesian_stretched,geo_spherical)
+      case default
+        call mpistop('seed_products requires Cartesian or spherical geometry')
+      end select
+      if (geo_coordinate==geo_spherical .and. periodB(3)) then
+        call mpistop('spherical seed_products does not yet support periodic phi')
+      endif
+      }
+    case ('volume_vti')
+      if (ndim/=3) then
+        call mpistop('volume_vti requires 3D Cartesian geometry')
+      endif
+      {^IFTHREED
+      select case (geo_coordinate)
+      case (geo_cartesian)
+        ! The VTI sampling grid is user-defined; tracing may interpolate
+        ! through uniform or AMR Cartesian simulation grids.
+      case (geo_cartesian_stretched)
+        ! The VTI sampling grid is uniform Cartesian; tracing may interpolate
+        ! through a stretched Cartesian simulation grid.
+      case default
+        call mpistop('volume_vti requires Cartesian geometry')
+      end select
+      }
+    case ('axis_plane_full_vtu','axis_plane_csv')
+      if (ndim/=3) then
+        call mpistop(trim(mode)//' requires 3D Cartesian geometry')
+      endif
+      {^IFTHREED
+      select case (geo_coordinate)
+      case (geo_cartesian)
+        ! Axis-plane output is a seed-surface product; RK2 tracing supports
+        ! both slab-uniform and AMR Cartesian simulation grids.
+      case (geo_cartesian_stretched)
+      case default
+        call mpistop(trim(mode)//' requires Cartesian geometry')
+      end select
+      }
+    case ('arbitrary_plane_products')
+      if (ndim/=3) then
+        call mpistop('arbitrary_plane_products requires 3D Cartesian geometry')
+      endif
+      {^IFTHREED
+      select case (geo_coordinate)
+      case (geo_cartesian,geo_cartesian_stretched)
+      case default
+        call mpistop('arbitrary_plane_products requires Cartesian geometry')
+      end select
+      }
+    case default
+      if (ndim/=3 .or. geo_coordinate/=geo_cartesian .or. &
+           .not.slab_uniform) then
+        call mpistop('mt_run_topology_task mode requires 3D uniform Cartesian geometry')
+      endif
+    end select
     if (len_trim(mt_output_file)==0 .and. &
         len_trim(mt_output_prefix)==0) then
       call mpistop('mt_run_topology_task requires mt_output_file or mt_output_prefix')
     endif
-    if (mt_dL<=0.d0) then
-      call mpistop('mt_run_topology_task requires mt_dL > 0')
-    endif
-    if (mt_max_steps<=0) then
-      call mpistop('mt_run_topology_task requires mt_max_steps > 0')
+    select case (mt_lowercase(trim(mt_step_control)))
+    case ('fixed')
+      if (mt_dL<=0.d0) then
+        call mpistop('mt_step_control=fixed requires mt_dL > 0')
+      endif
+    case ('cell_fraction')
+      select case (geo_coordinate)
+      case (geo_cartesian,geo_cartesian_stretched)
+      case (geo_spherical)
+        select case (trim(mode))
+        case ('seed_products','spherical_surface_products', &
+              'spherical_cloud_products')
+        case default
+          call mpistop('mt_step_control=cell_fraction is only supported '// &
+               'for spherical topology modes')
+        end select
+      case default
+        call mpistop('mt_step_control=cell_fraction requires Cartesian or '// &
+             'supported spherical geometry')
+      end select
+      if (mt_step_fraction<=0.d0) then
+        call mpistop('mt_step_control=cell_fraction requires '// &
+             'mt_step_fraction > 0')
+      endif
+      if (mt_dL_min<0.d0) then
+        call mpistop('mt_step_control=cell_fraction requires mt_dL_min >= 0')
+      endif
+    case ('global_cell_fraction')
+      if (mt_step_fraction<=0.d0) then
+        call mpistop('mt_step_control=global_cell_fraction requires '// &
+             'mt_step_fraction > 0')
+      endif
+      if (mt_dL_min<0.d0) then
+        call mpistop('mt_step_control=global_cell_fraction requires mt_dL_min >= 0')
+      endif
+    case default
+      call mpistop('mt_run_topology_task requires mt_step_control=fixed '// &
+           'or cell_fraction/global_cell_fraction')
+    end select
+    if (mt_max_steps<=0 .and. mt_max_steps_factor<=0.d0) then
+      call mpistop('mt_max_steps auto requires mt_max_steps_factor > 0')
     endif
     select case (mt_lowercase(trim(mt_vtk_detail)))
     case ('minimal','full')
@@ -229,14 +476,341 @@ contains
     end select
   end subroutine mt_validate_common_params
 
+  subroutine mt_validate_trace_integrator(mode)
+    character(len=*), intent(in) :: mode
+
+    character(len=mt_task_name_len) :: integrator
+
+    integrator=mt_lowercase(trim(mt_trace_integrator))
+    select case (trim(integrator))
+    case ('rk2')
+      ! RK2 is the default tracing path; product-specific guards live below.
+    case ('rk45_cartesian')
+      if (trim(mode)/='seed_products' .and. trim(mode)/='volume_vti' .and. &
+           trim(mode)/='arbitrary_plane_products' .and. &
+           trim(mode)/='axis_plane_full_vtu' .and. &
+           trim(mode)/='axis_plane_csv') then
+        write(*,'(a)') 'mt_trace_integrator=rk45_cartesian supports '// &
+             'only Cartesian seed_products, volume_vti, arbitrary_plane_products, '// &
+             'or axis-plane products'
+        flush(6)
+        call mpistop('mt_trace_integrator=rk45_cartesian supports '// &
+             'only seed_products, volume_vti, arbitrary_plane_products, '// &
+             'or axis-plane products')
+      endif
+      if (ndim/=3) then
+        call mpistop('mt_trace_integrator=rk45_cartesian requires 3D Cartesian geometry')
+      endif
+      {^IFTHREED
+      select case (geo_coordinate)
+      case (geo_cartesian,geo_cartesian_stretched)
+      case default
+        write(*,'(a)') 'mt_trace_integrator=rk45_cartesian is Cartesian-only'
+        flush(6)
+        call mpistop('mt_trace_integrator=rk45_cartesian is Cartesian-only')
+      end select
+      }
+      if (mt_rk45_atol<0.d0 .or. mt_rk45_rtol<0.d0 .or. &
+           mt_rk45_atol+mt_rk45_rtol<=0.d0) then
+        call mpistop('mt_trace_integrator=rk45_cartesian requires '// &
+             'non-negative tolerances with atol+rtol > 0')
+      endif
+      if (mt_rk45_safety<=0.d0 .or. mt_rk45_safety>1.d0) then
+        call mpistop('mt_rk45_safety must be in (0,1]')
+      endif
+      if (mt_rk45_min_shrink<=0.d0 .or. mt_rk45_min_shrink>1.d0) then
+        call mpistop('mt_rk45_min_shrink must be in (0,1]')
+      endif
+      if (mt_rk45_max_grow<1.d0) then
+        call mpistop('mt_rk45_max_grow must be >= 1')
+      endif
+      if (mt_rk45_tangent_floor<=0.d0) then
+        call mpistop('mt_rk45_tangent_floor must be > 0')
+      endif
+      if (mt_rk45_tangent_rtol<=0.d0) then
+        call mpistop('mt_rk45_tangent_rtol must be > 0')
+      endif
+    case ('rk45_spherical')
+      if (trim(mode)/='seed_products' .and. &
+           trim(mode)/='spherical_cloud_products' .and. &
+           trim(mode)/='spherical_surface_products') then
+        write(*,'(a)') 'mt_trace_integrator=rk45_spherical supports '// &
+             'only spherical seed_products, spherical_cloud_products, '// &
+             'or spherical_surface_products'
+        flush(6)
+        call mpistop('mt_trace_integrator=rk45_spherical supports '// &
+             'only seed_products, spherical_cloud_products, '// &
+             'or spherical_surface_products')
+      endif
+      if (ndim/=3) then
+        call mpistop('mt_trace_integrator=rk45_spherical requires 3D spherical geometry')
+      endif
+      {^IFTHREED
+      if (geo_coordinate/=geo_spherical) then
+        write(*,'(a)') 'mt_trace_integrator=rk45_spherical is spherical-only'
+        flush(6)
+        call mpistop('mt_trace_integrator=rk45_spherical is spherical-only')
+      endif
+      if (periodB(3)) then
+        call mpistop('mt_trace_integrator=rk45_spherical does not yet support periodic phi')
+      endif
+      }
+      if (mt_compute_q) then
+        {^IFTHREED
+        if (geo_coordinate/=geo_spherical) then
+          call mpistop('mt_trace_integrator=rk45_spherical standard '// &
+               'logQ currently requires spherical geometry')
+        endif
+        }
+      endif
+      if (mt_rk45_atol<0.d0 .or. mt_rk45_rtol<0.d0 .or. &
+           mt_rk45_atol+mt_rk45_rtol<=0.d0) then
+        call mpistop('mt_trace_integrator=rk45_spherical requires '// &
+             'non-negative tolerances with atol+rtol > 0')
+      endif
+      if (mt_rk45_safety<=0.d0 .or. mt_rk45_safety>1.d0) then
+        call mpistop('mt_rk45_safety must be in (0,1]')
+      endif
+      if (mt_rk45_min_shrink<=0.d0 .or. mt_rk45_min_shrink>1.d0) then
+        call mpistop('mt_rk45_min_shrink must be in (0,1]')
+      endif
+      if (mt_rk45_max_grow<1.d0) then
+        call mpistop('mt_rk45_max_grow must be >= 1')
+      endif
+      if (mt_rk45_tangent_floor<=0.d0) then
+        call mpistop('mt_rk45_tangent_floor must be > 0')
+      endif
+      if (mt_rk45_tangent_rtol<=0.d0) then
+        call mpistop('mt_rk45_tangent_rtol must be > 0')
+      endif
+    case default
+      call mpistop('mt_trace_integrator must be rk2, rk45_cartesian, or rk45_spherical')
+    end select
+    if (mt_rk45_tangent_diagnostic) then
+      if (trim(mode)/='seed_products') then
+        call mpistop('mt_rk45_tangent_diagnostic requires seed_products')
+      endif
+      if (trim(integrator)/='rk45_cartesian') then
+        call mpistop('mt_rk45_tangent_diagnostic requires '// &
+             'mt_trace_integrator=rk45_cartesian')
+      endif
+      if (mt_compute_q .or. mt_compute_qperp) then
+        call mpistop('mt_rk45_tangent_diagnostic is q0 diagnostic-only; '// &
+             'disable public Q and Qperp')
+      endif
+      if (ndim/=3 .or. .not.slab_uniform) then
+        call mpistop('mt_rk45_tangent_diagnostic requires 3D uniform Cartesian geometry')
+      endif
+      {^IFTHREED
+      if (geo_coordinate/=geo_cartesian) then
+        call mpistop('mt_rk45_tangent_diagnostic requires Cartesian geometry')
+      endif
+      }
+    endif
+    if (mt_rk2_fusion_diagnostic) then
+      if (trim(mode)/='seed_products') then
+        call mpistop('mt_rk2_fusion_diagnostic requires seed_products')
+      endif
+      if (trim(integrator)/='rk2') then
+        call mpistop('mt_rk2_fusion_diagnostic requires '// &
+             'mt_trace_integrator=rk2')
+      endif
+      if (.not.mt_compute_twist) then
+        call mpistop('mt_rk2_fusion_diagnostic requires twist diagnostics')
+      endif
+      if (mt_compute_q .or. mt_compute_qperp) then
+        call mpistop('mt_rk2_fusion_diagnostic is q0 diagnostic-only; '// &
+             'disable public Q and Qperp')
+      endif
+    endif
+  end subroutine mt_validate_trace_integrator
+
+  subroutine mt_apply_trace_step_control()
+    character(len=mt_task_name_len) :: step_mode
+    double precision :: hmin,dL_eff,dL_cap
+    integer :: status
+
+    step_mode=mt_lowercase(trim(mt_step_control))
+    select case (trim(step_mode))
+    case ('cell_fraction')
+      if ((geo_coordinate==geo_cartesian .or. &
+           geo_coordinate==geo_cartesian_stretched .or. &
+           geo_coordinate==geo_spherical) .and. mt_dL<=0.d0) then
+        dL_cap=mt_domain_diagonal()
+        if (dL_cap<=0.d0) then
+          call mpistop('mt_step_control=cell_fraction could not determine '// &
+               'domain step cap')
+        endif
+        mt_dL=dL_cap
+        write(*,'(a,es16.8,a,es16.8,a,es16.8)') &
+             'mt_step_control=cell_fraction: mt_step_fraction=', &
+             mt_step_fraction,', automatic dL_cap=',mt_dL, &
+             ', mt_dL_min=',mt_dL_min
+      else
+        write(*,'(a,es16.8,a,es16.8,a,es16.8)') &
+             'mt_step_control=cell_fraction: mt_step_fraction=', &
+             mt_step_fraction,', mt_dL_cap=',mt_dL, &
+             ', mt_dL_min=',mt_dL_min
+      endif
+      call trace_set_step_control('cell_fraction',mt_step_fraction,mt_dL_min)
+    case ('global_cell_fraction')
+      select case (geo_coordinate)
+      case (geo_cartesian,geo_cartesian_stretched)
+        call trace_cartesian_global_min_cell_size(hmin,status)
+      case (geo_spherical)
+        call trace_spherical_global_min_cell_size(hmin,status)
+      case default
+        status=trace_status_unsupported_geometry
+        hmin=-1.d0
+      end select
+      if (status/=trace_status_active .or. hmin<=0.d0) then
+        call mpistop('mt_step_control=global_cell_fraction could not determine h_global_min')
+      endif
+      dL_eff=mt_step_fraction*hmin
+      if (mt_dL>0.d0) dL_eff=min(dL_eff,mt_dL)
+      if (mt_dL_min>0.d0) then
+        if (mt_dL>0.d0) then
+          dL_eff=max(dL_eff,min(mt_dL_min,mt_dL))
+        else
+          dL_eff=max(dL_eff,mt_dL_min)
+        endif
+      endif
+      if (dL_eff<=0.d0) then
+        call mpistop('mt_step_control=global_cell_fraction produced non-positive mt_dL')
+      endif
+      if (mt_dL>0.d0) then
+        write(*,'(a,es16.8,a,es16.8,a,es16.8,a,es16.8)') &
+             'mt_step_control=global_cell_fraction: h_global_min=',hmin, &
+             ', mt_step_fraction=',mt_step_fraction,', mt_dL_cap=',mt_dL, &
+             ', effective_mt_dL=',dL_eff
+      else
+        write(*,'(a,es16.8,a,es16.8,a,es16.8)') &
+             'mt_step_control=global_cell_fraction: h_global_min=',hmin, &
+             ', mt_step_fraction=',mt_step_fraction,', effective_mt_dL=',dL_eff
+      endif
+      mt_dL=dL_eff
+      call trace_set_step_control('fixed',mt_step_fraction,mt_dL_min)
+    case default
+      call trace_set_step_control('fixed',mt_step_fraction,mt_dL_min)
+    end select
+  end subroutine mt_apply_trace_step_control
+
+  subroutine mt_apply_auto_max_steps()
+    character(len=mt_task_name_len) :: step_mode
+    double precision :: hmin,step_est,Ldiag,nsteps_real
+    integer :: status
+
+    if (mt_max_steps>0) return
+
+    Ldiag=mt_domain_diagonal()
+    if (Ldiag<=0.d0) then
+      call mpistop('mt_max_steps auto could not determine domain diagonal')
+    endif
+
+    step_mode=mt_lowercase(trim(mt_step_control))
+    select case (trim(step_mode))
+    case ('fixed')
+      step_est=mt_dL
+    case ('cell_fraction','global_cell_fraction')
+      select case (geo_coordinate)
+      case (geo_cartesian,geo_cartesian_stretched)
+        call trace_cartesian_global_min_cell_size(hmin,status)
+      case (geo_spherical)
+        call trace_spherical_global_min_cell_size(hmin,status)
+      case default
+        status=trace_status_unsupported_geometry
+        hmin=-1.d0
+      end select
+      if (status/=trace_status_active .or. hmin<=0.d0) then
+        call mpistop('mt_max_steps auto could not determine h_global_min')
+      endif
+      step_est=mt_step_fraction*hmin
+      if (mt_dL>0.d0) step_est=min(step_est,mt_dL)
+    case default
+      step_est=mt_dL
+    end select
+
+    if (step_est<=0.d0) then
+      call mpistop('mt_max_steps auto produced non-positive step estimate')
+    endif
+    nsteps_real=mt_max_steps_factor*Ldiag/step_est
+    if (nsteps_real>dble(huge(mt_max_steps)-1)) then
+      call mpistop('mt_max_steps auto estimate exceeds integer range')
+    endif
+    mt_max_steps=max(1,ceiling(nsteps_real))
+    write(*,'(a,es16.8,a,es16.8,a,es16.8,a,es16.8,a,i0)') &
+         'mt_max_steps auto: Ldiag=',Ldiag,', step_est=',step_est, &
+         ', factor=',mt_max_steps_factor,', nsteps_real=',nsteps_real, &
+         ', mt_max_steps=',mt_max_steps
+  end subroutine mt_apply_auto_max_steps
+
+  double precision function mt_domain_diagonal() result(Ldiag)
+    integer :: i,j,k,n,m
+    double precision :: r,theta,phi,dist
+    double precision :: corners(8,3),dx(3)
+
+    Ldiag=abs(xprobmax1-xprobmin1)
+    {^IFTHREED
+    if (geo_coordinate==geo_spherical) then
+      n=0
+      do i=0,1
+        if (i==0) then
+          r=xprobmin1
+        else
+          r=xprobmax1
+        endif
+        do j=0,1
+          if (j==0) then
+            theta=xprobmin2
+          else
+            theta=xprobmax2
+          endif
+          do k=0,1
+            if (k==0) then
+              phi=xprobmin3
+            else
+              phi=xprobmax3
+            endif
+            n=n+1
+            corners(n,1)=r*dsin(theta)*dcos(phi)
+            corners(n,2)=r*dsin(theta)*dsin(phi)
+            corners(n,3)=r*dcos(theta)
+          end do
+        end do
+      end do
+      Ldiag=0.d0
+      do i=1,n-1
+        do j=i+1,n
+          do m=1,3
+            dx(m)=corners(i,m)-corners(j,m)
+          end do
+          dist=dsqrt(sum(dx*dx))
+          Ldiag=max(Ldiag,dist)
+        end do
+      end do
+    else
+      Ldiag=dsqrt((xprobmax1-xprobmin1)**2+ &
+           (xprobmax2-xprobmin2)**2+(xprobmax3-xprobmin3)**2)
+    endif
+    }
+  end function mt_domain_diagonal
+
   subroutine mt_run_axis_plane_full_vtu_task()
     character(len=mt_task_name_len) :: plane
     character(len=mt_task_name_len) :: output_file
+    logical :: minimal_output
 
     plane=mt_lowercase(trim(mt_plane))
-    call mt_resolve_output_file('axis_plane_full_vtu','.vtu', &
-         '_'//trim(plane)//'_full.vtu',output_file)
-    if (mt_compute_twist .or. mt_compute_qperp) then
+    minimal_output=.not.mt_vtk_detail_is_full()
+    if (minimal_output) then
+      call mt_resolve_output_file('axis_plane_full_vtu','.vti', &
+           '_'//trim(plane)//'_minimal.vti',output_file)
+    else
+      call mt_resolve_output_file('axis_plane_full_vtu','.vtu', &
+           '_'//trim(plane)//'_full.vtu',output_file)
+    endif
+    if (.not.minimal_output .and. &
+         (mt_compute_twist .or. mt_compute_q .or. mt_compute_qperp)) then
       write(*,'(a)') 'mt_run_topology_task: axis_plane_full_vtu ignores compute flags'
       write(*,'(a)') 'mt_run_topology_task: it always writes full plane products'
     endif
@@ -252,14 +826,29 @@ contains
       call mt_require_positive_int('mt_ny',mt_ny)
       call mt_require_ordered('mt_xmin','mt_xmax',mt_xmin,mt_xmax)
       call mt_require_ordered('mt_ymin','mt_ymax',mt_ymin,mt_ymax)
-      write(*,'(a)') 'mt_run_topology_task: writing axis-plane full VTU '//trim(output_file)
-      if (mt_b_min>0.d0) then
-        call mt_qsl_plane_vtu_xy(mt_xmin,mt_xmax,mt_nx,mt_ymin,mt_ymax, &
-             mt_ny,mt_z0,mt_dL,mt_max_steps,trim(output_file), &
-             b_min=mt_b_min)
+      if (minimal_output) then
+        write(*,'(a)') 'mt_run_topology_task: writing axis-plane minimal VTI '//trim(output_file)
+        if (mt_b_min>0.d0) then
+          call mt_qsl_plane_vti_xy(mt_xmin,mt_xmax,mt_nx,mt_ymin,mt_ymax, &
+               mt_ny,mt_z0,mt_dL,mt_max_steps,trim(output_file), &
+               mt_compute_length,mt_compute_twist,mt_compute_q, &
+               mt_compute_qperp,b_min=mt_b_min)
+        else
+          call mt_qsl_plane_vti_xy(mt_xmin,mt_xmax,mt_nx,mt_ymin,mt_ymax, &
+               mt_ny,mt_z0,mt_dL,mt_max_steps,trim(output_file), &
+               mt_compute_length,mt_compute_twist,mt_compute_q, &
+               mt_compute_qperp)
+        endif
       else
-        call mt_qsl_plane_vtu_xy(mt_xmin,mt_xmax,mt_nx,mt_ymin,mt_ymax, &
-             mt_ny,mt_z0,mt_dL,mt_max_steps,trim(output_file))
+        write(*,'(a)') 'mt_run_topology_task: writing axis-plane full VTU '//trim(output_file)
+        if (mt_b_min>0.d0) then
+          call mt_qsl_plane_vtu_xy(mt_xmin,mt_xmax,mt_nx,mt_ymin,mt_ymax, &
+               mt_ny,mt_z0,mt_dL,mt_max_steps,trim(output_file), &
+               b_min=mt_b_min)
+        else
+          call mt_qsl_plane_vtu_xy(mt_xmin,mt_xmax,mt_nx,mt_ymin,mt_ymax, &
+               mt_ny,mt_z0,mt_dL,mt_max_steps,trim(output_file))
+        endif
       endif
     case ('xz')
       call mt_require_real('mt_xmin',mt_xmin)
@@ -271,14 +860,29 @@ contains
       call mt_require_positive_int('mt_nz',mt_nz)
       call mt_require_ordered('mt_xmin','mt_xmax',mt_xmin,mt_xmax)
       call mt_require_ordered('mt_zmin','mt_zmax',mt_zmin,mt_zmax)
-      write(*,'(a)') 'mt_run_topology_task: writing axis-plane full VTU '//trim(output_file)
-      if (mt_b_min>0.d0) then
-        call mt_qsl_plane_vtu_xz(mt_xmin,mt_xmax,mt_nx,mt_zmin,mt_zmax, &
-             mt_nz,mt_y0,mt_dL,mt_max_steps,trim(output_file), &
-             b_min=mt_b_min)
+      if (minimal_output) then
+        write(*,'(a)') 'mt_run_topology_task: writing axis-plane minimal VTI '//trim(output_file)
+        if (mt_b_min>0.d0) then
+          call mt_qsl_plane_vti_xz(mt_xmin,mt_xmax,mt_nx,mt_zmin,mt_zmax, &
+               mt_nz,mt_y0,mt_dL,mt_max_steps,trim(output_file), &
+               mt_compute_length,mt_compute_twist,mt_compute_q, &
+               mt_compute_qperp,b_min=mt_b_min)
+        else
+          call mt_qsl_plane_vti_xz(mt_xmin,mt_xmax,mt_nx,mt_zmin,mt_zmax, &
+               mt_nz,mt_y0,mt_dL,mt_max_steps,trim(output_file), &
+               mt_compute_length,mt_compute_twist,mt_compute_q, &
+               mt_compute_qperp)
+        endif
       else
-        call mt_qsl_plane_vtu_xz(mt_xmin,mt_xmax,mt_nx,mt_zmin,mt_zmax, &
-             mt_nz,mt_y0,mt_dL,mt_max_steps,trim(output_file))
+        write(*,'(a)') 'mt_run_topology_task: writing axis-plane full VTU '//trim(output_file)
+        if (mt_b_min>0.d0) then
+          call mt_qsl_plane_vtu_xz(mt_xmin,mt_xmax,mt_nx,mt_zmin,mt_zmax, &
+               mt_nz,mt_y0,mt_dL,mt_max_steps,trim(output_file), &
+               b_min=mt_b_min)
+        else
+          call mt_qsl_plane_vtu_xz(mt_xmin,mt_xmax,mt_nx,mt_zmin,mt_zmax, &
+               mt_nz,mt_y0,mt_dL,mt_max_steps,trim(output_file))
+        endif
       endif
     case ('yz')
       call mt_require_real('mt_ymin',mt_ymin)
@@ -290,14 +894,29 @@ contains
       call mt_require_positive_int('mt_nz',mt_nz)
       call mt_require_ordered('mt_ymin','mt_ymax',mt_ymin,mt_ymax)
       call mt_require_ordered('mt_zmin','mt_zmax',mt_zmin,mt_zmax)
-      write(*,'(a)') 'mt_run_topology_task: writing axis-plane full VTU '//trim(output_file)
-      if (mt_b_min>0.d0) then
-        call mt_qsl_plane_vtu_yz(mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax, &
-             mt_nz,mt_x0,mt_dL,mt_max_steps,trim(output_file), &
-             b_min=mt_b_min)
+      if (minimal_output) then
+        write(*,'(a)') 'mt_run_topology_task: writing axis-plane minimal VTI '//trim(output_file)
+        if (mt_b_min>0.d0) then
+          call mt_qsl_plane_vti_yz(mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax, &
+               mt_nz,mt_x0,mt_dL,mt_max_steps,trim(output_file), &
+               mt_compute_length,mt_compute_twist,mt_compute_q, &
+               mt_compute_qperp,b_min=mt_b_min)
+        else
+          call mt_qsl_plane_vti_yz(mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax, &
+               mt_nz,mt_x0,mt_dL,mt_max_steps,trim(output_file), &
+               mt_compute_length,mt_compute_twist,mt_compute_q, &
+               mt_compute_qperp)
+        endif
       else
-        call mt_qsl_plane_vtu_yz(mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax, &
-             mt_nz,mt_x0,mt_dL,mt_max_steps,trim(output_file))
+        write(*,'(a)') 'mt_run_topology_task: writing axis-plane full VTU '//trim(output_file)
+        if (mt_b_min>0.d0) then
+          call mt_qsl_plane_vtu_yz(mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax, &
+               mt_nz,mt_x0,mt_dL,mt_max_steps,trim(output_file), &
+               b_min=mt_b_min)
+        else
+          call mt_qsl_plane_vtu_yz(mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax, &
+               mt_nz,mt_x0,mt_dL,mt_max_steps,trim(output_file))
+        endif
       endif
     case default
       call mpistop('mt_run_topology_task: axis_plane_full_vtu requires mt_plane=xy, xz, or yz')
@@ -306,7 +925,8 @@ contains
 
   subroutine mt_run_axis_plane_csv_task()
     character(len=mt_task_name_len) :: plane
-    character(len=mt_task_name_len) :: length_csv,twist_csv,mapping_csv
+    character(len=mt_task_name_len) :: length_csv,twist_csv
+    character(len=mt_task_name_len) :: q_csv
     character(len=mt_task_name_len) :: qperp_csv
 
     if (len_trim(mt_output_prefix)==0) then
@@ -321,11 +941,15 @@ contains
     call mt_resolve_prefix_file('_'//trim(plane)//'_length.csv', &
          length_csv,'axis_plane_csv length requires mt_output_prefix')
     twist_csv=''
-    mapping_csv=''
+    q_csv=''
     qperp_csv=''
     if (mt_compute_twist) then
       call mt_resolve_prefix_file('_'//trim(plane)//'_twist.csv', &
            twist_csv,'axis_plane_csv twist requires mt_output_prefix')
+    endif
+    if (mt_compute_q) then
+      call mt_resolve_prefix_file('_'//trim(plane)//'_q.csv', &
+           q_csv,'axis_plane_csv Q requires mt_output_prefix')
     endif
     if (mt_compute_qperp) then
       call mt_resolve_prefix_file('_'//trim(plane)//'_qperp_method2.csv', &
@@ -344,19 +968,17 @@ contains
       call mt_require_ordered('mt_xmin','mt_xmax',mt_xmin,mt_xmax)
       call mt_require_ordered('mt_ymin','mt_ymax',mt_ymin,mt_ymax)
       if (mt_b_min>0.d0) then
-        call mt_topology_plane_xy(mt_xmin,mt_xmax,mt_nx,mt_ymin, &
-             mt_ymax,mt_ny,mt_z0,mt_dL,mt_max_steps,trim(length_csv), &
-             trim(twist_csv),trim(mapping_csv),b_min=mt_b_min)
-        if (mt_compute_qperp) call mt_qperp_plane_xy(mt_xmin,mt_xmax, &
-             mt_nx,mt_ymin,mt_ymax,mt_ny,mt_z0,mt_dL,mt_max_steps, &
-             trim(qperp_csv),b_min=mt_b_min)
+        call mt_axis_plane_products_csv_axis(mt_xmin,mt_xmax,mt_nx, &
+             mt_ymin,mt_ymax,mt_ny,mt_z0,1,2,3,mt_dL,mt_max_steps, &
+             trim(length_csv),trim(twist_csv),trim(q_csv), &
+             trim(qperp_csv),'mt_axis_plane_products_csv_xy','ix,iy', &
+             'ix,iy',b_min=mt_b_min)
       else
-        call mt_topology_plane_xy(mt_xmin,mt_xmax,mt_nx,mt_ymin, &
-             mt_ymax,mt_ny,mt_z0,mt_dL,mt_max_steps,trim(length_csv), &
-             trim(twist_csv),trim(mapping_csv))
-        if (mt_compute_qperp) call mt_qperp_plane_xy(mt_xmin,mt_xmax, &
-             mt_nx,mt_ymin,mt_ymax,mt_ny,mt_z0,mt_dL,mt_max_steps, &
-             trim(qperp_csv))
+        call mt_axis_plane_products_csv_axis(mt_xmin,mt_xmax,mt_nx, &
+             mt_ymin,mt_ymax,mt_ny,mt_z0,1,2,3,mt_dL,mt_max_steps, &
+             trim(length_csv),trim(twist_csv),trim(q_csv), &
+             trim(qperp_csv),'mt_axis_plane_products_csv_xy','ix,iy', &
+             'ix,iy')
       endif
     case ('xz')
       call mt_require_real('mt_xmin',mt_xmin)
@@ -369,19 +991,17 @@ contains
       call mt_require_ordered('mt_xmin','mt_xmax',mt_xmin,mt_xmax)
       call mt_require_ordered('mt_zmin','mt_zmax',mt_zmin,mt_zmax)
       if (mt_b_min>0.d0) then
-        call mt_topology_plane_xz(mt_xmin,mt_xmax,mt_nx,mt_zmin, &
-             mt_zmax,mt_nz,mt_y0,mt_dL,mt_max_steps,trim(length_csv), &
-             trim(twist_csv),trim(mapping_csv),b_min=mt_b_min)
-        if (mt_compute_qperp) call mt_qperp_plane_xz(mt_xmin,mt_xmax, &
-             mt_nx,mt_zmin,mt_zmax,mt_nz,mt_y0,mt_dL,mt_max_steps, &
-             trim(qperp_csv),b_min=mt_b_min)
+        call mt_axis_plane_products_csv_axis(mt_xmin,mt_xmax,mt_nx, &
+             mt_zmin,mt_zmax,mt_nz,mt_y0,1,3,2,mt_dL,mt_max_steps, &
+             trim(length_csv),trim(twist_csv),trim(q_csv), &
+             trim(qperp_csv),'mt_axis_plane_products_csv_xz','ix,iz', &
+             'i,j',b_min=mt_b_min)
       else
-        call mt_topology_plane_xz(mt_xmin,mt_xmax,mt_nx,mt_zmin, &
-             mt_zmax,mt_nz,mt_y0,mt_dL,mt_max_steps,trim(length_csv), &
-             trim(twist_csv),trim(mapping_csv))
-        if (mt_compute_qperp) call mt_qperp_plane_xz(mt_xmin,mt_xmax, &
-             mt_nx,mt_zmin,mt_zmax,mt_nz,mt_y0,mt_dL,mt_max_steps, &
-             trim(qperp_csv))
+        call mt_axis_plane_products_csv_axis(mt_xmin,mt_xmax,mt_nx, &
+             mt_zmin,mt_zmax,mt_nz,mt_y0,1,3,2,mt_dL,mt_max_steps, &
+             trim(length_csv),trim(twist_csv),trim(q_csv), &
+             trim(qperp_csv),'mt_axis_plane_products_csv_xz','ix,iz', &
+             'i,j')
       endif
     case ('yz')
       call mt_require_real('mt_ymin',mt_ymin)
@@ -394,19 +1014,17 @@ contains
       call mt_require_ordered('mt_ymin','mt_ymax',mt_ymin,mt_ymax)
       call mt_require_ordered('mt_zmin','mt_zmax',mt_zmin,mt_zmax)
       if (mt_b_min>0.d0) then
-        call mt_topology_plane_yz(mt_ymin,mt_ymax,mt_ny,mt_zmin, &
-             mt_zmax,mt_nz,mt_x0,mt_dL,mt_max_steps,trim(length_csv), &
-             trim(twist_csv),trim(mapping_csv),b_min=mt_b_min)
-        if (mt_compute_qperp) call mt_qperp_plane_yz(mt_ymin,mt_ymax, &
-             mt_ny,mt_zmin,mt_zmax,mt_nz,mt_x0,mt_dL,mt_max_steps, &
-             trim(qperp_csv),b_min=mt_b_min)
+        call mt_axis_plane_products_csv_axis(mt_ymin,mt_ymax,mt_ny, &
+             mt_zmin,mt_zmax,mt_nz,mt_x0,2,3,1,mt_dL,mt_max_steps, &
+             trim(length_csv),trim(twist_csv),trim(q_csv), &
+             trim(qperp_csv),'mt_axis_plane_products_csv_yz','iy,iz', &
+             'i,j',b_min=mt_b_min)
       else
-        call mt_topology_plane_yz(mt_ymin,mt_ymax,mt_ny,mt_zmin, &
-             mt_zmax,mt_nz,mt_x0,mt_dL,mt_max_steps,trim(length_csv), &
-             trim(twist_csv),trim(mapping_csv))
-        if (mt_compute_qperp) call mt_qperp_plane_yz(mt_ymin,mt_ymax, &
-             mt_ny,mt_zmin,mt_zmax,mt_nz,mt_x0,mt_dL,mt_max_steps, &
-             trim(qperp_csv))
+        call mt_axis_plane_products_csv_axis(mt_ymin,mt_ymax,mt_ny, &
+             mt_zmin,mt_zmax,mt_nz,mt_x0,2,3,1,mt_dL,mt_max_steps, &
+             trim(length_csv),trim(twist_csv),trim(q_csv), &
+             trim(qperp_csv),'mt_axis_plane_products_csv_yz','iy,iz', &
+             'i,j')
       endif
     case default
       call mpistop('mt_run_topology_task: axis_plane_csv requires mt_plane=xy, xz, or yz')
@@ -416,6 +1034,8 @@ contains
          trim(length_csv)
     if (mt_compute_twist) write(*,'(a)') &
          'mt_run_topology_task: wrote axis-plane CSV twist '//trim(twist_csv)
+    if (mt_compute_q) write(*,'(a)') &
+         'mt_run_topology_task: wrote axis-plane CSV Q '//trim(q_csv)
     if (mt_compute_qperp) write(*,'(a)') &
          'mt_run_topology_task: wrote axis-plane CSV Qperp '//trim(qperp_csv)
   end subroutine mt_run_axis_plane_csv_task
@@ -437,21 +1057,23 @@ contains
     call mt_require_ordered('mt_xmin','mt_xmax',mt_xmin,mt_xmax)
     call mt_require_ordered('mt_ymin','mt_ymax',mt_ymin,mt_ymax)
     call mt_require_ordered('mt_zmin','mt_zmax',mt_zmin,mt_zmax)
-
     write(*,'(a)') 'mt_run_topology_task: writing volume VTI '//trim(output_file)
     if (mt_b_min>0.d0) then
       if (mt_chunk_nz>0) then
         call mt_fieldline_products_volume_vti(mt_xmin,mt_xmax,mt_nx, &
              mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax,mt_nz, &
              mt_dL,mt_max_steps,trim(output_file),b_min=mt_b_min, &
-             compute_twist=mt_compute_twist, &
-             compute_qperp=mt_compute_qperp,chunk_nz=mt_chunk_nz)
+           compute_twist=mt_compute_twist, &
+             compute_length=mt_compute_length, &
+             compute_q=mt_compute_q,compute_qperp=mt_compute_qperp, &
+             chunk_nz=mt_chunk_nz)
       else
         call mt_fieldline_products_volume_vti(mt_xmin,mt_xmax,mt_nx, &
              mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax,mt_nz, &
              mt_dL,mt_max_steps,trim(output_file),b_min=mt_b_min, &
              compute_twist=mt_compute_twist, &
-             compute_qperp=mt_compute_qperp)
+             compute_length=mt_compute_length, &
+             compute_q=mt_compute_q,compute_qperp=mt_compute_qperp)
       endif
     else
       if (mt_chunk_nz>0) then
@@ -459,13 +1081,16 @@ contains
              mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax,mt_nz, &
              mt_dL,mt_max_steps,trim(output_file), &
              compute_twist=mt_compute_twist, &
-             compute_qperp=mt_compute_qperp,chunk_nz=mt_chunk_nz)
+             compute_length=mt_compute_length, &
+             compute_q=mt_compute_q,compute_qperp=mt_compute_qperp, &
+             chunk_nz=mt_chunk_nz)
       else
         call mt_fieldline_products_volume_vti(mt_xmin,mt_xmax,mt_nx, &
              mt_ymin,mt_ymax,mt_ny,mt_zmin,mt_zmax,mt_nz, &
              mt_dL,mt_max_steps,trim(output_file), &
              compute_twist=mt_compute_twist, &
-             compute_qperp=mt_compute_qperp)
+             compute_length=mt_compute_length, &
+             compute_q=mt_compute_q,compute_qperp=mt_compute_qperp)
       endif
     endif
   end subroutine mt_run_volume_vti_task
@@ -480,7 +1105,6 @@ contains
       call mt_resolve_prefix_file('_arbitrary_plane_products.csv',csv_file, &
            'arbitrary_plane_products CSV requires mt_output_prefix')
     endif
-
     call mt_require_real('mt_origin(1)',mt_origin(1))
     call mt_require_real('mt_origin(2)',mt_origin(2))
     call mt_require_real('mt_origin(3)',mt_origin(3))
@@ -510,21 +1134,24 @@ contains
       call mt_fieldline_products_plane_arbitrary(mt_origin(1:ndim), &
            mt_e1(1:ndim),mt_e2(1:ndim),mt_s1min,mt_s1max,mt_n1, &
            mt_s2min,mt_s2max,mt_n2,mt_dL,mt_max_steps,trim(csv_file), &
-           b_min=mt_b_min,compute_twist=mt_compute_twist, &
-           compute_qperp=mt_compute_qperp,vtu_file=trim(vtu_file), &
-           write_csv=mt_write_csv)
+           b_min=mt_b_min,compute_length=mt_compute_length, &
+           compute_twist=mt_compute_twist, &
+           compute_q=mt_compute_q,compute_qperp=mt_compute_qperp, &
+           vtu_file=trim(vtu_file),write_csv=mt_write_csv)
     else
       call mt_fieldline_products_plane_arbitrary(mt_origin(1:ndim), &
            mt_e1(1:ndim),mt_e2(1:ndim),mt_s1min,mt_s1max,mt_n1, &
            mt_s2min,mt_s2max,mt_n2,mt_dL,mt_max_steps,trim(csv_file), &
+           compute_length=mt_compute_length, &
            compute_twist=mt_compute_twist, &
-           compute_qperp=mt_compute_qperp,vtu_file=trim(vtu_file), &
-           write_csv=mt_write_csv)
+           compute_q=mt_compute_q,compute_qperp=mt_compute_qperp, &
+           vtu_file=trim(vtu_file),write_csv=mt_write_csv)
     endif
   end subroutine mt_run_arbitrary_plane_products_task
 
   subroutine mt_run_seed_products_task()
-    character(len=mt_task_name_len) :: csv_file,vtu_file
+    character(len=mt_task_name_len) :: csv_file,vtu_file,diag_file
+    character(len=mt_task_name_len) :: rk2_diag_file
     double precision, allocatable :: seeds(:,:)
     integer :: nseed
 
@@ -539,33 +1166,285 @@ contains
       call mpistop('seed_products requires mt_seed_file')
     endif
 
-    call mt_resolve_prefix_file('_seed_products.csv',csv_file, &
-         'seed_products CSV requires mt_output_prefix')
+    csv_file=''
+    if (mt_write_csv) then
+      call mt_resolve_prefix_file('_seed_products.csv',csv_file, &
+           'seed_products CSV requires mt_output_prefix')
+    endif
     call mt_resolve_prefix_file('_seed_products.vtu',vtu_file, &
          'seed_products VTU requires mt_output_prefix')
+    if (mt_rk45_tangent_diagnostic) then
+      call mt_resolve_prefix_file('_rk45_tangent_diag.csv',diag_file, &
+           'seed_products RK45 tangent diagnostic requires mt_output_prefix')
+    endif
+    if (mt_rk2_fusion_diagnostic) then
+      call mt_resolve_prefix_file('_rk2_fusion_diag.csv',rk2_diag_file, &
+           'seed_products RK2 fusion diagnostic requires mt_output_prefix')
+    endif
     call mt_read_seed_file(trim(mt_seed_file),seeds,nseed)
 
-    write(*,'(a)') 'mt_run_topology_task: writing seed-products CSV '// &
-         trim(csv_file)
+    if (mt_write_csv) write(*,'(a)') &
+         'mt_run_topology_task: writing seed-products CSV '//trim(csv_file)
     write(*,'(a)') 'mt_run_topology_task: writing seed-products VTU '// &
          trim(vtu_file)
 
-    if (mt_write_csv) then
-      write(*,'(a)') 'mt_run_topology_task: seed_products always writes CSV'
-    endif
-
     if (mt_b_min>0.d0) then
       call mt_fieldline_products_seeds(seeds,nseed,mt_dL,mt_max_steps, &
-           trim(csv_file),b_min=mt_b_min,compute_twist=mt_compute_twist, &
-           compute_qperp=mt_compute_qperp,vtu_file=trim(vtu_file))
+           trim(csv_file),b_min=mt_b_min,compute_length=mt_compute_length, &
+           compute_twist=mt_compute_twist, &
+           compute_q=mt_compute_q,compute_qperp=mt_compute_qperp, &
+           vtu_file=trim(vtu_file))
+      if (mt_rk45_tangent_diagnostic) then
+        write(*,'(a)') 'mt_run_topology_task: writing RK45 tangent '// &
+             'diagnostic CSV '//trim(diag_file)
+        call mt_rk45_tangent_diagnostic_seeds(seeds,nseed,mt_dL, &
+             mt_max_steps,trim(diag_file),b_min=mt_b_min)
+      endif
+      if (mt_rk2_fusion_diagnostic) then
+        write(*,'(a)') 'mt_run_topology_task: writing RK2 fusion '// &
+             'diagnostic CSV '//trim(rk2_diag_file)
+        call mt_rk2_fusion_diagnostic_seeds(seeds,nseed,mt_dL, &
+             mt_max_steps,trim(rk2_diag_file),b_min=mt_b_min)
+      endif
     else
       call mt_fieldline_products_seeds(seeds,nseed,mt_dL,mt_max_steps, &
-           trim(csv_file),compute_twist=mt_compute_twist, &
-           compute_qperp=mt_compute_qperp,vtu_file=trim(vtu_file))
+           trim(csv_file),compute_length=mt_compute_length, &
+           compute_twist=mt_compute_twist, &
+           compute_q=mt_compute_q,compute_qperp=mt_compute_qperp, &
+           vtu_file=trim(vtu_file))
+      if (mt_rk45_tangent_diagnostic) then
+        write(*,'(a)') 'mt_run_topology_task: writing RK45 tangent '// &
+             'diagnostic CSV '//trim(diag_file)
+        call mt_rk45_tangent_diagnostic_seeds(seeds,nseed,mt_dL, &
+             mt_max_steps,trim(diag_file))
+      endif
+      if (mt_rk2_fusion_diagnostic) then
+        write(*,'(a)') 'mt_run_topology_task: writing RK2 fusion '// &
+             'diagnostic CSV '//trim(rk2_diag_file)
+        call mt_rk2_fusion_diagnostic_seeds(seeds,nseed,mt_dL, &
+             mt_max_steps,trim(rk2_diag_file))
+      endif
     endif
 
     deallocate(seeds)
   end subroutine mt_run_seed_products_task
+
+  subroutine mt_run_spherical_surface_products_task()
+    character(len=mt_task_name_len) :: surface,csv_file,vtu_file,suffix
+    double precision :: seed_coord,s1_min,s1_max,s2_min,s2_max
+    double precision :: seed_theta0,seed_phi0,seed_alpha
+
+    surface=mt_lowercase(trim(mt_seed_surface))
+    if (len_trim(surface)==0) surface='rmin'
+    select case (trim(surface))
+    case ('rmin')
+      seed_coord=xprobmin1
+    case ('rconst','r_const')
+      surface='rconst'
+      call mt_require_real('mt_seed_coord',mt_seed_coord)
+      seed_coord=mt_seed_coord
+      if (seed_coord<xprobmin1 .or. seed_coord>xprobmax1) then
+        call mpistop('spherical_surface_products requires rconst '// &
+             'mt_seed_coord inside domain')
+      endif
+    {^IFTHREED
+    case ('theta_const','thetaconst')
+      surface='theta_const'
+      call mt_require_real('mt_seed_coord',mt_seed_coord)
+      seed_coord=mt_seed_coord
+      if (seed_coord<xprobmin2 .or. seed_coord>xprobmax2) then
+        call mpistop('spherical_surface_products requires theta_const '// &
+             'mt_seed_coord inside domain')
+      endif
+    case ('phi_const','phiconst')
+      surface='phi_const'
+      call mt_require_real('mt_seed_coord',mt_seed_coord)
+      seed_coord=mt_seed_coord
+      if (seed_coord<xprobmin3 .or. seed_coord>xprobmax3) then
+        call mpistop('spherical_surface_products requires phi_const '// &
+             'mt_seed_coord inside domain')
+      endif
+    case ('radial_plane','radialplane')
+      surface='radial_plane'
+      seed_coord=0.d0
+      call mt_require_real('mt_seed_theta0',mt_seed_theta0)
+      call mt_require_real('mt_seed_phi0',mt_seed_phi0)
+      call mt_require_real('mt_seed_alpha',mt_seed_alpha)
+      if (mt_seed_theta0<xprobmin2 .or. mt_seed_theta0>xprobmax2) then
+        call mpistop('spherical_surface_products requires radial_plane '// &
+             'mt_seed_theta0 inside domain')
+      endif
+      if (mt_seed_phi0<xprobmin3 .or. mt_seed_phi0>xprobmax3) then
+        call mpistop('spherical_surface_products requires radial_plane '// &
+             'mt_seed_phi0 inside domain')
+      endif
+      if (abs(dsin(mt_seed_theta0))<=1.d-12) then
+        call mpistop('spherical_surface_products radial_plane requires '// &
+             'mt_seed_theta0 away from the polar singularity')
+      endif
+    }
+    case default
+      call mpistop('spherical_surface_products supports '// &
+           'mt_seed_surface=rmin, rconst, theta_const, phi_const, or radial_plane')
+    end select
+    call mt_require_positive_int('mt_n1',mt_n1)
+    call mt_require_positive_int('mt_n2',mt_n2)
+    s1_min=0.d0
+    s1_max=0.d0
+    s2_min=0.d0
+    s2_max=0.d0
+    {^IFTHREED
+    select case (trim(surface))
+    case ('rmin','rconst')
+      s1_min=xprobmin2
+      s1_max=xprobmax2
+      s2_min=xprobmin3
+      s2_max=xprobmax3
+    case ('theta_const')
+      s1_min=xprobmin1
+      s1_max=xprobmax1
+      s2_min=xprobmin3
+      s2_max=xprobmax3
+    case ('phi_const')
+      s1_min=xprobmin1
+      s1_max=xprobmax1
+      s2_min=xprobmin2
+      s2_max=xprobmax2
+    case ('radial_plane')
+      s1_min=xprobmin1
+      s1_max=xprobmax1
+      s2_min=-0.5d0*min(xprobmax2-xprobmin2,xprobmax3-xprobmin3)
+      s2_max= 0.5d0*min(xprobmax2-xprobmin2,xprobmax3-xprobmin3)
+    end select
+    }
+    if (mt_is_set_real(mt_s1min)) s1_min=mt_s1min
+    if (mt_is_set_real(mt_s1max)) s1_max=mt_s1max
+    if (mt_is_set_real(mt_s2min)) s2_min=mt_s2min
+    if (mt_is_set_real(mt_s2max)) s2_max=mt_s2max
+    call mt_require_ordered('mt_s1min','mt_s1max',s1_min,s1_max)
+    call mt_require_ordered('mt_s2min','mt_s2max',s2_min,s2_max)
+
+    csv_file=''
+    if (mt_write_csv) then
+      if (trim(surface)=='rmin') then
+        suffix='_spherical_rmin_products.csv'
+      else if (trim(surface)=='radial_plane') then
+        suffix='_spherical_radial_plane_products.csv'
+      else
+        suffix='_spherical_'//trim(surface)//'_products.csv'
+      endif
+      call mt_resolve_prefix_file(trim(suffix),csv_file, &
+           'spherical_surface_products CSV requires mt_output_prefix')
+    endif
+    if (trim(surface)=='rmin') then
+      suffix='_spherical_rmin_products.vtu'
+    else if (trim(surface)=='radial_plane') then
+      suffix='_spherical_radial_plane_products.vtu'
+    else
+      suffix='_spherical_'//trim(surface)//'_products.vtu'
+    endif
+    call mt_resolve_output_file('spherical_surface_products','.vtu', &
+         trim(suffix),vtu_file)
+
+    if (mt_write_csv) then
+      write(*,'(a)') 'mt_run_topology_task: writing spherical '// &
+           trim(surface)//' CSV '//trim(csv_file)
+    endif
+    write(*,'(a)') 'mt_run_topology_task: writing spherical '// &
+         trim(surface)//' VTU '//trim(vtu_file)
+
+    if (mt_profile_spherical) then
+      call trace_spherical_profile_reset()
+      call trace_spherical_profile_set(.true.)
+    endif
+
+    seed_theta0=mt_seed_theta0
+    seed_phi0=mt_seed_phi0
+    seed_alpha=mt_seed_alpha
+    if (mt_b_min>0.d0) then
+      call mt_fieldline_products_spherical_surface(trim(surface),seed_coord, &
+           s1_min,s1_max,mt_n1,s2_min,s2_max,mt_n2,mt_dL,mt_max_steps, &
+           trim(csv_file),trim(vtu_file),trim(mt_seed_layout), &
+           seed_theta0,seed_phi0,seed_alpha, &
+           compute_twist=mt_compute_twist,compute_q=mt_compute_q, &
+           compute_qperp=mt_compute_qperp,b_min=mt_b_min)
+    else
+      call mt_fieldline_products_spherical_surface(trim(surface),seed_coord, &
+           s1_min,s1_max,mt_n1,s2_min,s2_max,mt_n2,mt_dL,mt_max_steps, &
+           trim(csv_file),trim(vtu_file),trim(mt_seed_layout), &
+           seed_theta0,seed_phi0,seed_alpha, &
+           compute_twist=mt_compute_twist,compute_q=mt_compute_q, &
+           compute_qperp=mt_compute_qperp)
+    endif
+    if (mt_profile_spherical) then
+      call trace_spherical_profile_report('spherical_surface_products '// &
+           trim(surface))
+      call trace_spherical_profile_set(.false.)
+    endif
+  end subroutine mt_run_spherical_surface_products_task
+
+  subroutine mt_run_spherical_cloud_products_task()
+    character(len=mt_task_name_len) :: vtu_file
+    double precision :: s1_min,s1_max,s2_min,s2_max,s3_min,s3_max
+
+    if (mt_write_csv) then
+      write(*,'(a)') 'mt_run_topology_task: spherical_cloud_products '// &
+           'does not write CSV; use seed_products for selected-point diagnostics'
+    endif
+    call mt_require_positive_int('mt_n1',mt_n1)
+    call mt_require_positive_int('mt_n2',mt_n2)
+    call mt_require_positive_int('mt_n3',mt_n3)
+    s1_min=xprobmin1
+    s1_max=xprobmax1
+    s2_min=0.d0
+    s2_max=0.d0
+    s3_min=0.d0
+    s3_max=0.d0
+    {^IFTHREED
+    s2_min=xprobmin2
+    s2_max=xprobmax2
+    s3_min=xprobmin3
+    s3_max=xprobmax3
+    }
+    if (mt_is_set_real(mt_s1min)) s1_min=mt_s1min
+    if (mt_is_set_real(mt_s1max)) s1_max=mt_s1max
+    if (mt_is_set_real(mt_s2min)) s2_min=mt_s2min
+    if (mt_is_set_real(mt_s2max)) s2_max=mt_s2max
+    if (mt_is_set_real(mt_s3min)) s3_min=mt_s3min
+    if (mt_is_set_real(mt_s3max)) s3_max=mt_s3max
+    call mt_require_ordered('mt_s1min','mt_s1max',s1_min,s1_max)
+    call mt_require_ordered('mt_s2min','mt_s2max',s2_min,s2_max)
+    call mt_require_ordered('mt_s3min','mt_s3max',s3_min,s3_max)
+
+    call mt_resolve_output_file('spherical_cloud_products','.vtu', &
+         '_spherical_cloud_products.vtu',vtu_file)
+
+    write(*,'(a)') 'mt_run_topology_task: writing spherical cloud VTU '// &
+         trim(vtu_file)
+
+    if (mt_profile_spherical) then
+      call trace_spherical_profile_reset()
+      call trace_spherical_profile_set(.true.)
+    endif
+
+    if (mt_b_min>0.d0) then
+      call mt_fieldline_products_spherical_cloud(s1_min,s1_max,mt_n1, &
+           s2_min,s2_max,mt_n2,s3_min,s3_max,mt_n3,mt_dL,mt_max_steps, &
+           trim(vtu_file),trim(mt_seed_layout), &
+           compute_twist=mt_compute_twist,compute_q=mt_compute_q, &
+           compute_qperp=mt_compute_qperp,b_min=mt_b_min)
+    else
+      call mt_fieldline_products_spherical_cloud(s1_min,s1_max,mt_n1, &
+           s2_min,s2_max,mt_n2,s3_min,s3_max,mt_n3,mt_dL,mt_max_steps, &
+           trim(vtu_file),trim(mt_seed_layout), &
+           compute_twist=mt_compute_twist,compute_q=mt_compute_q, &
+           compute_qperp=mt_compute_qperp)
+    endif
+    if (mt_profile_spherical) then
+      call trace_spherical_profile_report('spherical_cloud_products')
+      call trace_spherical_profile_set(.false.)
+    endif
+  end subroutine mt_run_spherical_cloud_products_task
 
   subroutine mt_resolve_output_file(mode,extension,suffix,output_file)
     character(len=*), intent(in) :: mode,extension,suffix
@@ -636,6 +1515,16 @@ contains
            trim(name_min)//'/'//trim(name_max))
     endif
   end subroutine mt_require_ordered
+
+  subroutine mt_require_requested_science(do_length,do_twist,do_q,do_qperp, &
+       caller)
+    logical, intent(in) :: do_length,do_twist,do_q,do_qperp
+    character(len=*), intent(in) :: caller
+
+    if (.not.(do_length .or. do_twist .or. do_q .or. do_qperp)) then
+      call mpistop(trim(caller)//' requires at least one requested science array')
+    endif
+  end subroutine mt_require_requested_science
 
   subroutine mt_read_seed_file(filename,seeds,nseed)
     character(len=*), intent(in) :: filename
@@ -943,40 +1832,112 @@ contains
   end subroutine mt_length_seeds
 
   subroutine mt_fieldline_products_seeds(seeds,nseed,dL,max_steps,csv_file, &
-       b_min,compute_twist,compute_qperp,vtu_file)
+       b_min,compute_length,compute_twist,compute_q,compute_qperp,vtu_file)
     ! Write selected per-field-line diagnostics for an arbitrary seed set.
     integer, intent(in) :: nseed,max_steps
     double precision, intent(in) :: seeds(nseed,ndim),dL
     character(len=*), intent(in) :: csv_file
     double precision, intent(in), optional :: b_min
-    logical, intent(in), optional :: compute_twist,compute_qperp
+    logical, intent(in), optional :: compute_length,compute_twist
+    logical, intent(in), optional :: compute_q,compute_qperp
     character(len=*), intent(in), optional :: vtu_file
 
     type(trace_length_result), allocatable :: length_results(:)
     type(trace_twist_result), allocatable :: twist_results(:)
+    type(trace_qperp_result), allocatable :: q_results(:)
     type(trace_qperp_result), allocatable :: qperp_results(:)
-    logical :: do_twist,do_qperp
+    logical :: do_length,do_twist,do_q,do_qperp
+    character(len=mt_task_name_len) :: integrator
+
+    do_length=.true.
+    do_twist=.false.
+    do_q=.false.
+    do_qperp=.false.
+    if (present(compute_length)) do_length=compute_length
+    if (present(compute_twist)) do_twist=compute_twist
+    if (present(compute_q)) do_q=compute_q
+    if (present(compute_qperp)) do_qperp=compute_qperp
+    integrator=mt_lowercase(trim(mt_trace_integrator))
 
     if (npe/=1) then
       call mpistop('mt_fieldline_products_seeds currently requires npe=1')
     endif
-    if (ndim/=3 .or. .not.slab_uniform) then
-      call mpistop('mt_fieldline_products_seeds requires 3D uniform Cartesian geometry')
+    if (ndim/=3) then
+      call mpistop('mt_fieldline_products_seeds requires 3D Cartesian or spherical geometry')
+    endif
+    {^IFTHREED
+    select case (geo_coordinate)
+    case (geo_cartesian,geo_cartesian_stretched)
+    case (geo_spherical)
+      if (periodB(3)) then
+        call mpistop('spherical seed_products does not yet support periodic phi')
+      endif
+    case default
+      call mpistop('mt_fieldline_products_seeds requires Cartesian or spherical geometry')
+    end select
+    }
+    if (do_qperp) then
+      select case (trim(integrator))
+      case ('rk2')
+        ! RK2 Qperp is the mature tangent-transport path.
+      case ('rk45_cartesian')
+        {^IFTHREED
+        if (geo_coordinate==geo_spherical) then
+          call mpistop('seed_products logQperp with spherical geometry '// &
+               'requires mt_trace_integrator=rk45_spherical')
+        endif
+        }
+      case ('rk45_spherical')
+        {^IFTHREED
+        if (geo_coordinate/=geo_spherical) then
+          call mpistop('seed_products logQperp with Cartesian geometry '// &
+               'requires mt_trace_integrator=rk45_cartesian')
+        endif
+        }
+      case default
+        call mpistop('seed_products logQperp requires mt_trace_integrator='// &
+             'rk2, rk45_cartesian, or rk45_spherical')
+      end select
+    endif
+    if (do_q) then
+      select case (trim(integrator))
+      case ('rk2')
+        ! RK2 standard logQ is the mature tangent-transport path.
+      case ('rk45_cartesian')
+        {^IFTHREED
+        if (geo_coordinate==geo_spherical) then
+          call mpistop('seed_products logQ with spherical geometry '// &
+               'requires mt_trace_integrator=rk45_spherical')
+        endif
+        }
+      case ('rk45_spherical')
+        {^IFTHREED
+        if (geo_coordinate/=geo_spherical) then
+          call mpistop('seed_products logQ with Cartesian geometry '// &
+               'requires mt_trace_integrator=rk45_cartesian')
+        endif
+        }
+      case default
+        call mpistop('seed_products logQ requires mt_trace_integrator='// &
+             'rk2, rk45_cartesian, or rk45_spherical')
+      end select
     endif
     if (nseed<0) then
       call mpistop('mt_fieldline_products_seeds requires nseed>=0')
     endif
-
-    do_twist=.false.
-    do_qperp=.false.
-    if (present(compute_twist)) do_twist=compute_twist
-    if (present(compute_qperp)) do_qperp=compute_qperp
+    call mt_require_requested_science(do_length,do_twist,do_q,do_qperp, &
+         'mt_fieldline_products_seeds')
 
     allocate(length_results(nseed))
     if (do_twist) then
       allocate(twist_results(nseed))
     else
       allocate(twist_results(0))
+    endif
+    if (do_q) then
+      allocate(q_results(nseed))
+    else
+      allocate(q_results(0))
     endif
     if (do_qperp) then
       allocate(qperp_results(nseed))
@@ -986,27 +1947,836 @@ contains
 
     if (present(b_min)) then
       call mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
-           length_results,twist_results,qperp_results,do_twist,do_qperp, &
-           b_min)
+           length_results,twist_results,q_results,qperp_results,do_twist, &
+           do_q,do_qperp,b_min)
     else
       call mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
-           length_results,twist_results,qperp_results,do_twist,do_qperp)
+           length_results,twist_results,q_results,qperp_results,do_twist, &
+           do_q,do_qperp)
     endif
 
-    call mt_write_fieldline_products_seeds_csv(length_results, &
-         twist_results,qperp_results,nseed,csv_file,do_twist,do_qperp)
+    if (len_trim(csv_file)>0) then
+      call mt_write_fieldline_products_seeds_csv(length_results, &
+           twist_results,q_results,qperp_results,nseed,csv_file,do_twist, &
+           do_q,do_qperp)
+    endif
     if (present(vtu_file)) then
       if (len_trim(vtu_file)>0) then
         call mt_write_fieldline_products_vtu_vertices(vtu_file, &
-             length_results,twist_results,qperp_results,nseed,do_twist, &
-             do_qperp,'mt_fieldline_products_seeds')
+             length_results,twist_results,q_results,qperp_results,nseed, &
+             do_length,do_twist,do_q,do_qperp,'mt_fieldline_products_seeds')
       endif
     endif
 
     if (allocated(qperp_results)) deallocate(qperp_results)
+    if (allocated(q_results)) deallocate(q_results)
     if (allocated(twist_results)) deallocate(twist_results)
     deallocate(length_results)
   end subroutine mt_fieldline_products_seeds
+
+  subroutine mt_rk45_tangent_diagnostic_seeds(seeds,nseed,dL,max_steps, &
+       csv_file,b_min)
+    integer, intent(in) :: nseed,max_steps
+    double precision, intent(in) :: seeds(nseed,ndim),dL
+    character(len=*), intent(in) :: csv_file
+    double precision, intent(in), optional :: b_min
+
+    type(trace_qperp_result), allocatable :: rk2_results(:)
+    type(trace_qperp_result), allocatable :: rk45_results(:)
+
+    if (npe/=1) then
+      call mpistop('mt_rk45_tangent_diagnostic_seeds currently requires npe=1')
+    endif
+    if (nseed<0) then
+      call mpistop('mt_rk45_tangent_diagnostic_seeds requires nseed>=0')
+    endif
+
+    allocate(rk2_results(nseed),rk45_results(nseed))
+    if (present(b_min)) then
+      call trace_field_qperp_multi(seeds,nseed,dL,max_steps,rk2_results, &
+           b_min)
+      call trace_debug_cartesian_rk45_tangent_q0_multi(seeds,nseed,dL, &
+           max_steps,rk45_results,b_min)
+    else
+      call trace_field_qperp_multi(seeds,nseed,dL,max_steps,rk2_results)
+      call trace_debug_cartesian_rk45_tangent_q0_multi(seeds,nseed,dL, &
+           max_steps,rk45_results)
+    endif
+
+    call mt_write_rk45_tangent_diagnostic_csv(rk2_results,rk45_results, &
+         nseed,csv_file)
+    deallocate(rk45_results,rk2_results)
+  end subroutine mt_rk45_tangent_diagnostic_seeds
+
+  subroutine mt_write_rk45_tangent_diagnostic_csv(rk2_results,rk45_results, &
+       nseed,csv_file)
+    integer, intent(in) :: nseed
+    type(trace_qperp_result), intent(in) :: rk2_results(nseed)
+    type(trace_qperp_result), intent(in) :: rk45_results(nseed)
+    character(len=*), intent(in) :: csv_file
+
+    double precision :: seed_xyz(3),logq_diff,q_diff,length_diff
+    double precision :: f_endpoint_diff,b_endpoint_diff
+    double precision :: uf_diff,vf_diff,ub_diff,vb_diff
+    integer :: csv_unit,io_status,iseed
+
+    open(newunit=csv_unit,file=trim(csv_file),status='replace', &
+         action='write',form='formatted',iostat=io_status)
+    if (io_status/=0) then
+      call mpistop('mt_rk45_tangent_diagnostic could not open CSV file')
+    endif
+
+    write(csv_unit,'(a)',iostat=io_status) &
+         'seed_id,seed_x,seed_y,seed_z,'// &
+         'rk2_status_q0,rk45_status_q0,'// &
+         'rk2_forward_status,rk45_forward_status,'// &
+         'rk2_backward_status,rk45_backward_status,'// &
+         'rk2_logq0,rk45_logq0,abs_diff_logq0,'// &
+         'rk2_q0,rk45_q0,abs_diff_q0,'// &
+         'rk2_length_total,rk45_length_total,abs_diff_length_total,'// &
+         'endpoint_diff_forward,endpoint_diff_backward,'// &
+         'u_forward_perp_diff,v_forward_perp_diff,'// &
+         'u_backward_perp_diff,v_backward_perp_diff'
+    if (io_status/=0) then
+      close(csv_unit)
+      call mpistop('mt_rk45_tangent_diagnostic could not write CSV header')
+    endif
+
+    do iseed=1,nseed
+      seed_xyz=0.d0
+      seed_xyz(1:ndim)=rk2_results(iseed)%seed
+      logq_diff=mt_absdiff_or_nan(rk2_results(iseed)%logq0, &
+           rk45_results(iseed)%logq0)
+      q_diff=mt_absdiff_or_nan(rk2_results(iseed)%q0, &
+           rk45_results(iseed)%q0)
+      length_diff=abs((rk2_results(iseed)%forward_length+ &
+           rk2_results(iseed)%backward_length)- &
+           (rk45_results(iseed)%forward_length+ &
+           rk45_results(iseed)%backward_length))
+      f_endpoint_diff=dsqrt(sum((rk2_results(iseed)%forward_endpoint- &
+           rk45_results(iseed)%forward_endpoint)**2))
+      b_endpoint_diff=dsqrt(sum((rk2_results(iseed)%backward_endpoint- &
+           rk45_results(iseed)%backward_endpoint)**2))
+      uf_diff=dsqrt(sum((rk2_results(iseed)%u_forward_perp- &
+           rk45_results(iseed)%u_forward_perp)**2))
+      vf_diff=dsqrt(sum((rk2_results(iseed)%v_forward_perp- &
+           rk45_results(iseed)%v_forward_perp)**2))
+      ub_diff=dsqrt(sum((rk2_results(iseed)%u_backward_perp- &
+           rk45_results(iseed)%u_backward_perp)**2))
+      vb_diff=dsqrt(sum((rk2_results(iseed)%v_backward_perp- &
+           rk45_results(iseed)%v_backward_perp)**2))
+
+      write(csv_unit,'(i0,3(",",es24.16),6(",",i0),15(",",es24.16))', &
+           iostat=io_status) &
+           iseed,seed_xyz, &
+           rk2_results(iseed)%status_q0, &
+           rk45_results(iseed)%status_q0, &
+           rk2_results(iseed)%forward_status, &
+           rk45_results(iseed)%forward_status, &
+           rk2_results(iseed)%backward_status, &
+           rk45_results(iseed)%backward_status, &
+           rk2_results(iseed)%logq0,rk45_results(iseed)%logq0,logq_diff, &
+           rk2_results(iseed)%q0,rk45_results(iseed)%q0,q_diff, &
+           rk2_results(iseed)%forward_length+ &
+           rk2_results(iseed)%backward_length, &
+           rk45_results(iseed)%forward_length+ &
+           rk45_results(iseed)%backward_length, &
+           length_diff,f_endpoint_diff,b_endpoint_diff, &
+           uf_diff,vf_diff,ub_diff,vb_diff
+      if (io_status/=0) then
+        close(csv_unit)
+        call mpistop('mt_rk45_tangent_diagnostic could not write CSV data')
+      endif
+    enddo
+
+    close(csv_unit)
+  end subroutine mt_write_rk45_tangent_diagnostic_csv
+
+  subroutine mt_rk2_fusion_diagnostic_seeds(seeds,nseed,dL,max_steps, &
+       csv_file,b_min)
+    integer, intent(in) :: nseed,max_steps
+    double precision, intent(in) :: seeds(nseed,ndim),dL
+    character(len=*), intent(in) :: csv_file
+    double precision, intent(in), optional :: b_min
+
+    type(trace_topology_result), allocatable :: summary(:)
+    type(trace_qperp_result), allocatable :: q_trace(:)
+    type(trace_qperp_result), allocatable :: q_short(:)
+    type(trace_twist_result), allocatable :: q_twist(:)
+    type(trace_twist_result), allocatable :: q_short_twist(:)
+    integer :: cache_status
+    logical :: use_spherical_cache
+
+    if (npe/=1) then
+      call mpistop('mt_rk2_fusion_diagnostic currently requires npe=1')
+    endif
+    if (nseed<0) then
+      call mpistop('mt_rk2_fusion_diagnostic requires nseed>=0')
+    endif
+    if (mt_lowercase(trim(mt_trace_integrator))/='rk2') then
+      call mpistop('mt_rk2_fusion_diagnostic requires rk2 tracing')
+    endif
+
+    allocate(summary(nseed),q_trace(nseed),q_short(nseed), &
+         q_twist(nseed),q_short_twist(nseed))
+    use_spherical_cache=.false.
+    {^IFTHREED
+    if (geo_coordinate==geo_spherical) then
+      call trace_spherical_curl_cache_build(cache_status)
+      if (cache_status/=trace_status_active) then
+        call mpistop('mt_rk2_fusion_diagnostic failed to build '// &
+             'spherical curl cache')
+      endif
+      use_spherical_cache=.true.
+    endif
+    }
+
+    if (present(b_min)) then
+      call trace_field_topology_multi(seeds,nseed,dL,max_steps,summary, &
+           need_twist=.true.,need_mapping=.false.,b_min=b_min)
+      if (geo_coordinate==geo_spherical) then
+        call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+             q_trace,b_min,twist_results=q_twist)
+        call trace_field_rk2_short_boundary_q_multi(seeds,nseed,dL, &
+             max_steps,q_short,b_min,twist_results=q_short_twist)
+      else
+        call trace_field_qperp_multi(seeds,nseed,dL,max_steps,q_trace, &
+             b_min,twist_results=q_twist)
+        call trace_field_rk2_short_boundary_q_multi(seeds,nseed,dL, &
+             max_steps,q_short,b_min,twist_results=q_short_twist)
+      endif
+    else
+      call trace_field_topology_multi(seeds,nseed,dL,max_steps,summary, &
+           need_twist=.true.,need_mapping=.false.)
+      if (geo_coordinate==geo_spherical) then
+        call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+             q_trace,twist_results=q_twist)
+        call trace_field_rk2_short_boundary_q_multi(seeds,nseed,dL, &
+             max_steps,q_short,twist_results=q_short_twist)
+      else
+        call trace_field_qperp_multi(seeds,nseed,dL,max_steps,q_trace, &
+             twist_results=q_twist)
+        call trace_field_rk2_short_boundary_q_multi(seeds,nseed,dL, &
+             max_steps,q_short,twist_results=q_short_twist)
+      endif
+    endif
+
+    if (use_spherical_cache) call trace_spherical_curl_cache_clear()
+    call mt_write_rk2_fusion_diagnostic_csv(summary,q_trace,q_twist, &
+         q_short,q_short_twist,nseed,csv_file)
+    deallocate(q_short_twist,q_twist,q_short,q_trace,summary)
+  end subroutine mt_rk2_fusion_diagnostic_seeds
+
+  subroutine mt_write_rk2_fusion_diagnostic_csv(summary,q_trace,q_twist, &
+       q_short,q_short_twist,nseed,csv_file)
+    integer, intent(in) :: nseed
+    type(trace_topology_result), intent(in) :: summary(nseed)
+    type(trace_qperp_result), intent(in) :: q_trace(nseed)
+    type(trace_twist_result), intent(in) :: q_twist(nseed)
+    type(trace_qperp_result), intent(in) :: q_short(nseed)
+    type(trace_twist_result), intent(in) :: q_short_twist(nseed)
+    character(len=*), intent(in) :: csv_file
+
+    double precision :: seed_xyz(3),length_summary,length_q,length_diff
+    double precision :: length_short,length_diff_short,length_q_short_diff
+    double precision :: twist_summary,twist_q,twist_diff
+    double precision :: twist_short,twist_diff_short,twist_q_short_diff
+    double precision :: max_length_diff,max_twist_diff
+    double precision :: max_length_short_diff,max_twist_short_diff
+    integer :: csv_unit,io_status,iseed
+    integer :: status_mismatch,face_mismatch,twist_status_mismatch
+    integer :: short_status_mismatch,short_face_mismatch
+    integer :: short_twist_status_mismatch,short_valid_q_mismatch
+
+    max_length_diff=0.d0
+    max_twist_diff=0.d0
+    max_length_short_diff=0.d0
+    max_twist_short_diff=0.d0
+    status_mismatch=0
+    face_mismatch=0
+    twist_status_mismatch=0
+    short_status_mismatch=0
+    short_face_mismatch=0
+    short_twist_status_mismatch=0
+    short_valid_q_mismatch=0
+
+    open(newunit=csv_unit,file=trim(csv_file),status='replace', &
+         action='write',form='formatted',iostat=io_status)
+    if (io_status/=0) then
+      call mpistop('mt_rk2_fusion_diagnostic could not open CSV file')
+    endif
+
+    write(csv_unit,'(a)',iostat=io_status) &
+         'seed_id,seed_x,seed_y,seed_z,'// &
+         'length_summary,length_qtrace,dlength_summary_minus_qtrace,'// &
+         'length_forward_summary,length_forward_qtrace,'// &
+         'length_backward_summary,length_backward_qtrace,'// &
+         'twist_summary,twist_qtrace,dtwist_summary_minus_qtrace,'// &
+         'twist_forward_summary,twist_forward_qtrace,'// &
+         'twist_backward_summary,twist_backward_qtrace,'// &
+         'length_short,dlength_summary_minus_short,'// &
+         'dlength_qtrace_minus_short,'// &
+         'length_forward_short,length_backward_short,'// &
+         'twist_short,dtwist_summary_minus_short,'// &
+         'dtwist_qtrace_minus_short,'// &
+         'twist_forward_short,twist_backward_short,'// &
+         'status_forward_summary,status_forward_qtrace,status_forward_short,'// &
+         'status_backward_summary,status_backward_qtrace,status_backward_short,'// &
+         'face_forward_summary,face_forward_qtrace,face_forward_short,'// &
+         'face_backward_summary,face_backward_qtrace,face_backward_short,'// &
+         'status_twist_summary,status_twist_qtrace,status_twist_short,'// &
+         'logQ,valid_Q,status_Q,logQ_short,valid_Q_short,status_Q_short'
+    if (io_status/=0) then
+      close(csv_unit)
+      call mpistop('mt_rk2_fusion_diagnostic could not write CSV header')
+    endif
+
+    do iseed=1,nseed
+      seed_xyz=0.d0
+      seed_xyz(1:ndim)=summary(iseed)%seed
+      length_summary=summary(iseed)%length_total
+      length_q=q_trace(iseed)%forward_length+q_trace(iseed)%backward_length
+      length_short=q_short(iseed)%forward_length+ &
+           q_short(iseed)%backward_length
+      length_diff=length_summary-length_q
+      length_diff_short=length_summary-length_short
+      length_q_short_diff=length_q-length_short
+      twist_summary=summary(iseed)%twist_total
+      twist_q=q_twist(iseed)%total_twist
+      twist_short=q_short_twist(iseed)%total_twist
+      twist_diff=twist_summary-twist_q
+      twist_diff_short=twist_summary-twist_short
+      twist_q_short_diff=twist_q-twist_short
+      max_length_diff=max(max_length_diff,abs(length_diff))
+      max_twist_diff=max(max_twist_diff,abs(twist_diff))
+      max_length_short_diff=max(max_length_short_diff, &
+           abs(length_diff_short))
+      max_twist_short_diff=max(max_twist_short_diff, &
+           abs(twist_diff_short))
+      if (summary(iseed)%forward_status/=q_trace(iseed)%forward_status .or. &
+           summary(iseed)%backward_status/=q_trace(iseed)%backward_status) &
+           status_mismatch=status_mismatch+1
+      if (summary(iseed)%forward_face/=q_trace(iseed)%forward_face .or. &
+           summary(iseed)%backward_face/=q_trace(iseed)%backward_face) &
+           face_mismatch=face_mismatch+1
+      if (summary(iseed)%status_twist/=q_twist(iseed)%status_twist) &
+           twist_status_mismatch=twist_status_mismatch+1
+      if (summary(iseed)%forward_status/=q_short(iseed)%forward_status .or. &
+           summary(iseed)%backward_status/=q_short(iseed)%backward_status) &
+           short_status_mismatch=short_status_mismatch+1
+      if (summary(iseed)%forward_face/=q_short(iseed)%forward_face .or. &
+           summary(iseed)%backward_face/=q_short(iseed)%backward_face) &
+           short_face_mismatch=short_face_mismatch+1
+      if (summary(iseed)%status_twist/=q_short_twist(iseed)%status_twist) &
+           short_twist_status_mismatch=short_twist_status_mismatch+1
+      if (q_trace(iseed)%valid_q0 .neqv. q_short(iseed)%valid_q0) &
+           short_valid_q_mismatch=short_valid_q_mismatch+1
+
+      write(csv_unit, &
+           '(i0,3(",",es24.16),24(",",es24.16),15(",",i0),'// &
+           '",",es24.16,",",l1,",",i0,",",es24.16,",",l1,",",i0)', &
+           iostat=io_status) &
+           iseed,seed_xyz, &
+           length_summary,length_q,length_diff, &
+           summary(iseed)%length_forward,q_trace(iseed)%forward_length, &
+           summary(iseed)%length_backward,q_trace(iseed)%backward_length, &
+           twist_summary,twist_q,twist_diff, &
+           summary(iseed)%twist_forward,q_twist(iseed)%forward_twist, &
+           summary(iseed)%twist_backward,q_twist(iseed)%backward_twist, &
+           length_short,length_diff_short,length_q_short_diff, &
+           q_short(iseed)%forward_length,q_short(iseed)%backward_length, &
+           twist_short,twist_diff_short,twist_q_short_diff, &
+           q_short_twist(iseed)%forward_twist, &
+           q_short_twist(iseed)%backward_twist, &
+           summary(iseed)%forward_status,q_trace(iseed)%forward_status, &
+           q_short(iseed)%forward_status, &
+           summary(iseed)%backward_status,q_trace(iseed)%backward_status, &
+           q_short(iseed)%backward_status, &
+           summary(iseed)%forward_face,q_trace(iseed)%forward_face, &
+           q_short(iseed)%forward_face, &
+           summary(iseed)%backward_face,q_trace(iseed)%backward_face, &
+           q_short(iseed)%backward_face, &
+           summary(iseed)%status_twist,q_twist(iseed)%status_twist, &
+           q_short_twist(iseed)%status_twist, &
+           q_trace(iseed)%logq0,q_trace(iseed)%valid_q0, &
+           q_trace(iseed)%status_q0, &
+           q_short(iseed)%logq0,q_short(iseed)%valid_q0, &
+           q_short(iseed)%status_q0
+      if (io_status/=0) then
+        close(csv_unit)
+        call mpistop('mt_rk2_fusion_diagnostic could not write CSV data')
+      endif
+    enddo
+
+    close(csv_unit)
+    write(*,'(a,es12.4)') 'mt_rk2_fusion_diagnostic max_abs_length_diff: ', &
+         max_length_diff
+    write(*,'(a,es12.4)') 'mt_rk2_fusion_diagnostic max_abs_twist_diff: ', &
+         max_twist_diff
+    write(*,'(a,es12.4)') &
+         'mt_rk2_fusion_diagnostic max_abs_length_diff_short: ', &
+         max_length_short_diff
+    write(*,'(a,es12.4)') &
+         'mt_rk2_fusion_diagnostic max_abs_twist_diff_short: ', &
+         max_twist_short_diff
+    write(*,'(a,i0)') 'mt_rk2_fusion_diagnostic status_mismatch_count: ', &
+         status_mismatch
+    write(*,'(a,i0)') 'mt_rk2_fusion_diagnostic face_mismatch_count: ', &
+         face_mismatch
+    write(*,'(a,i0)') &
+         'mt_rk2_fusion_diagnostic twist_status_mismatch_count: ', &
+         twist_status_mismatch
+    write(*,'(a,i0)') &
+         'mt_rk2_fusion_diagnostic short_status_mismatch_count: ', &
+         short_status_mismatch
+    write(*,'(a,i0)') &
+         'mt_rk2_fusion_diagnostic short_face_mismatch_count: ', &
+         short_face_mismatch
+    write(*,'(a,i0)') &
+         'mt_rk2_fusion_diagnostic short_twist_status_mismatch_count: ', &
+         short_twist_status_mismatch
+    write(*,'(a,i0)') &
+         'mt_rk2_fusion_diagnostic short_valid_q_mismatch_count: ', &
+         short_valid_q_mismatch
+  end subroutine mt_write_rk2_fusion_diagnostic_csv
+
+  double precision function mt_absdiff_or_nan(a,b) result(diff)
+    double precision, intent(in) :: a,b
+
+    if (ieee_is_finite(a) .and. ieee_is_finite(b)) then
+      diff=abs(a-b)
+    else
+      diff=ieee_value(0.d0,ieee_quiet_nan)
+    endif
+  end function mt_absdiff_or_nan
+
+  subroutine mt_fieldline_products_spherical_surface(surface,seed_coord, &
+       s1_min,s1_max,n1,s2_min,s2_max,n2,dL,max_steps,csv_file, &
+       vtu_file,seed_layout,seed_theta0,seed_phi0,seed_alpha, &
+       compute_twist,compute_q,compute_qperp,b_min)
+    character(len=*), intent(in) :: surface,csv_file,vtu_file,seed_layout
+    integer, intent(in) :: n1,n2,max_steps
+    double precision, intent(in) :: seed_coord,s1_min,s1_max,s2_min,s2_max,dL
+    double precision, intent(in) :: seed_theta0,seed_phi0,seed_alpha
+    logical, intent(in), optional :: compute_twist,compute_q,compute_qperp
+    double precision, intent(in), optional :: b_min
+
+    type(trace_topology_result), allocatable :: topology(:)
+    type(trace_qperp_result), allocatable :: q_results(:)
+    type(trace_qperp_result), allocatable :: qperp_results(:)
+    double precision, allocatable :: seeds(:,:)
+    integer :: nseed
+    logical :: do_twist,do_q,do_qperp
+
+    if (npe/=1) then
+      call mpistop('mt_fieldline_products_spherical_surface currently '// &
+           'requires npe=1')
+    endif
+    if (ndim/=3 .or. geo_coordinate/=geo_spherical) then
+      call mpistop('mt_fieldline_products_spherical_surface requires '// &
+           '3D spherical geometry')
+    endif
+    {^IFTHREED
+    if (periodB(3)) then
+      call mpistop('mt_fieldline_products_spherical_surface does not '// &
+           'yet support periodic phi')
+    endif
+    }
+    if (n1<1 .or. n2<1) then
+      call mpistop('mt_fieldline_products_spherical_surface requires '// &
+           'sample counts >=1')
+    endif
+    if (s1_max<s1_min .or. s2_max<s2_min) then
+      call mpistop('mt_fieldline_products_spherical_surface requires ordered bounds')
+    endif
+    do_twist=.false.
+    do_q=.false.
+    do_qperp=.false.
+    if (present(compute_twist)) do_twist=compute_twist
+    if (present(compute_q)) do_q=compute_q
+    if (present(compute_qperp)) do_qperp=compute_qperp
+    call mt_build_spherical_surface_seeds(surface,seed_coord,s1_min,s1_max, &
+         n1,s2_min,s2_max,n2,seed_layout,seed_theta0,seed_phi0, &
+         seed_alpha,seeds)
+    nseed=n1*n2
+    if (mt_profile_spherical) call trace_spherical_profile_count_seeds(nseed)
+    allocate(topology(nseed))
+    if (do_q) then
+      allocate(q_results(nseed))
+    else
+      allocate(q_results(0))
+    endif
+    if (do_qperp) then
+      allocate(qperp_results(nseed))
+    else
+      allocate(qperp_results(0))
+    endif
+
+    if (present(b_min)) then
+      call mt_trace_spherical_surface_products(seeds,nseed,dL,max_steps, &
+           topology,q_results,qperp_results,do_twist,do_q,do_qperp,b_min)
+    else
+      call mt_trace_spherical_surface_products(seeds,nseed,dL,max_steps, &
+           topology,q_results,qperp_results,do_twist,do_q,do_qperp)
+    endif
+
+    if (len_trim(csv_file)>0) then
+      call mt_write_spherical_rmin_csv(topology,n1,n2,csv_file, &
+           'mt_fieldline_products_spherical_surface',do_twist,do_q, &
+           q_results,do_qperp,qperp_results)
+    endif
+    call mt_write_spherical_topology_vtu(vtu_file,topology,n1,n2, &
+         'mt_fieldline_products_spherical_surface',do_twist,do_q,q_results, &
+         do_qperp,qperp_results)
+
+    deallocate(qperp_results,q_results,topology,seeds)
+  end subroutine mt_fieldline_products_spherical_surface
+
+  subroutine mt_fieldline_products_spherical_cloud(s1_min,s1_max,n1, &
+       s2_min,s2_max,n2,s3_min,s3_max,n3,dL,max_steps,vtu_file, &
+       seed_layout,compute_twist,compute_q,compute_qperp,b_min)
+    character(len=*), intent(in) :: vtu_file,seed_layout
+    integer, intent(in) :: n1,n2,n3,max_steps
+    double precision, intent(in) :: s1_min,s1_max,s2_min,s2_max
+    double precision, intent(in) :: s3_min,s3_max,dL
+    logical, intent(in), optional :: compute_twist,compute_q,compute_qperp
+    double precision, intent(in), optional :: b_min
+
+    type(trace_topology_result), allocatable :: topology(:)
+    type(trace_qperp_result), allocatable :: q_results(:)
+    type(trace_qperp_result), allocatable :: qperp_results(:)
+    double precision, allocatable :: seeds(:,:)
+    integer :: nseed
+    logical :: do_twist,do_q,do_qperp
+    character(len=mt_task_name_len) :: integrator
+
+    if (npe/=1) then
+      call mpistop('mt_fieldline_products_spherical_cloud currently '// &
+           'requires npe=1')
+    endif
+    if (ndim/=3 .or. geo_coordinate/=geo_spherical) then
+      call mpistop('mt_fieldline_products_spherical_cloud requires '// &
+           '3D spherical geometry')
+    endif
+    {^IFTHREED
+    if (periodB(3)) then
+      call mpistop('mt_fieldline_products_spherical_cloud does not '// &
+           'yet support periodic phi')
+    endif
+    }
+    if (n1<1 .or. n2<1 .or. n3<1) then
+      call mpistop('mt_fieldline_products_spherical_cloud requires '// &
+           'sample counts >=1')
+    endif
+    if (s1_max<s1_min .or. s2_max<s2_min .or. s3_max<s3_min) then
+      call mpistop('mt_fieldline_products_spherical_cloud requires ordered bounds')
+    endif
+
+    do_twist=.false.
+    do_q=.false.
+    do_qperp=.false.
+    if (present(compute_twist)) do_twist=compute_twist
+    if (present(compute_q)) do_q=compute_q
+    if (present(compute_qperp)) do_qperp=compute_qperp
+    integrator=mt_lowercase(trim(mt_trace_integrator))
+
+    call mt_build_spherical_cloud_seeds(s1_min,s1_max,n1,s2_min,s2_max, &
+         n2,s3_min,s3_max,n3,seed_layout,seeds)
+    nseed=n1*n2*n3
+    if (mt_profile_spherical) call trace_spherical_profile_count_seeds(nseed)
+    allocate(topology(nseed))
+    if (do_q) then
+      allocate(q_results(nseed))
+    else
+      allocate(q_results(0))
+    endif
+    if (do_qperp) then
+      allocate(qperp_results(nseed))
+    else
+      allocate(qperp_results(0))
+    endif
+
+    if (present(b_min)) then
+      call mt_trace_spherical_cloud_products(seeds,nseed,dL,max_steps, &
+           topology,q_results,qperp_results,do_twist,do_q,do_qperp,b_min)
+    else
+      call mt_trace_spherical_cloud_products(seeds,nseed,dL,max_steps, &
+           topology,q_results,qperp_results,do_twist,do_q,do_qperp)
+    endif
+
+    call mt_write_spherical_cloud_vtu(vtu_file,topology,nseed, &
+         'mt_fieldline_products_spherical_cloud',do_twist,do_q,q_results, &
+         do_qperp,qperp_results)
+
+    deallocate(qperp_results,q_results,topology,seeds)
+  end subroutine mt_fieldline_products_spherical_cloud
+
+  subroutine mt_trace_spherical_surface_products(seeds,nseed,dL,max_steps, &
+       topology,q_results,qperp_results,do_twist,do_q,do_qperp,b_min)
+    integer, intent(in) :: nseed,max_steps
+    double precision, intent(in) :: seeds(nseed,ndim),dL
+    type(trace_topology_result), intent(out) :: topology(nseed)
+    type(trace_qperp_result), intent(out) :: q_results(:)
+    type(trace_qperp_result), intent(out) :: qperp_results(:)
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    double precision, intent(in), optional :: b_min
+
+    type(trace_qperp_result) :: q_local,qperp_local
+    double precision :: seed_local(ndim)
+    integer :: iseed,cache_status
+
+    if (nseed<=0) return
+
+    if (do_twist) then
+      call trace_spherical_curl_cache_build(cache_status)
+      if (cache_status/=trace_status_active) then
+        call mpistop('mt_trace_spherical_surface_products failed to '// &
+             'build spherical curl cache')
+      endif
+    endif
+
+    if (present(b_min)) then
+      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local,q_local,qperp_local) SCHEDULE(DYNAMIC,16)
+      do iseed=1,nseed
+        seed_local=seeds(iseed,:)
+        call mt_trace_spherical_surface_seed(seed_local,dL,max_steps, &
+             topology(iseed),q_local,qperp_local,do_twist,do_q, &
+             do_qperp,b_min)
+        if (do_q) q_results(iseed)=q_local
+        if (do_qperp) qperp_results(iseed)=qperp_local
+      enddo
+      !$OMP END PARALLEL DO
+    else
+      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local,q_local,qperp_local) SCHEDULE(DYNAMIC,16)
+      do iseed=1,nseed
+        seed_local=seeds(iseed,:)
+        call mt_trace_spherical_surface_seed(seed_local,dL,max_steps, &
+             topology(iseed),q_local,qperp_local,do_twist,do_q, &
+             do_qperp)
+        if (do_q) q_results(iseed)=q_local
+        if (do_qperp) qperp_results(iseed)=qperp_local
+      enddo
+      !$OMP END PARALLEL DO
+    endif
+
+    if (do_twist) call trace_spherical_curl_cache_clear()
+  end subroutine mt_trace_spherical_surface_products
+
+  subroutine mt_trace_spherical_surface_seed(seed,dL,max_steps,topology, &
+       q_result,qperp_result,do_twist,do_q,do_qperp,b_min)
+    integer, intent(in) :: max_steps
+    double precision, intent(in) :: seed(ndim),dL
+    type(trace_topology_result), intent(out) :: topology
+    type(trace_qperp_result), intent(out) :: q_result,qperp_result
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    double precision, intent(in), optional :: b_min
+
+    type(trace_topology_result) :: topology_one(1)
+    type(trace_qperp_result) :: q_one(1),qperp_one(1)
+    type(trace_twist_result) :: twist_one(1)
+    double precision :: seed_one(1,ndim),source_normal(3)
+
+    seed_one(1,:)=seed
+    source_normal=0.d0
+    source_normal(1)=-1.d0
+
+    if (do_q .and. do_qperp) then
+      if (present(b_min)) then
+        if (do_twist) then
+          call trace_field_spherical_rmin_q_qperp_multi(seed_one,1,dL, &
+               max_steps,q_one,qperp_one,b_min,twist_results=twist_one)
+        else
+          call trace_field_spherical_rmin_q_qperp_multi(seed_one,1,dL, &
+               max_steps,q_one,qperp_one,b_min)
+        endif
+      else
+        if (do_twist) then
+          call trace_field_spherical_rmin_q_qperp_multi(seed_one,1,dL, &
+               max_steps,q_one,qperp_one,twist_results=twist_one)
+        else
+          call trace_field_spherical_rmin_q_qperp_multi(seed_one,1,dL, &
+               max_steps,q_one,qperp_one)
+        endif
+      endif
+      call mt_q0_trace_to_topology(q_one,twist_one,1,topology_one,do_twist)
+      topology=topology_one(1)
+      q_result=q_one(1)
+      qperp_result=qperp_one(1)
+      return
+    endif
+
+    if (do_q) then
+      if (present(b_min)) then
+        if (do_twist) then
+          call trace_field_spherical_rmin_q_multi(seed_one,1,dL,max_steps, &
+               q_one,b_min,twist_results=twist_one)
+        else
+          call trace_field_spherical_rmin_q_multi(seed_one,1,dL,max_steps, &
+               q_one,b_min)
+        endif
+      else
+        if (do_twist) then
+          call trace_field_spherical_rmin_q_multi(seed_one,1,dL,max_steps, &
+               q_one,twist_results=twist_one)
+        else
+          call trace_field_spherical_rmin_q_multi(seed_one,1,dL,max_steps, &
+               q_one)
+        endif
+      endif
+      call mt_q0_trace_to_topology(q_one,twist_one,1,topology_one,do_twist)
+      topology=topology_one(1)
+      q_result=q_one(1)
+      return
+    endif
+
+    if (present(b_min)) then
+      call trace_field_topology_multi(seed_one,1,dL,max_steps,topology_one, &
+           need_twist=do_twist,need_mapping=.false.,b_min=b_min, &
+           source_normal=source_normal)
+    else
+      call trace_field_topology_multi(seed_one,1,dL,max_steps,topology_one, &
+           need_twist=do_twist,need_mapping=.false., &
+           source_normal=source_normal)
+    endif
+    topology=topology_one(1)
+
+    if (do_qperp) then
+      if (present(b_min)) then
+        call trace_field_spherical_qperp_multi(seed_one,1,dL,max_steps, &
+             qperp_one,b_min)
+      else
+        call trace_field_spherical_qperp_multi(seed_one,1,dL,max_steps, &
+             qperp_one)
+      endif
+      qperp_result=qperp_one(1)
+    endif
+  end subroutine mt_trace_spherical_surface_seed
+
+  subroutine mt_trace_spherical_cloud_products(seeds,nseed,dL,max_steps, &
+       topology,q_results,qperp_results,do_twist,do_q,do_qperp,b_min)
+    integer, intent(in) :: nseed,max_steps
+    double precision, intent(in) :: seeds(nseed,ndim),dL
+    type(trace_topology_result), intent(out) :: topology(nseed)
+    type(trace_qperp_result), intent(out) :: q_results(:)
+    type(trace_qperp_result), intent(out) :: qperp_results(:)
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    double precision, intent(in), optional :: b_min
+
+    type(trace_topology_result) :: topology_one(1)
+    type(trace_twist_result), allocatable :: twist_results(:)
+    double precision :: seed_local(ndim),seed_one(1,ndim)
+    integer :: iseed,cache_status
+    character(len=mt_task_name_len) :: integrator
+
+    if (nseed<=0) return
+
+    integrator=mt_lowercase(trim(mt_trace_integrator))
+    if (do_q .and. do_qperp .and. &
+         (integrator=='rk2' .or. integrator=='rk45_spherical')) then
+      ! The spherical grouped RK45 driver scans all active states by grid.
+      ! For volume clouds this is much slower and much more memory-hungry than
+      ! the surface product's seed-wise OpenMP schedule.
+      if (present(b_min)) then
+        call mt_trace_spherical_surface_products(seeds,nseed,dL,max_steps, &
+             topology,q_results,qperp_results,do_twist,do_q,do_qperp,b_min)
+      else
+        call mt_trace_spherical_surface_products(seeds,nseed,dL,max_steps, &
+             topology,q_results,qperp_results,do_twist,do_q,do_qperp)
+      endif
+      return
+    endif
+
+    if (do_q .and. .not.do_qperp) then
+      if (do_twist) then
+        allocate(twist_results(nseed))
+        if (present(b_min)) then
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+               q_results,b_min,twist_results=twist_results)
+        else
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+               q_results,twist_results=twist_results)
+        endif
+        call mt_q0_trace_to_topology(q_results,twist_results,nseed,topology, &
+             do_twist)
+        deallocate(twist_results)
+      else
+        allocate(twist_results(0))
+        if (present(b_min)) then
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+               q_results,b_min)
+        else
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+               q_results)
+        endif
+        call mt_q0_trace_to_topology(q_results,twist_results,nseed,topology, &
+             do_twist)
+        deallocate(twist_results)
+      endif
+      return
+    endif
+
+    if (do_qperp) then
+      if (do_twist) then
+        allocate(twist_results(nseed))
+        if (present(b_min)) then
+          call trace_field_spherical_qperp_multi(seeds,nseed,dL,max_steps, &
+               qperp_results,b_min,twist_results=twist_results)
+        else
+          call trace_field_spherical_qperp_multi(seeds,nseed,dL,max_steps, &
+               qperp_results,twist_results=twist_results)
+        endif
+        call mt_qperp_trace_to_topology(qperp_results,twist_results,nseed, &
+             topology,do_twist)
+        deallocate(twist_results)
+      else
+        allocate(twist_results(0))
+        if (present(b_min)) then
+          call trace_field_spherical_qperp_multi(seeds,nseed,dL,max_steps, &
+               qperp_results,b_min)
+        else
+          call trace_field_spherical_qperp_multi(seeds,nseed,dL,max_steps, &
+               qperp_results)
+        endif
+        call mt_qperp_trace_to_topology(qperp_results,twist_results,nseed, &
+             topology,do_twist)
+        deallocate(twist_results)
+      endif
+      return
+    endif
+
+    if (do_twist) then
+      call trace_spherical_curl_cache_build(cache_status)
+      if (cache_status/=trace_status_active) then
+        call mpistop('mt_trace_spherical_cloud_products failed to '// &
+             'build spherical curl cache')
+      endif
+    endif
+
+    if (present(b_min)) then
+      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local,seed_one,topology_one) SCHEDULE(DYNAMIC,16)
+      do iseed=1,nseed
+        seed_local=seeds(iseed,:)
+        seed_one(1,:)=seed_local
+        call trace_field_topology_multi(seed_one,1,dL,max_steps, &
+             topology_one,need_twist=do_twist,need_mapping=.false., &
+             b_min=b_min)
+        topology(iseed)=topology_one(1)
+      enddo
+      !$OMP END PARALLEL DO
+    else
+      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local,seed_one,topology_one) SCHEDULE(DYNAMIC,16)
+      do iseed=1,nseed
+        seed_local=seeds(iseed,:)
+        seed_one(1,:)=seed_local
+        call trace_field_topology_multi(seed_one,1,dL,max_steps, &
+             topology_one,need_twist=do_twist,need_mapping=.false.)
+        topology(iseed)=topology_one(1)
+      enddo
+      !$OMP END PARALLEL DO
+    endif
+
+    if (do_twist) call trace_spherical_curl_cache_clear()
+  end subroutine mt_trace_spherical_cloud_products
 
   subroutine mt_length_plane_xy(xmin,xmax,nx,ymin,ymax,ny,z0,dL, &
        max_steps,csv_file,b_min)
@@ -1058,6 +2828,57 @@ contains
 
     deallocate(seeds,results)
   end subroutine mt_mapping_plane_xy
+
+  subroutine mt_q_plane_xy(xmin,xmax,nx,ymin,ymax,ny,z0,dL, &
+       max_steps,csv_file,b_min)
+    ! Compute standard Cartesian logQ diagnostics on a constant-z seed plane.
+    integer, intent(in) :: nx,ny,max_steps
+    double precision, intent(in) :: xmin,xmax,ymin,ymax,z0,dL
+    character(len=*), intent(in) :: csv_file
+    double precision, intent(in), optional :: b_min
+
+    if (present(b_min)) then
+      call mt_q_plane_axis(xmin,xmax,nx,ymin,ymax,ny,z0,1,2,3, &
+           dL,max_steps,csv_file,'mt_q_plane_xy','ix,iy',b_min)
+    else
+      call mt_q_plane_axis(xmin,xmax,nx,ymin,ymax,ny,z0,1,2,3, &
+           dL,max_steps,csv_file,'mt_q_plane_xy','ix,iy')
+    endif
+  end subroutine mt_q_plane_xy
+
+  subroutine mt_q_plane_xz(xmin,xmax,nx,zmin,zmax,nz,y0,dL, &
+       max_steps,csv_file,b_min)
+    ! Compute standard Cartesian logQ diagnostics on a constant-y seed plane.
+    integer, intent(in) :: nx,nz,max_steps
+    double precision, intent(in) :: xmin,xmax,zmin,zmax,y0,dL
+    character(len=*), intent(in) :: csv_file
+    double precision, intent(in), optional :: b_min
+
+    if (present(b_min)) then
+      call mt_q_plane_axis(xmin,xmax,nx,zmin,zmax,nz,y0,1,3,2, &
+           dL,max_steps,csv_file,'mt_q_plane_xz','ix,iz',b_min)
+    else
+      call mt_q_plane_axis(xmin,xmax,nx,zmin,zmax,nz,y0,1,3,2, &
+           dL,max_steps,csv_file,'mt_q_plane_xz','ix,iz')
+    endif
+  end subroutine mt_q_plane_xz
+
+  subroutine mt_q_plane_yz(ymin,ymax,ny,zmin,zmax,nz,x0,dL, &
+       max_steps,csv_file,b_min)
+    ! Compute standard Cartesian logQ diagnostics on a constant-x seed plane.
+    integer, intent(in) :: ny,nz,max_steps
+    double precision, intent(in) :: ymin,ymax,zmin,zmax,x0,dL
+    character(len=*), intent(in) :: csv_file
+    double precision, intent(in), optional :: b_min
+
+    if (present(b_min)) then
+      call mt_q_plane_axis(ymin,ymax,ny,zmin,zmax,nz,x0,2,3,1, &
+           dL,max_steps,csv_file,'mt_q_plane_yz','iy,iz',b_min)
+    else
+      call mt_q_plane_axis(ymin,ymax,ny,zmin,zmax,nz,x0,2,3,1, &
+           dL,max_steps,csv_file,'mt_q_plane_yz','iy,iz')
+    endif
+  end subroutine mt_q_plane_yz
 
   subroutine mt_qperp_plane_xy(xmin,xmax,nx,ymin,ymax,ny,z0,dL, &
        max_steps,csv_file,b_min)
@@ -1148,28 +2969,35 @@ contains
 
   subroutine mt_fieldline_products_plane_arbitrary(origin,e1,e2,s1min, &
        s1max,n1,s2min,s2max,n2,dL,max_steps,csv_file,b_min, &
-       compute_twist,compute_qperp,vtu_file,write_csv)
+       compute_length,compute_twist,compute_q,compute_qperp,vtu_file, &
+       write_csv)
     ! Write selected per-field-line diagnostics on an arbitrary seed plane.
     integer, intent(in) :: n1,n2,max_steps
     double precision, intent(in) :: origin(ndim),e1(ndim),e2(ndim)
     double precision, intent(in) :: s1min,s1max,s2min,s2max,dL
     character(len=*), intent(in) :: csv_file
     double precision, intent(in), optional :: b_min
-    logical, intent(in), optional :: compute_twist,compute_qperp
+    logical, intent(in), optional :: compute_length,compute_twist
+    logical, intent(in), optional :: compute_q,compute_qperp
     character(len=*), intent(in), optional :: vtu_file
     logical, intent(in), optional :: write_csv
 
     type(trace_length_result), allocatable :: length_results(:)
     type(trace_twist_result), allocatable :: twist_results(:)
+    type(trace_qperp_result), allocatable :: q_results(:)
     type(trace_qperp_result), allocatable :: qperp_results(:)
     double precision, allocatable :: seeds(:,:),s1(:),s2(:)
     integer :: nseed
-    logical :: do_twist,do_qperp,do_csv
+    logical :: do_length,do_twist,do_q,do_qperp,do_csv
 
+    do_length=.true.
     do_twist=.false.
+    do_q=.false.
     do_qperp=.false.
     do_csv=.true.
+    if (present(compute_length)) do_length=compute_length
     if (present(compute_twist)) do_twist=compute_twist
+    if (present(compute_q)) do_q=compute_q
     if (present(compute_qperp)) do_qperp=compute_qperp
     if (present(write_csv)) do_csv=write_csv
 
@@ -1177,16 +3005,19 @@ contains
          s2min,s2max,n2,'mt_fieldline_products_plane_arbitrary')) then
       if (do_csv) then
         call mt_write_fieldline_products_plane_arbitrary_header(csv_file, &
-             'mt_fieldline_products_plane_arbitrary',do_twist,do_qperp)
+             'mt_fieldline_products_plane_arbitrary',do_twist,do_q,do_qperp)
       endif
       if (present(vtu_file)) then
         if (len_trim(vtu_file)>0) then
           call mt_write_fieldline_products_vtu_empty(vtu_file,do_twist, &
-               do_qperp,'mt_fieldline_products_plane_arbitrary')
+               do_q,do_qperp,'mt_fieldline_products_plane_arbitrary', &
+               do_length=do_length)
         endif
       endif
       return
     endif
+    call mt_require_requested_science(do_length,do_twist,do_q,do_qperp, &
+         'mt_fieldline_products_plane_arbitrary')
 
     call mt_build_arbitrary_plane_seeds(origin,e1,e2,s1min,s1max,n1, &
          s2min,s2max,n2,seeds,s1,s2)
@@ -1198,6 +3029,11 @@ contains
     else
       allocate(twist_results(0))
     endif
+    if (do_q) then
+      allocate(q_results(nseed))
+    else
+      allocate(q_results(0))
+    endif
     if (do_qperp) then
       allocate(qperp_results(nseed))
     else
@@ -1206,27 +3042,29 @@ contains
 
     if (present(b_min)) then
       call mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
-           length_results,twist_results,qperp_results,do_twist,do_qperp, &
-           b_min)
+           length_results,twist_results,q_results,qperp_results,do_twist, &
+           do_q,do_qperp,b_min)
     else
       call mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
-           length_results,twist_results,qperp_results,do_twist,do_qperp)
+           length_results,twist_results,q_results,qperp_results,do_twist, &
+           do_q,do_qperp)
     endif
 
     if (do_csv) then
       call mt_write_fieldline_products_plane_arbitrary_csv(length_results, &
-           twist_results,qperp_results,s1,s2,n1,n2,csv_file,do_twist, &
-           do_qperp,'mt_fieldline_products_plane_arbitrary')
+           twist_results,q_results,qperp_results,s1,s2,n1,n2,csv_file, &
+           do_twist,do_q,do_qperp,'mt_fieldline_products_plane_arbitrary')
     endif
     if (present(vtu_file)) then
       if (len_trim(vtu_file)>0) then
         call mt_write_fieldline_products_vtu_plane(vtu_file, &
-             length_results,twist_results,qperp_results,n1,n2,do_twist, &
-             do_qperp,'mt_fieldline_products_plane_arbitrary')
+             length_results,twist_results,q_results,qperp_results,n1,n2, &
+             do_twist,do_q,do_qperp,'mt_fieldline_products_plane_arbitrary', &
+             do_length=do_length)
       endif
     endif
 
-    deallocate(qperp_results,twist_results,length_results,seeds,s1,s2)
+    deallocate(qperp_results,q_results,twist_results,length_results,seeds,s1,s2)
   end subroutine mt_fieldline_products_plane_arbitrary
 
   subroutine mt_topology_plane_xy(xmin,xmax,nx,ymin,ymax,ny,z0,dL, &
@@ -1337,6 +3175,66 @@ contains
     endif
   end subroutine mt_qsl_plane_vtu_yz
 
+  subroutine mt_qsl_plane_vti_xy(xmin,xmax,nx,ymin,ymax,ny,z0,dL, &
+       max_steps,vti_file,do_length,do_twist,do_q,do_qperp,b_min)
+    ! Write requested minimal science arrays for a constant-z plane as VTI.
+    integer, intent(in) :: nx,ny,max_steps
+    double precision, intent(in) :: xmin,xmax,ymin,ymax,z0,dL
+    character(len=*), intent(in) :: vti_file
+    logical, intent(in) :: do_length,do_twist,do_q,do_qperp
+    double precision, intent(in), optional :: b_min
+
+    if (present(b_min)) then
+      call mt_qsl_plane_vti_axis(xmin,xmax,nx,ymin,ymax,ny,z0, &
+           1,2,3,dL,max_steps,vti_file,do_twist,do_q,do_qperp, &
+           'mt_qsl_plane_vti_xy',b_min,do_length=do_length)
+    else
+      call mt_qsl_plane_vti_axis(xmin,xmax,nx,ymin,ymax,ny,z0, &
+           1,2,3,dL,max_steps,vti_file,do_twist,do_q,do_qperp, &
+           'mt_qsl_plane_vti_xy',do_length=do_length)
+    endif
+  end subroutine mt_qsl_plane_vti_xy
+
+  subroutine mt_qsl_plane_vti_xz(xmin,xmax,nx,zmin,zmax,nz,y0,dL, &
+       max_steps,vti_file,do_length,do_twist,do_q,do_qperp,b_min)
+    ! Write requested minimal science arrays for a constant-y plane as VTI.
+    integer, intent(in) :: nx,nz,max_steps
+    double precision, intent(in) :: xmin,xmax,zmin,zmax,y0,dL
+    character(len=*), intent(in) :: vti_file
+    logical, intent(in) :: do_length,do_twist,do_q,do_qperp
+    double precision, intent(in), optional :: b_min
+
+    if (present(b_min)) then
+      call mt_qsl_plane_vti_axis(xmin,xmax,nx,zmin,zmax,nz,y0, &
+           1,3,2,dL,max_steps,vti_file,do_twist,do_q,do_qperp, &
+           'mt_qsl_plane_vti_xz',b_min,do_length=do_length)
+    else
+      call mt_qsl_plane_vti_axis(xmin,xmax,nx,zmin,zmax,nz,y0, &
+           1,3,2,dL,max_steps,vti_file,do_twist,do_q,do_qperp, &
+           'mt_qsl_plane_vti_xz',do_length=do_length)
+    endif
+  end subroutine mt_qsl_plane_vti_xz
+
+  subroutine mt_qsl_plane_vti_yz(ymin,ymax,ny,zmin,zmax,nz,x0,dL, &
+       max_steps,vti_file,do_length,do_twist,do_q,do_qperp,b_min)
+    ! Write requested minimal science arrays for a constant-x plane as VTI.
+    integer, intent(in) :: ny,nz,max_steps
+    double precision, intent(in) :: ymin,ymax,zmin,zmax,x0,dL
+    character(len=*), intent(in) :: vti_file
+    logical, intent(in) :: do_length,do_twist,do_q,do_qperp
+    double precision, intent(in), optional :: b_min
+
+    if (present(b_min)) then
+      call mt_qsl_plane_vti_axis(ymin,ymax,ny,zmin,zmax,nz,x0, &
+           2,3,1,dL,max_steps,vti_file,do_twist,do_q,do_qperp, &
+           'mt_qsl_plane_vti_yz',b_min,do_length=do_length)
+    else
+      call mt_qsl_plane_vti_axis(ymin,ymax,ny,zmin,zmax,nz,x0, &
+           2,3,1,dL,max_steps,vti_file,do_twist,do_q,do_qperp, &
+           'mt_qsl_plane_vti_yz',do_length=do_length)
+    endif
+  end subroutine mt_qsl_plane_vti_yz
+
   subroutine mt_write_cartesian_vti_pointdata(vti_file,xmin,xmax,nx, &
        ymin,ymax,ny,zmin,zmax,nz,length_total,qperp,status)
     ! Low-level appended-binary VTI writer for future uniform seed-volume
@@ -1374,18 +3272,20 @@ contains
 
   subroutine mt_fieldline_products_volume_vti(xmin,xmax,nx, &
        ymin,ymax,ny,zmin,zmax,nz,dL,max_steps,vti_file,b_min, &
-       compute_twist,compute_qperp,chunk_nz)
+       compute_length,compute_twist,compute_q,compute_qperp,chunk_nz)
     ! Compute per-seed field-line products on a user-defined uniform
     ! Cartesian sampling volume and write PointData to appended-binary VTI.
     integer, intent(in) :: nx,ny,nz,max_steps
     double precision, intent(in) :: xmin,xmax,ymin,ymax,zmin,zmax,dL
     character(len=*), intent(in) :: vti_file
     double precision, intent(in), optional :: b_min
-    logical, intent(in), optional :: compute_twist,compute_qperp
+    logical, intent(in), optional :: compute_length,compute_twist
+    logical, intent(in), optional :: compute_q,compute_qperp
     integer, intent(in), optional :: chunk_nz
 
     type(trace_length_result), allocatable :: length_slab(:)
     type(trace_twist_result), allocatable :: twist_slab(:)
+    type(trace_qperp_result), allocatable :: q_slab(:)
     type(trace_qperp_result), allocatable :: qperp_slab(:)
     type(mt_volume_products) :: products
     double precision, allocatable :: seeds_slab(:,:)
@@ -1393,7 +3293,7 @@ contains
     integer :: k_start,k_end,slab_nz,slab_nseed,nseed
     integer :: chunk_nz_eff
     integer(kind=8) :: nseed64
-    logical :: do_twist,do_qperp
+    logical :: do_length,do_twist,do_q,do_qperp
 
     if (len_trim(vti_file)==0) then
       call mpistop('mt_fieldline_products_volume_vti requires a VTI file')
@@ -1401,9 +3301,19 @@ contains
     if (npe/=1) then
       call mpistop('mt_fieldline_products_volume_vti currently requires npe=1')
     endif
-    if (ndim/=3 .or. .not.slab_uniform) then
-      call mpistop('mt_fieldline_products_volume_vti requires 3D uniform Cartesian geometry')
+    if (ndim/=3) then
+      call mpistop('mt_fieldline_products_volume_vti requires 3D Cartesian geometry')
     endif
+    {^IFTHREED
+    select case (geo_coordinate)
+    case (geo_cartesian)
+      ! The output VTI is a user-defined sampling lattice; RK2 tracing can
+      ! interpolate through either slab-uniform or AMR Cartesian grids.
+    case (geo_cartesian_stretched)
+    case default
+      call mpistop('volume_vti requires Cartesian geometry')
+    end select
+    }
     if (nx<=0 .or. ny<=0 .or. nz<=0) then
       call mpistop('mt_fieldline_products_volume_vti requires positive dimensions')
     endif
@@ -1422,10 +3332,16 @@ contains
     endif
     nseed=int(nseed64)
 
+    do_length=.true.
     do_twist=.false.
+    do_q=.false.
     do_qperp=.false.
+    if (present(compute_length)) do_length=compute_length
     if (present(compute_twist)) do_twist=compute_twist
+    if (present(compute_q)) do_q=compute_q
     if (present(compute_qperp)) do_qperp=compute_qperp
+    call mt_require_requested_science(do_length,do_twist,do_q,do_qperp, &
+         'mt_fieldline_products_volume_vti')
 
     chunk_nz_eff=nz
     if (present(chunk_nz)) chunk_nz_eff=max(1,min(nz,chunk_nz))
@@ -1435,7 +3351,7 @@ contains
     spacing(2)=mt_vti_axis_spacing(ymin,ymax,ny)
     spacing(3)=mt_vti_axis_spacing(zmin,zmax,nz)
 
-    call mt_allocate_volume_products(products,nseed,do_twist,do_qperp)
+    call mt_allocate_volume_products(products,nseed,do_twist,do_q,do_qperp)
 
     do k_start=1,nz,chunk_nz_eff
       k_end=min(nz,k_start+chunk_nz_eff-1)
@@ -1452,6 +3368,11 @@ contains
       else
         allocate(twist_slab(0))
       endif
+      if (do_q) then
+        allocate(q_slab(slab_nseed))
+      else
+        allocate(q_slab(0))
+      endif
 
       if (do_qperp) then
         allocate(qperp_slab(slab_nseed))
@@ -1461,12 +3382,12 @@ contains
 
       if (present(b_min)) then
         call mt_trace_fieldline_products_seedset(seeds_slab,slab_nseed, &
-             dL,max_steps,length_slab,twist_slab,qperp_slab,do_twist, &
-             do_qperp,b_min)
+             dL,max_steps,length_slab,twist_slab,q_slab,qperp_slab, &
+             do_twist,do_q,do_qperp,b_min)
       else
         call mt_trace_fieldline_products_seedset(seeds_slab,slab_nseed, &
-             dL,max_steps,length_slab,twist_slab,qperp_slab,do_twist, &
-             do_qperp)
+             dL,max_steps,length_slab,twist_slab,q_slab,qperp_slab, &
+             do_twist,do_q,do_qperp)
       endif
 
       call mt_copy_volume_length_slab(products,length_slab,nx,ny, &
@@ -1479,6 +3400,11 @@ contains
       endif
       deallocate(twist_slab)
 
+      if (do_q) then
+        call mt_copy_volume_q_slab(products,q_slab,nx,ny,k_start,slab_nz)
+      endif
+      deallocate(q_slab)
+
       if (do_qperp) then
         call mt_copy_volume_qperp_slab(products,qperp_slab,nx,ny, &
              k_start,slab_nz)
@@ -1490,32 +3416,247 @@ contains
 
     call mt_write_fieldline_products_volume_vti(vti_file,origin,spacing, &
          nx,ny,nz,products, &
-         do_twist,do_qperp,'mt_fieldline_products_volume_vti')
+         do_length,do_twist,do_q,do_qperp,'mt_fieldline_products_volume_vti')
     call mt_deallocate_volume_products(products)
   end subroutine mt_fieldline_products_volume_vti
 
   subroutine mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
-       length_results,twist_results,qperp_results,do_twist,do_qperp,b_min)
+       length_results,twist_results,q_results,qperp_results,do_twist, &
+       do_q,do_qperp,b_min)
     integer, intent(in) :: nseed,max_steps
     double precision, intent(in) :: seeds(nseed,ndim),dL
     type(trace_length_result), intent(out) :: length_results(nseed)
     type(trace_twist_result), intent(out) :: twist_results(:)
+    type(trace_qperp_result), intent(out) :: q_results(:)
     type(trace_qperp_result), intent(out) :: qperp_results(:)
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
     double precision, intent(in), optional :: b_min
 
-    double precision :: seed_local(ndim)
+    type(trace_topology_result) :: topology_one(1)
+    double precision :: seed_local(ndim),seed_one(1,ndim)
     integer :: iseed
+    character(len=mt_task_name_len) :: integrator
+
+    integrator=mt_lowercase(trim(mt_trace_integrator))
+    if (do_q .and. do_qperp .and. geo_coordinate==geo_spherical .and. &
+         (integrator=='rk2' .or. integrator=='rk45_spherical')) then
+      if (do_twist) then
+        if (present(b_min)) then
+          call trace_field_spherical_rmin_q_qperp_multi(seeds,nseed,dL, &
+               max_steps,q_results,qperp_results,b_min, &
+               twist_results=twist_results)
+        else
+          call trace_field_spherical_rmin_q_qperp_multi(seeds,nseed,dL, &
+               max_steps,q_results,qperp_results, &
+               twist_results=twist_results)
+        endif
+      else
+        if (present(b_min)) then
+          call trace_field_spherical_rmin_q_qperp_multi(seeds,nseed,dL, &
+               max_steps,q_results,qperp_results,b_min)
+        else
+          call trace_field_spherical_rmin_q_qperp_multi(seeds,nseed,dL, &
+               max_steps,q_results,qperp_results)
+        endif
+      endif
+      call mt_q0_trace_to_length(q_results,nseed,length_results)
+      return
+    endif
+
+    if (do_q .and. do_qperp .and. geo_coordinate/=geo_spherical .and. &
+         (integrator=='rk2' .or. integrator=='rk45_cartesian')) then
+      if (do_twist) then
+        if (present(b_min)) then
+          call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+               qperp_results,b_min,twist_results=twist_results)
+        else
+          call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+               qperp_results,twist_results=twist_results)
+        endif
+      else
+        if (present(b_min)) then
+          call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+               qperp_results,b_min)
+        else
+          call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+               qperp_results)
+        endif
+      endif
+      q_results=qperp_results
+      call mt_qperp_trace_to_length(qperp_results,nseed,length_results)
+      return
+    endif
+
+    if (do_qperp .and. .not.do_q .and. &
+         (integrator=='rk2' .or. &
+         (integrator=='rk45_cartesian' .and. geo_coordinate/=geo_spherical) &
+         .or. (integrator=='rk45_spherical' .and. &
+         geo_coordinate==geo_spherical))) then
+      select case (geo_coordinate)
+      case (geo_spherical)
+        if (do_twist) then
+          if (present(b_min)) then
+            call trace_field_spherical_qperp_multi(seeds,nseed,dL,max_steps, &
+                 qperp_results,b_min,twist_results=twist_results)
+          else
+            call trace_field_spherical_qperp_multi(seeds,nseed,dL,max_steps, &
+                 qperp_results,twist_results=twist_results)
+          endif
+        else
+          if (present(b_min)) then
+            call trace_field_spherical_qperp_multi(seeds,nseed,dL,max_steps, &
+                 qperp_results,b_min)
+          else
+            call trace_field_spherical_qperp_multi(seeds,nseed,dL,max_steps, &
+                 qperp_results)
+          endif
+        endif
+      case default
+        if (do_twist) then
+          if (present(b_min)) then
+            call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                 qperp_results,b_min,twist_results=twist_results)
+          else
+            call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                 qperp_results,twist_results=twist_results)
+          endif
+        else
+          if (present(b_min)) then
+            call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                 qperp_results,b_min)
+          else
+            call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                 qperp_results)
+          endif
+        endif
+      end select
+      call mt_qperp_trace_to_length(qperp_results,nseed,length_results)
+      return
+    endif
+
+    if (do_q .and. .not.do_qperp .and. geo_coordinate==geo_spherical .and. &
+         (integrator=='rk2' .or. integrator=='rk45_spherical')) then
+      if (do_twist) then
+        if (present(b_min)) then
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+               q_results,b_min,twist_results=twist_results)
+        else
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+               q_results,twist_results=twist_results)
+        endif
+      else
+        if (present(b_min)) then
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+               q_results,b_min)
+        else
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL,max_steps, &
+               q_results)
+        endif
+      endif
+      call mt_q0_trace_to_length(q_results,nseed,length_results)
+      return
+    endif
+
+    if (do_q .and. .not.do_qperp .and. &
+         (integrator=='rk2' .or. &
+         (integrator=='rk45_cartesian' .and. geo_coordinate/=geo_spherical) &
+         .or. (integrator=='rk45_spherical' .and. &
+         geo_coordinate==geo_spherical))) then
+      if (integrator=='rk2') then
+        if (geo_coordinate==geo_cartesian_stretched .or. &
+             (geo_coordinate==geo_cartesian .and. .not.slab_uniform)) then
+          if (do_twist) then
+            if (present(b_min)) then
+              call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                   q_results,b_min,twist_results=twist_results)
+            else
+              call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                   q_results,twist_results=twist_results)
+            endif
+          else
+            if (present(b_min)) then
+              call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                   q_results,b_min)
+            else
+              call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                   q_results)
+            endif
+          endif
+        else
+          if (do_twist) then
+            if (present(b_min)) then
+              call trace_field_rk2_short_boundary_q_multi(seeds,nseed,dL, &
+                   max_steps,q_results,b_min,twist_results=twist_results)
+            else
+              call trace_field_rk2_short_boundary_q_multi(seeds,nseed,dL, &
+                   max_steps,q_results,twist_results=twist_results)
+            endif
+          else
+            if (present(b_min)) then
+              call trace_field_rk2_short_boundary_q_multi(seeds,nseed,dL, &
+                   max_steps,q_results,b_min)
+            else
+              call trace_field_rk2_short_boundary_q_multi(seeds,nseed,dL, &
+                   max_steps,q_results)
+            endif
+          endif
+        endif
+      else if (integrator=='rk45_cartesian') then
+        if (do_twist) then
+          if (present(b_min)) then
+            call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                 q_results,b_min,twist_results=twist_results)
+          else
+            call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                 q_results,twist_results=twist_results)
+          endif
+        else
+          if (present(b_min)) then
+            call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+                 q_results,b_min)
+          else
+            call trace_field_qperp_multi(seeds,nseed,dL,max_steps,q_results)
+          endif
+        endif
+      else
+        if (do_twist) then
+          if (present(b_min)) then
+            call trace_field_spherical_rmin_q_multi(seeds,nseed,dL, &
+                 max_steps,q_results,b_min,twist_results=twist_results)
+          else
+            call trace_field_spherical_rmin_q_multi(seeds,nseed,dL, &
+                 max_steps,q_results,twist_results=twist_results)
+          endif
+        else
+          if (present(b_min)) then
+            call trace_field_spherical_rmin_q_multi(seeds,nseed,dL, &
+                 max_steps,q_results,b_min)
+          else
+            call trace_field_spherical_rmin_q_multi(seeds,nseed,dL, &
+                 max_steps,q_results)
+          endif
+        endif
+      endif
+      call mt_q0_trace_to_length(q_results,nseed,length_results)
+      return
+    endif
 
     if (present(b_min)) then
-      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local) SCHEDULE(DYNAMIC,16)
+      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local,seed_one,topology_one) SCHEDULE(DYNAMIC,16)
       do iseed=1,nseed
         seed_local=seeds(iseed,:)
-        call trace_field_length_single(seed_local,dL,max_steps, &
-             length_results(iseed),b_min)
         if (do_twist) then
-          call trace_field_twist_single(seed_local,dL,max_steps, &
-               twist_results(iseed),b_min)
+          seed_one(1,:)=seed_local
+          call trace_field_topology_multi(seed_one,1,dL,max_steps, &
+               topology_one,need_twist=.true.,need_mapping=.false., &
+               b_min=b_min)
+          call mt_topology_to_length(topology_one,1, &
+               length_results(iseed:iseed))
+          call mt_topology_to_twist(topology_one,1, &
+               twist_results(iseed:iseed))
+        else
+          call trace_field_length_single(seed_local,dL,max_steps, &
+               length_results(iseed),b_min)
         endif
         if (do_qperp) then
           call trace_field_qperp_single(seed_local,dL,max_steps, &
@@ -1524,14 +3665,20 @@ contains
       enddo
       !$OMP END PARALLEL DO
     else
-      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local) SCHEDULE(DYNAMIC,16)
+      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local,seed_one,topology_one) SCHEDULE(DYNAMIC,16)
       do iseed=1,nseed
         seed_local=seeds(iseed,:)
-        call trace_field_length_single(seed_local,dL,max_steps, &
-             length_results(iseed))
         if (do_twist) then
-          call trace_field_twist_single(seed_local,dL,max_steps, &
-               twist_results(iseed))
+          seed_one(1,:)=seed_local
+          call trace_field_topology_multi(seed_one,1,dL,max_steps, &
+               topology_one,need_twist=.true.,need_mapping=.false.)
+          call mt_topology_to_length(topology_one,1, &
+               length_results(iseed:iseed))
+          call mt_topology_to_twist(topology_one,1, &
+               twist_results(iseed:iseed))
+        else
+          call trace_field_length_single(seed_local,dL,max_steps, &
+               length_results(iseed))
         endif
         if (do_qperp) then
           call trace_field_qperp_single(seed_local,dL,max_steps, &
@@ -1539,6 +3686,34 @@ contains
         endif
       enddo
       !$OMP END PARALLEL DO
+    endif
+
+    if (do_q) then
+      if (mt_lowercase(trim(mt_trace_integrator))=='rk45_cartesian') then
+        if (present(b_min)) then
+          call trace_field_qperp_multi(seeds,nseed,dL,max_steps,q_results, &
+               b_min)
+        else
+          call trace_field_qperp_multi(seeds,nseed,dL,max_steps,q_results)
+        endif
+      else if (geo_coordinate==geo_spherical) then
+        if (present(b_min)) then
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL, &
+               max_steps,q_results,b_min)
+        else
+          call trace_field_spherical_rmin_q_multi(seeds,nseed,dL, &
+               max_steps,q_results)
+        endif
+      else if (do_qperp) then
+        q_results=qperp_results
+      else
+        if (present(b_min)) then
+          call trace_field_qperp_multi(seeds,nseed,dL,max_steps,q_results, &
+               b_min)
+        else
+          call trace_field_qperp_multi(seeds,nseed,dL,max_steps,q_results)
+        endif
+      endif
     endif
   end subroutine mt_trace_fieldline_products_seedset
 
@@ -1812,6 +3987,35 @@ contains
     deallocate(seeds,results)
   end subroutine mt_twist_plane_axis
 
+  subroutine mt_q_plane_axis(c1min,c1max,n1,c2min,c2max,n2, &
+       fixed_value,axis1,axis2,fixed_axis,dL,max_steps,csv_file,caller, &
+       index_header,b_min)
+    integer, intent(in) :: n1,n2,axis1,axis2,fixed_axis,max_steps
+    double precision, intent(in) :: c1min,c1max,c2min,c2max
+    double precision, intent(in) :: fixed_value,dL
+    character(len=*), intent(in) :: csv_file,caller,index_header
+    double precision, intent(in), optional :: b_min
+
+    type(trace_qperp_result), allocatable :: results(:)
+    double precision, allocatable :: seeds(:,:)
+    integer :: nseed
+
+    call mt_validate_axis_plane(c1min,c1max,n1,c2min,c2max,n2,caller)
+    call mt_build_axis_plane_seeds(c1min,c1max,n1,c2min,c2max,n2, &
+         fixed_value,axis1,axis2,fixed_axis,seeds)
+
+    nseed=n1*n2
+    allocate(results(nseed))
+    if (present(b_min)) then
+      call trace_field_qperp_multi(seeds,nseed,dL,max_steps,results,b_min)
+    else
+      call trace_field_qperp_multi(seeds,nseed,dL,max_steps,results)
+    endif
+    call mt_write_q_plane_csv(results,n1,n2,csv_file,caller,index_header)
+
+    deallocate(seeds,results)
+  end subroutine mt_q_plane_axis
+
   subroutine mt_qperp_plane_axis(c1min,c1max,n1,c2min,c2max,n2, &
        fixed_value,axis1,axis2,fixed_axis,dL,max_steps,csv_file, &
        caller,index_header,b_min)
@@ -1841,6 +4045,82 @@ contains
 
     deallocate(seeds,results)
   end subroutine mt_qperp_plane_axis
+
+  subroutine mt_axis_plane_products_csv_axis(c1min,c1max,n1,c2min,c2max, &
+       n2,fixed_value,axis1,axis2,fixed_axis,dL,max_steps,length_csv, &
+       twist_csv,q_csv,qperp_csv,caller,index_header,length_index_header, &
+       b_min)
+    integer, intent(in) :: n1,n2,axis1,axis2,fixed_axis,max_steps
+    double precision, intent(in) :: c1min,c1max,c2min,c2max
+    double precision, intent(in) :: fixed_value,dL
+    character(len=*), intent(in) :: length_csv,twist_csv,q_csv,qperp_csv
+    character(len=*), intent(in) :: caller,index_header,length_index_header
+    double precision, intent(in), optional :: b_min
+
+    type(trace_length_result), allocatable :: length_results(:)
+    type(trace_twist_result), allocatable :: twist_results(:)
+    type(trace_qperp_result), allocatable :: q_results(:)
+    type(trace_qperp_result), allocatable :: qperp_results(:)
+    double precision, allocatable :: seeds(:,:)
+    integer :: nseed
+    logical :: do_twist,do_q,do_qperp
+
+    call mt_validate_axis_plane(c1min,c1max,n1,c2min,c2max,n2,caller)
+    if (len_trim(length_csv)==0) then
+      call mpistop(trim(caller)//' requires a length CSV file')
+    endif
+
+    do_twist=len_trim(twist_csv)>0
+    do_q=len_trim(q_csv)>0
+    do_qperp=len_trim(qperp_csv)>0
+
+    call mt_build_axis_plane_seeds(c1min,c1max,n1,c2min,c2max,n2, &
+         fixed_value,axis1,axis2,fixed_axis,seeds)
+    nseed=n1*n2
+    allocate(length_results(nseed))
+    if (do_twist) then
+      allocate(twist_results(nseed))
+    else
+      allocate(twist_results(0))
+    endif
+    if (do_q) then
+      allocate(q_results(nseed))
+    else
+      allocate(q_results(0))
+    endif
+    if (do_qperp) then
+      allocate(qperp_results(nseed))
+    else
+      allocate(qperp_results(0))
+    endif
+
+    if (present(b_min)) then
+      call mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
+           length_results,twist_results,q_results,qperp_results, &
+           do_twist,do_q,do_qperp,b_min)
+    else
+      call mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
+           length_results,twist_results,q_results,qperp_results, &
+           do_twist,do_q,do_qperp)
+    endif
+
+    call mt_write_length_plane_csv(length_results,n1,n2,length_csv, &
+         caller,length_index_header)
+    if (do_twist) then
+      call mt_write_twist_plane_csv(twist_results,n1,n2,twist_csv, &
+           caller,length_index_header)
+    endif
+    if (do_q) then
+      call mt_write_q_plane_csv(q_results,n1,n2,q_csv,caller, &
+           index_header)
+    endif
+    if (do_qperp) then
+      call mt_write_qperp_plane_csv(qperp_results,n1,n2,qperp_csv, &
+           caller,index_header)
+    endif
+
+    deallocate(qperp_results,q_results,twist_results,length_results,seeds)
+  end subroutine mt_axis_plane_products_csv_axis
 
   subroutine mt_topology_plane_axis(c1min,c1max,n1,c2min,c2max,n2, &
        fixed_value,axis1,axis2,fixed_axis,dL,max_steps,length_csv, &
@@ -1952,7 +4232,7 @@ contains
         call mt_trace_qsl_plane_full(seeds,nseed,dL,max_steps,source_normal, &
              qperp_results,twist_results,mapping_results)
       endif
-      call mt_qperp_to_length(qperp_results,nseed,length_results)
+      call mt_qperp_trace_to_length(qperp_results,nseed,length_results)
     else
       if (present(b_min)) then
         call mt_trace_qsl_plane_minimal(seeds,nseed,dL,max_steps, &
@@ -1961,7 +4241,7 @@ contains
         call mt_trace_qsl_plane_minimal(seeds,nseed,dL,max_steps, &
              qperp_results,twist_results)
       endif
-      call mt_qperp_to_length(qperp_results,nseed,length_results)
+      call mt_qperp_trace_to_length(qperp_results,nseed,length_results)
     endif
 
     call mt_write_qsl_plane_vtu(vtu_file,length_results,twist_results, &
@@ -1970,6 +4250,110 @@ contains
     deallocate(qperp_results,mapping_results,twist_results, &
          length_results,seeds)
   end subroutine mt_qsl_plane_vtu_axis
+
+  subroutine mt_qsl_plane_vti_axis(c1min,c1max,n1,c2min,c2max,n2, &
+       fixed_value,axis1,axis2,fixed_axis,dL,max_steps,vti_file, &
+       do_twist,do_q,do_qperp,caller,b_min,do_length)
+    integer, intent(in) :: n1,n2,axis1,axis2,fixed_axis,max_steps
+    double precision, intent(in) :: c1min,c1max,c2min,c2max
+    double precision, intent(in) :: fixed_value,dL
+    character(len=*), intent(in) :: vti_file,caller
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    double precision, intent(in), optional :: b_min
+    logical, intent(in), optional :: do_length
+
+    type(trace_length_result), allocatable :: length_results(:)
+    type(trace_twist_result), allocatable :: twist_results(:)
+    type(trace_qperp_result), allocatable :: q_results(:)
+    type(trace_qperp_result), allocatable :: qperp_results(:)
+    type(mt_volume_products) :: products
+    double precision, allocatable :: seeds(:,:)
+    double precision :: origin(3),spacing(3)
+    integer :: nseed,nx_vti,ny_vti,nz_vti
+    logical :: do_length_eff
+
+    call mt_validate_axis_plane(c1min,c1max,n1,c2min,c2max,n2,caller)
+    if (len_trim(vti_file)==0) then
+      call mpistop(trim(caller)//' requires a VTI file')
+    endif
+    do_length_eff=.true.
+    if (present(do_length)) do_length_eff=do_length
+    call mt_require_requested_science(do_length_eff,do_twist,do_q,do_qperp, &
+         caller)
+
+    call mt_build_axis_plane_seeds(c1min,c1max,n1,c2min,c2max,n2, &
+         fixed_value,axis1,axis2,fixed_axis,seeds)
+    nseed=n1*n2
+
+    allocate(length_results(nseed))
+    if (do_twist) then
+      allocate(twist_results(nseed))
+    else
+      allocate(twist_results(0))
+    endif
+    if (do_q) then
+      allocate(q_results(nseed))
+    else
+      allocate(q_results(0))
+    endif
+    if (do_qperp) then
+      allocate(qperp_results(nseed))
+    else
+      allocate(qperp_results(0))
+    endif
+
+    if (present(b_min)) then
+      call mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
+           length_results,twist_results,q_results,qperp_results,do_twist, &
+           do_q,do_qperp,b_min)
+    else
+      call mt_trace_fieldline_products_seedset(seeds,nseed,dL,max_steps, &
+           length_results,twist_results,q_results,qperp_results,do_twist, &
+           do_q,do_qperp)
+    endif
+
+    call mt_allocate_volume_products(products,nseed,do_twist,do_q,do_qperp)
+    call mt_copy_volume_length_slab(products,length_results,nseed,1,1,1)
+    if (do_twist) call mt_copy_volume_twist_slab(products,twist_results, &
+         nseed,1,1,1)
+    if (do_q) call mt_copy_volume_q_slab(products,q_results,nseed,1,1,1)
+    if (do_qperp) call mt_copy_volume_qperp_slab(products,qperp_results, &
+         nseed,1,1,1)
+
+    origin=0.d0
+    spacing=0.d0
+    nx_vti=1
+    ny_vti=1
+    nz_vti=1
+    origin(axis1)=c1min
+    origin(axis2)=c2min
+    origin(fixed_axis)=fixed_value
+    spacing(axis1)=mt_vti_axis_spacing(c1min,c1max,n1)
+    spacing(axis2)=mt_vti_axis_spacing(c2min,c2max,n2)
+    select case (axis1)
+    case (1)
+      nx_vti=n1
+    case (2)
+      ny_vti=n1
+    case (3)
+      nz_vti=n1
+    end select
+    select case (axis2)
+    case (1)
+      nx_vti=n2
+    case (2)
+      ny_vti=n2
+    case (3)
+      nz_vti=n2
+    end select
+
+    call mt_write_fieldline_products_volume_vti(vti_file,origin,spacing, &
+         nx_vti,ny_vti,nz_vti,products,do_length_eff,do_twist,do_q, &
+         do_qperp,caller)
+
+    call mt_deallocate_volume_products(products)
+    deallocate(qperp_results,q_results,twist_results,length_results,seeds)
+  end subroutine mt_qsl_plane_vti_axis
 
   subroutine mt_trace_qsl_plane_full(seeds,nseed,dL,max_steps,source_normal, &
        qperp_results,twist_results,mapping_results,b_min)
@@ -1987,26 +4371,22 @@ contains
       !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local) SCHEDULE(DYNAMIC,16)
       do iseed=1,nseed
         seed_local=seeds(iseed,:)
-        call trace_field_qperp_single(seed_local,dL,max_steps, &
-             qperp_results(iseed),b_min)
-        call trace_field_twist_single(seed_local,dL,max_steps, &
-             twist_results(iseed),b_min)
         call trace_field_mapping_single(seed_local,dL,max_steps, &
              mapping_results(iseed),b_min,source_normal)
       enddo
       !$OMP END PARALLEL DO
+      call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+           qperp_results,b_min,twist_results=twist_results)
     else
       !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local) SCHEDULE(DYNAMIC,16)
       do iseed=1,nseed
         seed_local=seeds(iseed,:)
-        call trace_field_qperp_single(seed_local,dL,max_steps, &
-             qperp_results(iseed))
-        call trace_field_twist_single(seed_local,dL,max_steps, &
-             twist_results(iseed))
         call trace_field_mapping_single(seed_local,dL,max_steps, &
              mapping_results(iseed),source_normal=source_normal)
       enddo
       !$OMP END PARALLEL DO
+      call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+           qperp_results,twist_results=twist_results)
     endif
   end subroutine mt_trace_qsl_plane_full
 
@@ -2018,29 +4398,12 @@ contains
     type(trace_twist_result), intent(out) :: twist_results(nseed)
     double precision, intent(in), optional :: b_min
 
-    double precision :: seed_local(ndim)
-    integer :: iseed
-
     if (present(b_min)) then
-      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local) SCHEDULE(DYNAMIC,16)
-      do iseed=1,nseed
-        seed_local=seeds(iseed,:)
-        call trace_field_qperp_single(seed_local,dL,max_steps, &
-             qperp_results(iseed),b_min)
-        call trace_field_twist_single(seed_local,dL,max_steps, &
-             twist_results(iseed),b_min)
-      enddo
-      !$OMP END PARALLEL DO
+      call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+           qperp_results,b_min,twist_results=twist_results)
     else
-      !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(iseed,seed_local) SCHEDULE(DYNAMIC,16)
-      do iseed=1,nseed
-        seed_local=seeds(iseed,:)
-        call trace_field_qperp_single(seed_local,dL,max_steps, &
-             qperp_results(iseed))
-        call trace_field_twist_single(seed_local,dL,max_steps, &
-             twist_results(iseed))
-      enddo
-      !$OMP END PARALLEL DO
+      call trace_field_qperp_multi(seeds,nseed,dL,max_steps, &
+           qperp_results,twist_results=twist_results)
     endif
   end subroutine mt_trace_qsl_plane_minimal
 
@@ -2071,6 +4434,174 @@ contains
       endif
     enddo
   end subroutine mt_qperp_to_length
+
+  subroutine mt_qperp_trace_to_length(qperp_results,nseed,results)
+    integer, intent(in) :: nseed
+    type(trace_qperp_result), intent(in) :: qperp_results(nseed)
+    type(trace_length_result), intent(out) :: results(nseed)
+
+    integer :: iseed
+
+    do iseed=1,nseed
+      results(iseed)%seed=qperp_results(iseed)%seed
+      results(iseed)%forward_footpoint=qperp_results(iseed)%forward_endpoint
+      results(iseed)%backward_footpoint=qperp_results(iseed)%backward_endpoint
+      results(iseed)%forward_length=qperp_results(iseed)%forward_length
+      results(iseed)%backward_length=qperp_results(iseed)%backward_length
+      results(iseed)%total_length=results(iseed)%forward_length+ &
+           results(iseed)%backward_length
+      results(iseed)%forward_nstep=qperp_results(iseed)%forward_nstep
+      results(iseed)%backward_nstep=qperp_results(iseed)%backward_nstep
+      results(iseed)%forward_status=qperp_results(iseed)%forward_status
+      results(iseed)%backward_status=qperp_results(iseed)%backward_status
+    enddo
+  end subroutine mt_qperp_trace_to_length
+
+  subroutine mt_qperp_trace_to_topology(qperp_results,twist_results,nseed, &
+       topology,do_twist)
+    integer, intent(in) :: nseed
+    type(trace_qperp_result), intent(in) :: qperp_results(nseed)
+    type(trace_twist_result), intent(in) :: twist_results(:)
+    type(trace_topology_result), intent(out) :: topology(nseed)
+    logical, intent(in) :: do_twist
+
+    integer :: iseed
+
+    do iseed=1,nseed
+      topology(iseed)%seed=qperp_results(iseed)%seed
+      topology(iseed)%length_forward=qperp_results(iseed)%forward_length
+      topology(iseed)%length_backward=qperp_results(iseed)%backward_length
+      topology(iseed)%length_total=topology(iseed)%length_forward &
+           +topology(iseed)%length_backward
+      topology(iseed)%twist_forward=0.d0
+      topology(iseed)%twist_backward=0.d0
+      topology(iseed)%twist_total=0.d0
+      if (do_twist) then
+        topology(iseed)%twist_forward=twist_results(iseed)%forward_twist
+        topology(iseed)%twist_backward=twist_results(iseed)%backward_twist
+        topology(iseed)%twist_total=twist_results(iseed)%total_twist
+      endif
+      topology(iseed)%forward_endpoint=qperp_results(iseed)%forward_endpoint
+      topology(iseed)%backward_endpoint=qperp_results(iseed)%backward_endpoint
+      topology(iseed)%forward_nstep=qperp_results(iseed)%forward_nstep
+      topology(iseed)%backward_nstep=qperp_results(iseed)%backward_nstep
+      topology(iseed)%forward_face=qperp_results(iseed)%forward_face
+      topology(iseed)%backward_face=qperp_results(iseed)%backward_face
+      topology(iseed)%forward_status=qperp_results(iseed)%forward_status
+      topology(iseed)%backward_status=qperp_results(iseed)%backward_status
+      topology(iseed)%map_forward_endpoint=qperp_results(iseed)%forward_endpoint
+      topology(iseed)%map_backward_endpoint=qperp_results(iseed)%backward_endpoint
+      topology(iseed)%map_forward_length=qperp_results(iseed)%forward_length
+      topology(iseed)%map_backward_length=qperp_results(iseed)%backward_length
+      topology(iseed)%map_forward_face=qperp_results(iseed)%forward_face
+      topology(iseed)%map_backward_face=qperp_results(iseed)%backward_face
+      topology(iseed)%map_forward_status=qperp_results(iseed)%forward_status
+      topology(iseed)%map_backward_status=qperp_results(iseed)%backward_status
+      topology(iseed)%source_B=0.d0
+      topology(iseed)%forward_B=0.d0
+      topology(iseed)%backward_B=0.d0
+      topology(iseed)%source_B(1:ndim)=qperp_results(iseed)%B_seed
+      topology(iseed)%forward_B(1:ndim)=qperp_results(iseed)%forward_B
+      topology(iseed)%backward_B(1:ndim)=qperp_results(iseed)%backward_B
+      topology(iseed)%source_Bn=0.d0
+      topology(iseed)%forward_Bn=0.d0
+      topology(iseed)%backward_Bn=0.d0
+      topology(iseed)%has_twist=do_twist
+      topology(iseed)%has_mapping=.false.
+      topology(iseed)%valid_twist=.false.
+      topology(iseed)%status_twist=qperp_results(iseed)%status
+      if (do_twist) then
+        topology(iseed)%valid_twist=twist_results(iseed)%valid_twist
+        topology(iseed)%status_twist=twist_results(iseed)%status_twist
+      endif
+      topology(iseed)%valid=qperp_results(iseed)%status==trace_status_boundary
+      topology(iseed)%status=qperp_results(iseed)%status
+    enddo
+  end subroutine mt_qperp_trace_to_topology
+
+  subroutine mt_q0_trace_to_length(q_results,nseed,results)
+    integer, intent(in) :: nseed
+    type(trace_qperp_result), intent(in) :: q_results(nseed)
+    type(trace_length_result), intent(out) :: results(nseed)
+
+    integer :: iseed
+
+    do iseed=1,nseed
+      results(iseed)%seed=q_results(iseed)%seed
+      results(iseed)%forward_footpoint=q_results(iseed)%forward_endpoint
+      results(iseed)%backward_footpoint=q_results(iseed)%backward_endpoint
+      results(iseed)%forward_length=q_results(iseed)%forward_length
+      results(iseed)%backward_length=q_results(iseed)%backward_length
+      results(iseed)%total_length=results(iseed)%forward_length &
+           +results(iseed)%backward_length
+      results(iseed)%forward_nstep=q_results(iseed)%forward_nstep
+      results(iseed)%backward_nstep=q_results(iseed)%backward_nstep
+      results(iseed)%forward_status=q_results(iseed)%forward_status
+      results(iseed)%backward_status=q_results(iseed)%backward_status
+    enddo
+  end subroutine mt_q0_trace_to_length
+
+  subroutine mt_q0_trace_to_topology(q_results,twist_results,nseed, &
+       topology,do_twist)
+    integer, intent(in) :: nseed
+    type(trace_qperp_result), intent(in) :: q_results(nseed)
+    type(trace_twist_result), intent(in) :: twist_results(:)
+    type(trace_topology_result), intent(out) :: topology(nseed)
+    logical, intent(in) :: do_twist
+
+    integer :: iseed
+
+    do iseed=1,nseed
+      topology(iseed)%seed=q_results(iseed)%seed
+      topology(iseed)%length_forward=q_results(iseed)%forward_length
+      topology(iseed)%length_backward=q_results(iseed)%backward_length
+      topology(iseed)%length_total=topology(iseed)%length_forward &
+           +topology(iseed)%length_backward
+      topology(iseed)%twist_forward=0.d0
+      topology(iseed)%twist_backward=0.d0
+      topology(iseed)%twist_total=0.d0
+      if (do_twist) then
+        topology(iseed)%twist_forward=twist_results(iseed)%forward_twist
+        topology(iseed)%twist_backward=twist_results(iseed)%backward_twist
+        topology(iseed)%twist_total=twist_results(iseed)%total_twist
+      endif
+      topology(iseed)%forward_endpoint=q_results(iseed)%forward_endpoint
+      topology(iseed)%backward_endpoint=q_results(iseed)%backward_endpoint
+      topology(iseed)%forward_nstep=q_results(iseed)%forward_nstep
+      topology(iseed)%backward_nstep=q_results(iseed)%backward_nstep
+      topology(iseed)%forward_face=q_results(iseed)%forward_face
+      topology(iseed)%backward_face=q_results(iseed)%backward_face
+      topology(iseed)%forward_status=q_results(iseed)%forward_status
+      topology(iseed)%backward_status=q_results(iseed)%backward_status
+      topology(iseed)%map_forward_endpoint=q_results(iseed)%forward_endpoint
+      topology(iseed)%map_backward_endpoint=q_results(iseed)%backward_endpoint
+      topology(iseed)%map_forward_length=q_results(iseed)%forward_length
+      topology(iseed)%map_backward_length=q_results(iseed)%backward_length
+      topology(iseed)%map_forward_face=q_results(iseed)%forward_face
+      topology(iseed)%map_backward_face=q_results(iseed)%backward_face
+      topology(iseed)%map_forward_status=q_results(iseed)%forward_status
+      topology(iseed)%map_backward_status=q_results(iseed)%backward_status
+      topology(iseed)%source_B=0.d0
+      topology(iseed)%forward_B=0.d0
+      topology(iseed)%backward_B=0.d0
+      topology(iseed)%source_B(1:ndim)=q_results(iseed)%B_seed
+      topology(iseed)%forward_B(1:ndim)=q_results(iseed)%forward_B
+      topology(iseed)%backward_B(1:ndim)=q_results(iseed)%backward_B
+      topology(iseed)%source_Bn=0.d0
+      topology(iseed)%forward_Bn=q_results(iseed)%forward_Bn_q0
+      topology(iseed)%backward_Bn=q_results(iseed)%backward_Bn_q0
+      topology(iseed)%has_twist=do_twist
+      topology(iseed)%has_mapping=.false.
+      topology(iseed)%valid_twist=.false.
+      topology(iseed)%status_twist=q_results(iseed)%status
+      if (do_twist) then
+        topology(iseed)%valid_twist=twist_results(iseed)%valid_twist
+        topology(iseed)%status_twist=twist_results(iseed)%status_twist
+      endif
+      topology(iseed)%valid=q_results(iseed)%status==trace_status_boundary
+      topology(iseed)%status=q_results(iseed)%status
+    enddo
+  end subroutine mt_q0_trace_to_topology
 
   subroutine mt_topology_to_length(topology,nseed,results)
     integer, intent(in) :: nseed
@@ -2114,6 +4645,8 @@ contains
       results(iseed)%forward_twist=topology(iseed)%twist_forward
       results(iseed)%backward_twist=topology(iseed)%twist_backward
       results(iseed)%total_twist=topology(iseed)%twist_total
+      results(iseed)%valid_twist=topology(iseed)%valid_twist
+      results(iseed)%status_twist=topology(iseed)%status_twist
     enddo
   end subroutine mt_topology_to_twist
 
@@ -2157,9 +4690,16 @@ contains
       call mpistop(trim(caller)//' requires ndim=3')
       return
     endif
-    if (.not.slab_uniform) then
-      call mpistop(trim(caller)//' requires uniform Cartesian geometry')
-    endif
+    {^IFTHREED
+    select case (geo_coordinate)
+    case (geo_cartesian)
+      ! Coordinate-plane products are sampled seed surfaces. RK2 tracing can
+      ! use either slab-uniform or AMR Cartesian simulation grids.
+    case (geo_cartesian_stretched)
+    case default
+      call mpistop(trim(caller)//' requires Cartesian geometry')
+    end select
+    }
     if (n1<1 .or. n2<1) then
       call mpistop(trim(caller)//' requires both sample counts >=1')
     endif
@@ -2194,6 +4734,203 @@ contains
     enddo
   end subroutine mt_build_axis_plane_seeds
 
+  subroutine mt_build_spherical_surface_seeds(surface,seed_coord,s1_min, &
+       s1_max,n1,s2_min,s2_max,n2,seed_layout,seed_theta0,seed_phi0, &
+       seed_alpha,seeds)
+    character(len=*), intent(in) :: surface,seed_layout
+    integer, intent(in) :: n1,n2
+    double precision, intent(in) :: seed_coord,s1_min,s1_max,s2_min,s2_max
+    double precision, intent(in) :: seed_theta0,seed_phi0,seed_alpha
+    double precision, allocatable, intent(out) :: seeds(:,:)
+
+    character(len=mt_task_name_len) :: layout
+    double precision :: s1,s2
+    integer :: i,j,iseed,status
+
+    layout=mt_lowercase(trim(seed_layout))
+    if (len_trim(layout)==0) layout='endpoint'
+    select case (trim(layout))
+    case ('endpoint','endpoints','boundary')
+    case ('cell_centered','cell-centered','centered','center')
+    case default
+      call mpistop('spherical_surface_products requires '// &
+           'mt_seed_layout=endpoint or cell_centered')
+    end select
+
+    allocate(seeds(n1*n2,ndim))
+    seeds=0.d0
+    do j=1,n2
+      s2=mt_seed_axis_coord(s2_min,s2_max,n2,j,layout)
+      do i=1,n1
+        s1=mt_seed_axis_coord(s1_min,s1_max,n1,i,layout)
+        iseed=(j-1)*n1+i
+        select case (trim(surface))
+        case ('rmin','rconst')
+          seeds(iseed,1)=seed_coord
+          seeds(iseed,2)=s1
+          seeds(iseed,3)=s2
+        case ('theta_const')
+          seeds(iseed,1)=s1
+          seeds(iseed,2)=seed_coord
+          seeds(iseed,3)=s2
+        case ('phi_const')
+          seeds(iseed,1)=s1
+          seeds(iseed,2)=s2
+          seeds(iseed,3)=seed_coord
+        case ('radial_plane')
+          call mt_spherical_radial_plane_seed(s1,s2,seed_theta0,seed_phi0, &
+               seed_alpha,seeds(iseed,:),status)
+          if (status/=0) then
+            call mpistop('mt_build_spherical_surface_seeds radial_plane '// &
+                 'seed lies outside the spherical domain; adjust '// &
+                 'mt_seed_theta0/mt_seed_phi0/mt_seed_alpha or mt_s2 bounds')
+          endif
+        case default
+          call mpistop('mt_build_spherical_surface_seeds got '// &
+               'unsupported surface')
+        end select
+      enddo
+    enddo
+  end subroutine mt_build_spherical_surface_seeds
+
+  subroutine mt_spherical_radial_plane_seed(radius,u,theta0,phi0,alpha,seed, &
+       status)
+    double precision, intent(in) :: radius,u,theta0,phi0,alpha
+    double precision, intent(out) :: seed(ndim)
+    integer, intent(out) :: status
+
+    double precision :: sin_theta0,cos_theta0,sin_phi0,cos_phi0
+    double precision :: n0(3),etheta(3),ephi(3),tangent(3),nhat(3)
+    double precision :: norm_n,theta,phi,cos_u,sin_u
+
+    seed=0.d0
+    status=1
+    {^IFTHREED
+    if (radius<xprobmin1 .or. radius>xprobmax1) return
+    if (theta0<xprobmin2 .or. theta0>xprobmax2) return
+    if (phi0<xprobmin3 .or. phi0>xprobmax3) return
+
+    sin_theta0=dsin(theta0)
+    cos_theta0=dcos(theta0)
+    if (abs(sin_theta0)<=1.d-12) return
+    sin_phi0=dsin(phi0)
+    cos_phi0=dcos(phi0)
+
+    n0=(/sin_theta0*cos_phi0,sin_theta0*sin_phi0,cos_theta0/)
+    etheta=(/cos_theta0*cos_phi0,cos_theta0*sin_phi0,-sin_theta0/)
+    ephi=(/-sin_phi0,cos_phi0,0.d0/)
+    tangent=dcos(alpha)*etheta+dsin(alpha)*ephi
+
+    cos_u=dcos(u)
+    sin_u=dsin(u)
+    nhat=cos_u*n0+sin_u*tangent
+    norm_n=dsqrt(sum(nhat**2))
+    if (norm_n<=0.d0) return
+    nhat=nhat/norm_n
+
+    theta=dacos(max(-1.d0,min(1.d0,nhat(3))))
+    phi=datan2(nhat(2),nhat(1))
+    if (theta<xprobmin2 .or. theta>xprobmax2) return
+    if (phi<xprobmin3 .or. phi>xprobmax3) return
+
+    seed(1)=radius
+    seed(2)=theta
+    seed(3)=phi
+    status=0
+    }
+  end subroutine mt_spherical_radial_plane_seed
+
+  subroutine mt_build_spherical_cloud_seeds(s1_min,s1_max,n1,s2_min, &
+       s2_max,n2,s3_min,s3_max,n3,seed_layout,seeds)
+    character(len=*), intent(in) :: seed_layout
+    integer, intent(in) :: n1,n2,n3
+    double precision, intent(in) :: s1_min,s1_max,s2_min,s2_max
+    double precision, intent(in) :: s3_min,s3_max
+    double precision, allocatable, intent(out) :: seeds(:,:)
+
+    character(len=mt_task_name_len) :: layout
+    double precision :: s1,s2,s3
+    integer :: i,j,k,iseed
+
+    layout=mt_lowercase(trim(seed_layout))
+    if (len_trim(layout)==0) layout='endpoint'
+    select case (trim(layout))
+    case ('endpoint','endpoints','boundary')
+    case ('cell_centered','cell-centered','centered','center')
+    case default
+      call mpistop('spherical_cloud_products requires '// &
+           'mt_seed_layout=endpoint or cell_centered')
+    end select
+
+    allocate(seeds(n1*n2*n3,ndim))
+    seeds=0.d0
+    do k=1,n3
+      s3=mt_seed_axis_coord(s3_min,s3_max,n3,k,layout)
+      do j=1,n2
+        s2=mt_seed_axis_coord(s2_min,s2_max,n2,j,layout)
+        do i=1,n1
+          s1=mt_seed_axis_coord(s1_min,s1_max,n1,i,layout)
+          iseed=(k-1)*n1*n2+(j-1)*n1+i
+          seeds(iseed,1)=s1
+          seeds(iseed,2)=s2
+          seeds(iseed,3)=s3
+        enddo
+      enddo
+    enddo
+  end subroutine mt_build_spherical_cloud_seeds
+
+  double precision function mt_seed_axis_coord(cmin,cmax,n,i,layout) &
+       result(coord)
+    double precision, intent(in) :: cmin,cmax
+    integer, intent(in) :: n,i
+    character(len=*), intent(in) :: layout
+
+    select case (trim(layout))
+    case ('cell_centered','cell-centered','centered','center')
+      coord=cmin+(dble(i)-0.5d0)*(cmax-cmin)/dble(n)
+    case default
+      if (n>1) then
+        coord=cmin+dble(i-1)*(cmax-cmin)/dble(n-1)
+      else
+        coord=cmin
+      endif
+    end select
+  end function mt_seed_axis_coord
+
+  integer function mt_spherical_connection_type(face_b,face_f,is_valid) &
+       result(connection_type)
+    integer, intent(in) :: face_b,face_f
+    logical, intent(in) :: is_valid
+
+    logical :: b_rmin,f_rmin,b_rmax,f_rmax,b_side,f_side
+
+    connection_type=0
+    if (.not.is_valid) return
+    if (.not.mt_q_face_valid(face_b)) return
+    if (.not.mt_q_face_valid(face_f)) return
+
+    b_rmin=face_b==trace_face_xmin
+    f_rmin=face_f==trace_face_xmin
+    b_rmax=face_b==trace_face_xmax
+    f_rmax=face_f==trace_face_xmax
+    b_side=.not.(b_rmin .or. b_rmax)
+    f_side=.not.(f_rmin .or. f_rmax)
+
+    if (b_rmin .and. f_rmin) then
+      connection_type=1
+    else if ((b_rmin .and. f_rmax) .or. (b_rmax .and. f_rmin)) then
+      connection_type=2
+    else if ((b_rmin .and. f_side) .or. (f_rmin .and. b_side)) then
+      connection_type=3
+    else if (b_rmax .and. f_rmax) then
+      connection_type=4
+    else if (b_side .and. f_side .and. face_b==face_f) then
+      connection_type=5
+    else
+      connection_type=6
+    endif
+  end function mt_spherical_connection_type
+
   logical function mt_validate_arbitrary_plane_basis(e1,e2,s1min,s1max, &
        n1,s2min,s2max,n2,caller) result(valid)
     integer, intent(in) :: n1,n2
@@ -2213,10 +4950,14 @@ contains
       write(*,'(a)') trim(caller)//' requires ndim=3'
       return
     endif
-    if (.not.slab_uniform) then
-      write(*,'(a)') trim(caller)//' requires uniform Cartesian geometry'
+    {^IFTHREED
+    select case (geo_coordinate)
+    case (geo_cartesian,geo_cartesian_stretched)
+    case default
+      write(*,'(a)') trim(caller)//' requires Cartesian geometry'
       return
-    endif
+    end select
+    }
     if (n1<1 .or. n2<1) then
       write(*,'(a)') trim(caller)//' requires both sample counts >=1'
       return
@@ -2312,14 +5053,293 @@ contains
     close(csv_unit)
   end subroutine mt_write_length_plane_csv
 
+  subroutine mt_write_spherical_rmin_csv(topology,n1,n2,csv_file,caller, &
+       do_twist,do_q,q_results,do_qperp,qperp_results)
+    integer, intent(in) :: n1,n2
+    type(trace_topology_result), intent(in) :: topology(n1*n2)
+    character(len=*), intent(in) :: csv_file,caller
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    type(trace_qperp_result), intent(in) :: q_results(:)
+    type(trace_qperp_result), intent(in) :: qperp_results(:)
+
+    integer :: csv_unit,io_status,i,j,iseed,connection_type
+    logical :: valid
+    character(len=2048) :: header
+
+    open(newunit=csv_unit,file=trim(csv_file),status='replace', &
+         action='write',form='formatted',iostat=io_status)
+    if (io_status/=0) then
+      call mpistop(trim(caller)//' could not open CSV file')
+    endif
+
+    header='i,j,seed_r,seed_theta,seed_phi,'// &
+         'length_total,length_backward,length_forward'
+    if (do_twist) then
+      header=trim(header)//','// &
+           'twist_total,twist_backward,twist_forward'
+    endif
+    if (do_q) then
+      header=trim(header)//','// &
+           'logQ,valid_Q,status_Q'
+    endif
+    if (do_qperp) then
+      header=trim(header)//','// &
+           'logQperp,valid_Qperp,status_Qperp'
+    endif
+    header=trim(header)//','// &
+         'r_b,theta_b,phi_b,r_f,theta_f,phi_f,'// &
+         'face_backward,face_forward,connection_type_spherical,'// &
+         'nstep_backward,nstep_forward,status_backward,status_forward'
+    if (do_twist) then
+      header=trim(header)//','// &
+           'status_twist,valid_twist'
+    endif
+    header=trim(header)//',valid'
+    write(csv_unit,'(a)',iostat=io_status) trim(header)
+    if (io_status/=0) then
+      close(csv_unit)
+      call mpistop(trim(caller)//' could not write CSV header')
+    endif
+
+    do j=1,n2
+      do i=1,n1
+        iseed=(j-1)*n1+i
+        valid=topology(iseed)%valid
+        connection_type=mt_spherical_connection_type( &
+             topology(iseed)%backward_face,topology(iseed)%forward_face, &
+             valid)
+        write(csv_unit,'(i0,",",i0,6(",",es24.16))',advance='no', &
+             iostat=io_status) i,j,topology(iseed)%seed, &
+             topology(iseed)%length_total, &
+             topology(iseed)%length_backward, &
+             topology(iseed)%length_forward
+        if (io_status/=0) exit
+        if (do_twist) then
+          write(csv_unit,'(3(",",es24.16))',advance='no', &
+               iostat=io_status) topology(iseed)%twist_total, &
+               topology(iseed)%twist_backward, &
+               topology(iseed)%twist_forward
+          if (io_status/=0) exit
+        endif
+        if (do_q) then
+          write(csv_unit,'(",",es24.16,",",l1,",",i0)',advance='no', &
+               iostat=io_status) q_results(iseed)%logq0, &
+               q_results(iseed)%valid_q0,q_results(iseed)%status_q0
+          if (io_status/=0) exit
+        endif
+        if (do_qperp) then
+          write(csv_unit,'(",",es24.16,",",l1,",",i0)',advance='no', &
+               iostat=io_status) qperp_results(iseed)%logqperp, &
+               qperp_results(iseed)%valid,qperp_results(iseed)%status
+          if (io_status/=0) exit
+        endif
+        write(csv_unit,'(6(",",es24.16),7(",",i0))',advance='no', &
+             iostat=io_status) topology(iseed)%backward_endpoint, &
+             topology(iseed)%forward_endpoint, &
+             topology(iseed)%backward_face,topology(iseed)%forward_face, &
+             connection_type,topology(iseed)%backward_nstep, &
+             topology(iseed)%forward_nstep, &
+             topology(iseed)%backward_status, &
+             topology(iseed)%forward_status
+        if (io_status/=0) exit
+        if (do_twist) then
+          write(csv_unit,'(",",i0,",",l1)',advance='no',iostat=io_status) &
+               topology(iseed)%status_twist,topology(iseed)%valid_twist
+          if (io_status/=0) exit
+        endif
+        write(csv_unit,'(",",l1)',iostat=io_status) valid
+        if (io_status/=0) then
+          close(csv_unit)
+          call mpistop(trim(caller)//' could not write CSV data')
+        endif
+      enddo
+    enddo
+
+    close(csv_unit)
+  end subroutine mt_write_spherical_rmin_csv
+
+  subroutine mt_write_spherical_topology_vtu(vtu_file,topology,n1,n2, &
+       caller,do_twist,do_q,q_results,do_qperp,qperp_results)
+    character(len=*), intent(in) :: vtu_file,caller
+    integer, intent(in) :: n1,n2
+    type(trace_topology_result), intent(in) :: topology(n1*n2)
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    type(trace_qperp_result), intent(in) :: q_results(:)
+    type(trace_qperp_result), intent(in) :: qperp_results(:)
+
+    integer :: vtu_unit,io_status,npoint,ncell
+
+    npoint=n1*n2
+    ncell=0
+    if (n1>1 .and. n2>1) ncell=(n1-1)*(n2-1)
+    if (ncell==0) ncell=npoint
+
+    open(newunit=vtu_unit,file=trim(vtu_file),status='replace', &
+         action='write',form='formatted',iostat=io_status)
+    if (io_status/=0) then
+      call mpistop(trim(caller)//' could not open VTU file')
+    endif
+
+    call mt_write_vtu_file_header(vtu_unit,npoint,ncell)
+    call mt_write_vtu_spherical_topology_pointdata(vtu_unit,topology, &
+         npoint,do_twist,do_q,q_results,do_qperp,qperp_results,io_status)
+    if (io_status==0) call mt_write_vtu_topology_points(vtu_unit, &
+         topology,npoint,io_status)
+    if (io_status==0) then
+      if (n1>1 .and. n2>1) then
+        call mt_write_vtu_quad_cells(vtu_unit,n1,n2,io_status)
+      else
+        call mt_write_vtu_vertex_cells(vtu_unit,npoint,io_status)
+      endif
+    endif
+    if (io_status==0) call mt_write_vtu_file_footer(vtu_unit,io_status)
+    close(vtu_unit)
+    if (io_status/=0) then
+      call mpistop(trim(caller)//' could not write VTU file')
+    endif
+  end subroutine mt_write_spherical_topology_vtu
+
+  subroutine mt_write_spherical_cloud_csv(topology,n1,n2,n3,csv_file, &
+       caller,do_twist,do_qperp,qperp_results)
+    integer, intent(in) :: n1,n2,n3
+    type(trace_topology_result), intent(in) :: topology(n1*n2*n3)
+    character(len=*), intent(in) :: csv_file,caller
+    logical, intent(in) :: do_twist,do_qperp
+    type(trace_qperp_result), intent(in) :: qperp_results(:)
+
+    integer :: csv_unit,io_status,i,j,k,iseed,connection_type
+    logical :: valid
+    character(len=2048) :: header
+
+    open(newunit=csv_unit,file=trim(csv_file),status='replace', &
+         action='write',form='formatted',iostat=io_status)
+    if (io_status/=0) then
+      call mpistop(trim(caller)//' could not open CSV file')
+    endif
+
+    header='i,j,k,seed_r,seed_theta,seed_phi,'// &
+         'length_total,length_backward,length_forward'
+    if (do_twist) then
+      header=trim(header)//','// &
+           'twist_total,twist_backward,twist_forward'
+    endif
+    if (do_qperp) then
+      header=trim(header)//','// &
+           'logQperp,valid_Qperp,status_Qperp'
+    endif
+    header=trim(header)//','// &
+         'r_b,theta_b,phi_b,r_f,theta_f,phi_f,'// &
+         'face_backward,face_forward,connection_type_spherical,'// &
+         'nstep_backward,nstep_forward,status_backward,status_forward'
+    if (do_twist) then
+      header=trim(header)//','// &
+           'status_twist,valid_twist'
+    endif
+    header=trim(header)//',valid'
+    write(csv_unit,'(a)',iostat=io_status) trim(header)
+    if (io_status/=0) then
+      close(csv_unit)
+      call mpistop(trim(caller)//' could not write CSV header')
+    endif
+
+    do k=1,n3
+      do j=1,n2
+        do i=1,n1
+          iseed=(k-1)*n1*n2+(j-1)*n1+i
+          valid=topology(iseed)%valid
+          connection_type=mt_spherical_connection_type( &
+               topology(iseed)%backward_face,topology(iseed)%forward_face, &
+               valid)
+          write(csv_unit,'(i0,",",i0,",",i0,6(",",es24.16))', &
+               advance='no',iostat=io_status) i,j,k,topology(iseed)%seed, &
+               topology(iseed)%length_total, &
+               topology(iseed)%length_backward, &
+               topology(iseed)%length_forward
+          if (io_status/=0) exit
+          if (do_twist) then
+            write(csv_unit,'(3(",",es24.16))',advance='no', &
+                 iostat=io_status) topology(iseed)%twist_total, &
+                 topology(iseed)%twist_backward, &
+                 topology(iseed)%twist_forward
+            if (io_status/=0) exit
+          endif
+          if (do_qperp) then
+            write(csv_unit,'(",",es24.16,",",l1,",",i0)',advance='no', &
+                 iostat=io_status) qperp_results(iseed)%logqperp, &
+                 qperp_results(iseed)%valid,qperp_results(iseed)%status
+            if (io_status/=0) exit
+          endif
+          write(csv_unit,'(6(",",es24.16),7(",",i0))',advance='no', &
+               iostat=io_status) topology(iseed)%backward_endpoint, &
+               topology(iseed)%forward_endpoint, &
+               topology(iseed)%backward_face,topology(iseed)%forward_face, &
+               connection_type,topology(iseed)%backward_nstep, &
+               topology(iseed)%forward_nstep, &
+               topology(iseed)%backward_status, &
+               topology(iseed)%forward_status
+          if (io_status/=0) exit
+          if (do_twist) then
+            write(csv_unit,'(",",i0,",",l1)',advance='no', &
+                 iostat=io_status) topology(iseed)%status_twist, &
+                 topology(iseed)%valid_twist
+            if (io_status/=0) exit
+          endif
+          write(csv_unit,'(",",l1)',iostat=io_status) valid
+          if (io_status/=0) exit
+        enddo
+        if (io_status/=0) exit
+      enddo
+      if (io_status/=0) exit
+    enddo
+
+    if (io_status/=0) then
+      close(csv_unit)
+      call mpistop(trim(caller)//' could not write CSV data')
+    endif
+    close(csv_unit)
+  end subroutine mt_write_spherical_cloud_csv
+
+  subroutine mt_write_spherical_cloud_vtu(vtu_file,topology,npoint,caller, &
+       do_twist,do_q,q_results,do_qperp,qperp_results)
+    character(len=*), intent(in) :: vtu_file,caller
+    integer, intent(in) :: npoint
+    type(trace_topology_result), intent(in) :: topology(npoint)
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    type(trace_qperp_result), intent(in) :: q_results(:)
+    type(trace_qperp_result), intent(in) :: qperp_results(:)
+
+    integer :: vtu_unit,io_status
+
+    open(newunit=vtu_unit,file=trim(vtu_file),status='replace', &
+         action='write',form='formatted',iostat=io_status)
+    if (io_status/=0) then
+      call mpistop(trim(caller)//' could not open VTU file')
+    endif
+
+    call mt_write_vtu_file_header(vtu_unit,npoint,npoint)
+    call mt_write_vtu_spherical_topology_pointdata(vtu_unit,topology, &
+         npoint,do_twist,do_q,q_results,do_qperp,qperp_results,io_status)
+    if (io_status==0) call mt_write_vtu_topology_points(vtu_unit, &
+         topology,npoint,io_status)
+    if (io_status==0) call mt_write_vtu_vertex_cells(vtu_unit,npoint, &
+         io_status)
+    if (io_status==0) call mt_write_vtu_file_footer(vtu_unit,io_status)
+    close(vtu_unit)
+    if (io_status/=0) then
+      call mpistop(trim(caller)//' could not write VTU file')
+    endif
+  end subroutine mt_write_spherical_cloud_vtu
+
   subroutine mt_write_fieldline_products_seeds_csv(length_results, &
-       twist_results,qperp_results,nseed,csv_file,do_twist,do_qperp)
+       twist_results,q_results,qperp_results,nseed,csv_file,do_twist, &
+       do_q,do_qperp)
     integer, intent(in) :: nseed
     type(trace_length_result), intent(in) :: length_results(nseed)
     type(trace_twist_result), intent(in) :: twist_results(:)
+    type(trace_qperp_result), intent(in) :: q_results(:)
     type(trace_qperp_result), intent(in) :: qperp_results(:)
     character(len=*), intent(in) :: csv_file
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
 
     double precision :: seed_xyz(3)
     double precision :: Bseed_norm,Bf_norm,Bb_norm
@@ -2341,6 +5361,14 @@ contains
            'twist_total,twist_backward,twist_forward,'// &
            'nstep_backward_twist,nstep_forward_twist,'// &
            'status_backward_twist,status_forward_twist'
+    endif
+    if (do_q) then
+      header=trim(header)//','// &
+           'logQ,valid_Q,status_Q,'// &
+           'face_forward_Q,face_backward_Q,'// &
+           'status_forward_Q,status_backward_Q,'// &
+           'length_forward_Q,length_backward_Q,'// &
+           'x_f_Q,y_f_Q,z_f_Q,x_b_Q,y_b_Q,z_b_Q'
     endif
     if (do_qperp) then
       header=trim(header)//','// &
@@ -2386,6 +5414,23 @@ contains
         if (io_status/=0) exit
       endif
 
+      if (do_q) then
+        write(csv_unit, &
+             '(",",es24.16,",",l1,",",i0,4(",",i0),8(",",es24.16))', &
+             advance='no',iostat=io_status) &
+             q_results(iseed)%logq0, &
+             q_results(iseed)%valid_q0,q_results(iseed)%status_q0, &
+             q_results(iseed)%forward_face, &
+             q_results(iseed)%backward_face, &
+             q_results(iseed)%forward_status, &
+             q_results(iseed)%backward_status, &
+             q_results(iseed)%forward_length, &
+             q_results(iseed)%backward_length, &
+             q_results(iseed)%forward_endpoint, &
+             q_results(iseed)%backward_endpoint
+        if (io_status/=0) exit
+      endif
+
       if (do_qperp) then
         Bseed_norm=dsqrt(sum(qperp_results(iseed)%B_seed**2))
         Bf_norm=dsqrt(sum(qperp_results(iseed)%forward_B**2))
@@ -2421,9 +5466,9 @@ contains
     close(csv_unit)
   end subroutine mt_write_fieldline_products_seeds_csv
 
-  subroutine mt_fieldline_products_append_header(header,do_twist,do_qperp)
+  subroutine mt_fieldline_products_append_header(header,do_twist,do_q,do_qperp)
     character(len=*), intent(inout) :: header
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
 
     header=trim(header)//','// &
          'length_total,length_backward,length_forward,'// &
@@ -2434,6 +5479,14 @@ contains
            'twist_total,twist_backward,twist_forward,'// &
            'nstep_backward_twist,nstep_forward_twist,'// &
            'status_backward_twist,status_forward_twist'
+    endif
+    if (do_q) then
+      header=trim(header)//','// &
+           'logQ,valid_Q,status_Q,'// &
+           'face_forward_Q,face_backward_Q,'// &
+           'status_forward_Q,status_backward_Q,'// &
+           'length_forward_Q,length_backward_Q,'// &
+           'x_f_Q,y_f_Q,z_f_Q,x_b_Q,y_b_Q,z_b_Q'
     endif
     if (do_qperp) then
       header=trim(header)//','// &
@@ -2449,9 +5502,9 @@ contains
   end subroutine mt_fieldline_products_append_header
 
   subroutine mt_write_fieldline_products_plane_arbitrary_header(csv_file, &
-       caller,do_twist,do_qperp)
+       caller,do_twist,do_q,do_qperp)
     character(len=*), intent(in) :: csv_file,caller
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
 
     character(len=2048) :: header
     integer :: csv_unit,io_status
@@ -2463,7 +5516,7 @@ contains
     endif
 
     header='i,j,s1,s2,seed_x,seed_y,seed_z'
-    call mt_fieldline_products_append_header(header,do_twist,do_qperp)
+    call mt_fieldline_products_append_header(header,do_twist,do_q,do_qperp)
     write(csv_unit,'(a)',iostat=io_status) trim(header)
     if (io_status/=0) then
       close(csv_unit)
@@ -2474,15 +5527,16 @@ contains
   end subroutine mt_write_fieldline_products_plane_arbitrary_header
 
   subroutine mt_write_fieldline_products_plane_arbitrary_csv( &
-       length_results,twist_results,qperp_results,s1,s2,n1,n2,csv_file, &
-       do_twist,do_qperp,caller)
+       length_results,twist_results,q_results,qperp_results,s1,s2,n1,n2, &
+       csv_file,do_twist,do_q,do_qperp,caller)
     integer, intent(in) :: n1,n2
     type(trace_length_result), intent(in) :: length_results(n1*n2)
     type(trace_twist_result), intent(in) :: twist_results(:)
+    type(trace_qperp_result), intent(in) :: q_results(:)
     type(trace_qperp_result), intent(in) :: qperp_results(:)
     double precision, intent(in) :: s1(n1*n2),s2(n1*n2)
     character(len=*), intent(in) :: csv_file,caller
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
 
     double precision :: seed_xyz(3)
     double precision :: Bseed_norm,Bf_norm,Bb_norm
@@ -2496,7 +5550,7 @@ contains
     endif
 
     header='i,j,s1,s2,seed_x,seed_y,seed_z'
-    call mt_fieldline_products_append_header(header,do_twist,do_qperp)
+    call mt_fieldline_products_append_header(header,do_twist,do_q,do_qperp)
     write(csv_unit,'(a)',iostat=io_status) trim(header)
     if (io_status/=0) then
       close(csv_unit)
@@ -2530,6 +5584,23 @@ contains
                twist_results(iseed)%line%forward_nstep, &
                twist_results(iseed)%line%backward_status, &
                twist_results(iseed)%line%forward_status
+          if (io_status/=0) exit
+        endif
+
+        if (do_q) then
+          write(csv_unit, &
+               '(",",es24.16,",",l1,",",i0,4(",",i0),8(",",es24.16))', &
+               advance='no',iostat=io_status) &
+               q_results(iseed)%logq0, &
+               q_results(iseed)%valid_q0,q_results(iseed)%status_q0, &
+               q_results(iseed)%forward_face, &
+               q_results(iseed)%backward_face, &
+               q_results(iseed)%forward_status, &
+               q_results(iseed)%backward_status, &
+               q_results(iseed)%forward_length, &
+               q_results(iseed)%backward_length, &
+               q_results(iseed)%forward_endpoint, &
+               q_results(iseed)%backward_endpoint
           if (io_status/=0) exit
         endif
 
@@ -2571,11 +5642,13 @@ contains
   end subroutine mt_write_fieldline_products_plane_arbitrary_csv
 
   subroutine mt_write_fieldline_products_vtu_empty(vtu_file,do_twist, &
-       do_qperp,caller)
+       do_q,do_qperp,caller,do_length)
     character(len=*), intent(in) :: vtu_file,caller
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    logical, intent(in), optional :: do_length
 
     integer :: vtu_unit,io_status
+    logical :: do_length_eff
 
     open(newunit=vtu_unit,file=trim(vtu_file),status='replace', &
          action='write',form='formatted',iostat=io_status)
@@ -2584,7 +5657,10 @@ contains
     endif
 
     call mt_write_vtu_file_header(vtu_unit,0,0)
-    call mt_write_vtu_empty_pointdata(vtu_unit,do_twist,do_qperp)
+    do_length_eff=.true.
+    if (present(do_length)) do_length_eff=do_length
+    call mt_write_vtu_empty_pointdata(vtu_unit,do_length_eff,do_twist, &
+         do_q,do_qperp)
     write(vtu_unit,'(a)',iostat=io_status) '<CellData>'
     if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) '</CellData>'
     if (io_status==0) then
@@ -2607,14 +5683,15 @@ contains
   end subroutine mt_write_fieldline_products_vtu_empty
 
   subroutine mt_write_fieldline_products_vtu_vertices(vtu_file, &
-       length_results,twist_results,qperp_results,npoint,do_twist, &
-       do_qperp,caller)
+       length_results,twist_results,q_results,qperp_results,npoint, &
+       do_length,do_twist,do_q,do_qperp,caller)
     integer, intent(in) :: npoint
     type(trace_length_result), intent(in) :: length_results(npoint)
     type(trace_twist_result), intent(in) :: twist_results(:)
+    type(trace_qperp_result), intent(in) :: q_results(:)
     type(trace_qperp_result), intent(in) :: qperp_results(:)
     character(len=*), intent(in) :: vtu_file,caller
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_length,do_twist,do_q,do_qperp
 
     integer :: vtu_unit,io_status
 
@@ -2626,7 +5703,8 @@ contains
 
     call mt_write_vtu_file_header(vtu_unit,npoint,npoint)
     call mt_write_vtu_product_pointdata(vtu_unit,length_results, &
-         twist_results,qperp_results,npoint,do_twist,do_qperp,io_status)
+         twist_results,q_results,qperp_results,npoint,do_twist,do_q, &
+         do_qperp,io_status,do_length=do_length)
     if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) '<CellData>'
     if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) '</CellData>'
     if (io_status==0) call mt_write_vtu_points(vtu_unit,length_results, &
@@ -2643,16 +5721,19 @@ contains
   end subroutine mt_write_fieldline_products_vtu_vertices
 
   subroutine mt_write_fieldline_products_vtu_plane(vtu_file, &
-       length_results,twist_results,qperp_results,n1,n2,do_twist, &
-       do_qperp,caller)
+       length_results,twist_results,q_results,qperp_results,n1,n2,do_twist, &
+       do_q,do_qperp,caller,do_length)
     integer, intent(in) :: n1,n2
     type(trace_length_result), intent(in) :: length_results(n1*n2)
     type(trace_twist_result), intent(in) :: twist_results(:)
+    type(trace_qperp_result), intent(in) :: q_results(:)
     type(trace_qperp_result), intent(in) :: qperp_results(:)
     character(len=*), intent(in) :: vtu_file,caller
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    logical, intent(in), optional :: do_length
 
     integer :: npoint,ncell,vtu_unit,io_status
+    logical :: do_length_eff
 
     npoint=n1*n2
     if (n1>1 .and. n2>1) then
@@ -2668,8 +5749,11 @@ contains
     endif
 
     call mt_write_vtu_file_header(vtu_unit,npoint,ncell)
+    do_length_eff=.true.
+    if (present(do_length)) do_length_eff=do_length
     call mt_write_vtu_product_pointdata(vtu_unit,length_results, &
-         twist_results,qperp_results,npoint,do_twist,do_qperp,io_status)
+         twist_results,q_results,qperp_results,npoint,do_twist,do_q, &
+         do_qperp,io_status,do_length=do_length_eff)
     if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) '<CellData>'
     if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) '</CellData>'
     if (io_status==0) call mt_write_vtu_points(vtu_unit,length_results, &
@@ -2804,12 +5888,6 @@ contains
          qperp_results(ipoint)%valid),ipoint=1,npoint)
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
 
-    call mt_write_vtu_int_array_start(vtu_unit,'connection_type_Q', &
-         io_status)
-    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
-         (mt_q_result_connection_type(qperp_results(ipoint)),ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
-
   end subroutine mt_write_vtu_qsl_minimal_pointdata
 
   double precision function mt_vti_axis_spacing(xmin,xmax,n)
@@ -2823,10 +5901,11 @@ contains
     endif
   end function mt_vti_axis_spacing
 
-  subroutine mt_allocate_volume_products(products,nseed,do_twist,do_qperp)
+  subroutine mt_allocate_volume_products(products,nseed,do_twist,do_q, &
+       do_qperp)
     type(mt_volume_products), intent(inout) :: products
     integer, intent(in) :: nseed
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
 
     allocate(products%length_total(nseed))
     allocate(products%length_backward(nseed))
@@ -2844,6 +5923,24 @@ contains
       allocate(products%nstep_forward_twist(nseed))
       allocate(products%status_backward_twist(nseed))
       allocate(products%status_forward_twist(nseed))
+    endif
+
+    if (do_q) then
+      allocate(products%q(nseed))
+      allocate(products%logq(nseed))
+      allocate(products%N2_q(nseed))
+      allocate(products%bfactor_q(nseed))
+      allocate(products%length_forward_q(nseed))
+      allocate(products%length_backward_q(nseed))
+      allocate(products%Bseed_norm_q(nseed))
+      allocate(products%Bf_norm_q(nseed))
+      allocate(products%Bb_norm_q(nseed))
+      allocate(products%valid_q(nseed))
+      allocate(products%status_q(nseed))
+      allocate(products%face_forward_q(nseed))
+      allocate(products%face_backward_q(nseed))
+      allocate(products%status_forward_q(nseed))
+      allocate(products%status_backward_q(nseed))
     endif
 
     if (do_qperp) then
@@ -2891,6 +5988,28 @@ contains
          deallocate(products%status_backward_twist)
     if (allocated(products%status_forward_twist)) &
          deallocate(products%status_forward_twist)
+
+    if (allocated(products%q)) deallocate(products%q)
+    if (allocated(products%logq)) deallocate(products%logq)
+    if (allocated(products%N2_q)) deallocate(products%N2_q)
+    if (allocated(products%bfactor_q)) deallocate(products%bfactor_q)
+    if (allocated(products%length_forward_q)) &
+         deallocate(products%length_forward_q)
+    if (allocated(products%length_backward_q)) &
+         deallocate(products%length_backward_q)
+    if (allocated(products%Bseed_norm_q)) deallocate(products%Bseed_norm_q)
+    if (allocated(products%Bf_norm_q)) deallocate(products%Bf_norm_q)
+    if (allocated(products%Bb_norm_q)) deallocate(products%Bb_norm_q)
+    if (allocated(products%valid_q)) deallocate(products%valid_q)
+    if (allocated(products%status_q)) deallocate(products%status_q)
+    if (allocated(products%face_forward_q)) &
+         deallocate(products%face_forward_q)
+    if (allocated(products%face_backward_q)) &
+         deallocate(products%face_backward_q)
+    if (allocated(products%status_forward_q)) &
+         deallocate(products%status_forward_q)
+    if (allocated(products%status_backward_q)) &
+         deallocate(products%status_backward_q)
 
     if (allocated(products%qperp)) deallocate(products%qperp)
     if (allocated(products%logqperp)) deallocate(products%logqperp)
@@ -2996,6 +6115,39 @@ contains
     enddo
   end subroutine mt_copy_volume_twist_slab
 
+  subroutine mt_copy_volume_q_slab(products,results,nx,ny,k_start,slab_nz)
+    type(mt_volume_products), intent(inout) :: products
+    type(trace_qperp_result), intent(in) :: results(:)
+    integer, intent(in) :: nx,ny,k_start,slab_nz
+
+    integer :: i,j,kk,k,ilocal,iglobal
+
+    do kk=1,slab_nz
+      k=k_start+kk-1
+      do j=1,ny
+        do i=1,nx
+          ilocal=(kk-1)*nx*ny+(j-1)*nx+i
+          iglobal=(k-1)*nx*ny+(j-1)*nx+i
+          products%q(iglobal)=results(ilocal)%q0
+          products%logq(iglobal)=results(ilocal)%logq0
+          products%N2_q(iglobal)=results(ilocal)%N2_qperp0
+          products%bfactor_q(iglobal)=results(ilocal)%bfactor_qperp0
+          products%length_forward_q(iglobal)=results(ilocal)%forward_length
+          products%length_backward_q(iglobal)=results(ilocal)%backward_length
+          products%Bseed_norm_q(iglobal)=dsqrt(sum(results(ilocal)%B_seed**2))
+          products%Bf_norm_q(iglobal)=dsqrt(sum(results(ilocal)%forward_B**2))
+          products%Bb_norm_q(iglobal)=dsqrt(sum(results(ilocal)%backward_B**2))
+          products%valid_q(iglobal)=merge(1,0,results(ilocal)%valid_q0)
+          products%status_q(iglobal)=results(ilocal)%status_q0
+          products%face_forward_q(iglobal)=results(ilocal)%forward_face
+          products%face_backward_q(iglobal)=results(ilocal)%backward_face
+          products%status_forward_q(iglobal)=results(ilocal)%forward_status
+          products%status_backward_q(iglobal)=results(ilocal)%backward_status
+        enddo
+      enddo
+    enddo
+  end subroutine mt_copy_volume_q_slab
+
   subroutine mt_copy_volume_qperp_slab(products,results,nx,ny,k_start, &
        slab_nz)
     type(mt_volume_products), intent(inout) :: products
@@ -3091,59 +6243,67 @@ contains
     call mt_finalize_vti_desc_offsets(descs,ndesc)
   end subroutine mt_build_cartesian_vti_pointdata_descs
 
-  subroutine mt_build_volume_vti_descs(npoint,do_twist,do_qperp,descs, &
-       ndesc)
+  subroutine mt_build_volume_vti_descs(npoint,do_length,do_twist,do_q, &
+       do_qperp,descs,ndesc)
     integer, intent(in) :: npoint
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_length,do_twist,do_q,do_qperp
     type(mt_vti_array_desc), allocatable, intent(out) :: descs(:)
     integer, intent(out) :: ndesc
 
     integer :: idesc,max_desc
 
     if (.not.mt_vtk_detail_is_full()) then
-      max_desc=1
+      max_desc=0
+      if (do_length) max_desc=max_desc+1
       if (do_twist) max_desc=max_desc+1
-      if (do_qperp) max_desc=max_desc+3
+      if (do_q) max_desc=max_desc+1
+      if (do_qperp) max_desc=max_desc+1
     else
-      max_desc=7
+      max_desc=0
+      if (do_length) max_desc=max_desc+7
       if (do_twist) max_desc=max_desc+7
+      if (do_q) max_desc=max_desc+15
       if (do_qperp) max_desc=max_desc+15
     endif
     allocate(descs(max_desc))
 
     idesc=0
-    call mt_append_vti_desc(descs,idesc,'length_total', &
-         mt_vti_kind_float64,npoint)
+    if (do_length) then
+      call mt_append_vti_desc(descs,idesc,'length_total', &
+           mt_vti_kind_float64,npoint)
+    endif
     if (.not.mt_vtk_detail_is_full()) then
       if (do_twist) then
         call mt_append_vti_desc(descs,idesc,'twist_total', &
              mt_vti_kind_float64,npoint)
       endif
+      if (do_q) then
+        call mt_append_vti_desc(descs,idesc,'logQ', &
+             mt_vti_kind_float64,npoint)
+      endif
       if (do_qperp) then
         call mt_append_vti_desc(descs,idesc,'logQperp', &
              mt_vti_kind_float64,npoint)
-        call mt_append_vti_desc(descs,idesc,'valid_Qperp', &
-             mt_vti_kind_int32,npoint)
-        call mt_append_vti_desc(descs,idesc,'status_Qperp', &
-             mt_vti_kind_int32,npoint)
       endif
       ndesc=idesc
       call mt_finalize_vti_desc_offsets(descs,ndesc)
       return
     endif
 
-    call mt_append_vti_desc(descs,idesc,'length_backward', &
-         mt_vti_kind_float64,npoint)
-    call mt_append_vti_desc(descs,idesc,'length_forward', &
-         mt_vti_kind_float64,npoint)
-    call mt_append_vti_desc(descs,idesc,'nstep_backward_length', &
-         mt_vti_kind_int32,npoint)
-    call mt_append_vti_desc(descs,idesc,'nstep_forward_length', &
-         mt_vti_kind_int32,npoint)
-    call mt_append_vti_desc(descs,idesc,'status_backward_length', &
-         mt_vti_kind_int32,npoint)
-    call mt_append_vti_desc(descs,idesc,'status_forward_length', &
-         mt_vti_kind_int32,npoint)
+    if (do_length) then
+      call mt_append_vti_desc(descs,idesc,'length_backward', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'length_forward', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'nstep_backward_length', &
+           mt_vti_kind_int32,npoint)
+      call mt_append_vti_desc(descs,idesc,'nstep_forward_length', &
+           mt_vti_kind_int32,npoint)
+      call mt_append_vti_desc(descs,idesc,'status_backward_length', &
+           mt_vti_kind_int32,npoint)
+      call mt_append_vti_desc(descs,idesc,'status_forward_length', &
+           mt_vti_kind_int32,npoint)
+    endif
 
     if (do_twist) then
       call mt_append_vti_desc(descs,idesc,'twist_total', &
@@ -3159,6 +6319,37 @@ contains
       call mt_append_vti_desc(descs,idesc,'status_backward_twist', &
            mt_vti_kind_int32,npoint)
       call mt_append_vti_desc(descs,idesc,'status_forward_twist', &
+           mt_vti_kind_int32,npoint)
+    endif
+
+    if (do_q) then
+      call mt_append_vti_desc(descs,idesc,'q',mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'logq', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'N2_q',mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'bfactor_q', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'length_forward_q', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'length_backward_q', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'Bseed_norm_q', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'Bf_norm_q', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'Bb_norm_q', &
+           mt_vti_kind_float64,npoint)
+      call mt_append_vti_desc(descs,idesc,'valid_Q', &
+           mt_vti_kind_int32,npoint)
+      call mt_append_vti_desc(descs,idesc,'status_Q', &
+           mt_vti_kind_int32,npoint)
+      call mt_append_vti_desc(descs,idesc,'face_forward_Q', &
+           mt_vti_kind_int32,npoint)
+      call mt_append_vti_desc(descs,idesc,'face_backward_Q', &
+           mt_vti_kind_int32,npoint)
+      call mt_append_vti_desc(descs,idesc,'status_forward_Q', &
+           mt_vti_kind_int32,npoint)
+      call mt_append_vti_desc(descs,idesc,'status_backward_Q', &
            mt_vti_kind_int32,npoint)
     endif
 
@@ -3254,11 +6445,11 @@ contains
   end subroutine mt_write_vti_image_header
 
   subroutine mt_write_fieldline_products_volume_vti(vti_file,origin, &
-       spacing,nx,ny,nz,products,do_twist,do_qperp,caller)
+       spacing,nx,ny,nz,products,do_length,do_twist,do_q,do_qperp,caller)
     integer, intent(in) :: nx,ny,nz
     double precision, intent(in) :: origin(3),spacing(3)
     type(mt_volume_products), intent(in) :: products
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_length,do_twist,do_q,do_qperp
     character(len=*), intent(in) :: vti_file,caller
 
     integer :: vti_unit,io_status,npoint
@@ -3268,7 +6459,8 @@ contains
 
     npoint=nx*ny*nz
     call mt_check_vti_byte_count(npoint,caller)
-    call mt_build_volume_vti_descs(npoint,do_twist,do_qperp,descs,ndesc)
+    call mt_build_volume_vti_descs(npoint,do_length,do_twist,do_q, &
+         do_qperp,descs,ndesc)
 
     open(newunit=vti_unit,file=trim(vti_file),status='replace', &
          action='write',form='formatted',iostat=io_status)
@@ -3379,6 +6571,54 @@ contains
       case ('status_forward_twist')
         call mt_write_vti_payload_int32(vti_unit, &
              products%status_forward_twist,npoint,io_status)
+      case ('q')
+        call mt_write_vti_payload_float64(vti_unit,products%q,npoint, &
+             io_status)
+      case ('logq')
+        call mt_write_vti_payload_float64(vti_unit,products%logq,npoint, &
+             io_status)
+      case ('logQ')
+        call mt_write_vti_payload_logq_visual(vti_unit,products,npoint, &
+             io_status)
+      case ('N2_q')
+        call mt_write_vti_payload_float64(vti_unit,products%N2_q,npoint, &
+             io_status)
+      case ('bfactor_q')
+        call mt_write_vti_payload_float64(vti_unit,products%bfactor_q, &
+             npoint,io_status)
+      case ('length_forward_q')
+        call mt_write_vti_payload_float64(vti_unit, &
+             products%length_forward_q,npoint,io_status)
+      case ('length_backward_q')
+        call mt_write_vti_payload_float64(vti_unit, &
+             products%length_backward_q,npoint,io_status)
+      case ('Bseed_norm_q')
+        call mt_write_vti_payload_float64(vti_unit,products%Bseed_norm_q, &
+             npoint,io_status)
+      case ('Bf_norm_q')
+        call mt_write_vti_payload_float64(vti_unit,products%Bf_norm_q,npoint, &
+             io_status)
+      case ('Bb_norm_q')
+        call mt_write_vti_payload_float64(vti_unit,products%Bb_norm_q,npoint, &
+             io_status)
+      case ('valid_Q')
+        call mt_write_vti_payload_int32(vti_unit,products%valid_q,npoint, &
+             io_status)
+      case ('status_Q')
+        call mt_write_vti_payload_int32(vti_unit,products%status_q,npoint, &
+             io_status)
+      case ('face_forward_Q')
+        call mt_write_vti_payload_int32(vti_unit,products%face_forward_q, &
+             npoint,io_status)
+      case ('face_backward_Q')
+        call mt_write_vti_payload_int32(vti_unit,products%face_backward_q, &
+             npoint,io_status)
+      case ('status_forward_Q')
+        call mt_write_vti_payload_int32(vti_unit,products%status_forward_q, &
+             npoint,io_status)
+      case ('status_backward_Q')
+        call mt_write_vti_payload_int32(vti_unit,products%status_backward_q, &
+             npoint,io_status)
       case ('qperp')
         call mt_write_vti_payload_float64(vti_unit,products%qperp,npoint, &
              io_status)
@@ -3439,6 +6679,25 @@ contains
       if (io_status/=0) exit
     enddo
   end subroutine mt_write_volume_vti_payload
+
+  subroutine mt_write_vti_payload_logq_visual(vti_unit,products,npoint, &
+       io_status)
+    integer, intent(in) :: vti_unit,npoint
+    type(mt_volume_products), intent(in) :: products
+    integer, intent(inout) :: io_status
+
+    double precision, allocatable :: visual_values(:)
+    integer :: ipoint
+
+    allocate(visual_values(npoint))
+    do ipoint=1,npoint
+      visual_values(ipoint)=mt_visual_valid_float(products%logq(ipoint), &
+           products%valid_q(ipoint)==1)
+    enddo
+    call mt_write_vti_payload_float64(vti_unit,visual_values,npoint, &
+         io_status)
+    deallocate(visual_values)
+  end subroutine mt_write_vti_payload_logq_visual
 
   subroutine mt_write_vti_payload_float64_visual(vti_unit,values,npoint, &
        io_status)
@@ -3899,6 +7158,213 @@ contains
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
   end subroutine mt_write_vtu_q_product_pointdata
 
+  subroutine mt_write_vtu_spherical_topology_pointdata(vtu_unit,topology, &
+       npoint,do_twist,do_q,q_results,do_qperp,qperp_results,io_status)
+    integer, intent(in) :: vtu_unit,npoint
+    type(trace_topology_result), intent(in) :: topology(npoint)
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    type(trace_qperp_result), intent(in) :: q_results(:)
+    type(trace_qperp_result), intent(in) :: qperp_results(:)
+    integer, intent(inout) :: io_status
+
+    integer :: ipoint
+
+    write(vtu_unit,'(a)',iostat=io_status) '<PointData>'
+    if (io_status/=0) return
+
+    if (.not.mt_vtk_detail_is_full()) then
+      call mt_write_vtu_spherical_minimal_pointdata(vtu_unit,topology, &
+           npoint,do_twist,do_q,q_results,do_qperp,qperp_results, &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) &
+           '</PointData>'
+      return
+    endif
+
+    call mt_write_vtu_float_array_start(vtu_unit,'length_total',io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (mt_visual_float(topology(ipoint)%length_total),ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_float_array_start(vtu_unit,'length_backward', &
+         io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (topology(ipoint)%length_backward,ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_float_array_start(vtu_unit,'length_forward', &
+         io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (topology(ipoint)%length_forward,ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+
+    if (do_twist) then
+      call mt_write_vtu_float_array_start(vtu_unit,'twist_total',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_valid_float(topology(ipoint)%twist_total, &
+           topology(ipoint)%valid_twist),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_float_array_start(vtu_unit,'twist_backward', &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_valid_float(topology(ipoint)%twist_backward, &
+           topology(ipoint)%valid_twist),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_float_array_start(vtu_unit,'twist_forward', &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_valid_float(topology(ipoint)%twist_forward, &
+           topology(ipoint)%valid_twist),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'valid_twist',io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (merge(1,0,topology(ipoint)%valid_twist),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'status_twist',io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (topology(ipoint)%status_twist,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
+
+    if (do_q) then
+      call mt_write_vtu_float_array_start(vtu_unit,'logQ',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_valid_float(q_results(ipoint)%logq0, &
+           q_results(ipoint)%valid_q0),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'valid_Q',io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (merge(1,0,q_results(ipoint)%valid_q0),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'status_Q',io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (q_results(ipoint)%status_q0,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
+
+    if (do_qperp) then
+      call mt_write_vtu_float_array_start(vtu_unit,'logQperp',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_valid_float(qperp_results(ipoint)%logqperp, &
+           qperp_results(ipoint)%valid),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'valid_Qperp',io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (merge(1,0,qperp_results(ipoint)%valid),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'status_Qperp',io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (qperp_results(ipoint)%status,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
+
+    call mt_write_vtu_float_array_start(vtu_unit,'r_b',io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (topology(ipoint)%backward_endpoint(1),ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_float_array_start(vtu_unit,'theta_b',io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (mt_vc(topology(ipoint)%backward_endpoint,2), &
+         ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_float_array_start(vtu_unit,'phi_b',io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (mt_vc(topology(ipoint)%backward_endpoint,3), &
+         ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_float_array_start(vtu_unit,'r_f',io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (topology(ipoint)%forward_endpoint(1),ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_float_array_start(vtu_unit,'theta_f',io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (mt_vc(topology(ipoint)%forward_endpoint,2), &
+         ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_float_array_start(vtu_unit,'phi_f',io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (mt_vc(topology(ipoint)%forward_endpoint,3), &
+         ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+
+    call mt_write_vtu_int_array_start(vtu_unit,'face_backward',io_status)
+    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+         (topology(ipoint)%backward_face,ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_int_array_start(vtu_unit,'face_forward',io_status)
+    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+         (topology(ipoint)%forward_face,ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_int_array_start(vtu_unit,'connection_type_spherical', &
+         io_status)
+    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+         (mt_spherical_connection_type(topology(ipoint)%backward_face, &
+         topology(ipoint)%forward_face,topology(ipoint)%valid), &
+         ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_int_array_start(vtu_unit,'nstep_backward',io_status)
+    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+         (topology(ipoint)%backward_nstep,ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_int_array_start(vtu_unit,'nstep_forward',io_status)
+    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+         (topology(ipoint)%forward_nstep,ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_int_array_start(vtu_unit,'status_backward',io_status)
+    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+         (topology(ipoint)%backward_status,ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_int_array_start(vtu_unit,'status_forward',io_status)
+    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+         (topology(ipoint)%forward_status,ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    call mt_write_vtu_int_array_start(vtu_unit,'valid',io_status)
+    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+         (merge(1,0,topology(ipoint)%valid),ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+
+    if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) '</PointData>'
+  end subroutine mt_write_vtu_spherical_topology_pointdata
+
+  subroutine mt_write_vtu_spherical_minimal_pointdata(vtu_unit,topology, &
+       npoint,do_twist,do_q,q_results,do_qperp,qperp_results,io_status)
+    integer, intent(in) :: vtu_unit,npoint
+    type(trace_topology_result), intent(in) :: topology(npoint)
+    logical, intent(in) :: do_twist,do_q,do_qperp
+    type(trace_qperp_result), intent(in) :: q_results(:)
+    type(trace_qperp_result), intent(in) :: qperp_results(:)
+    integer, intent(inout) :: io_status
+
+    integer :: ipoint
+
+    call mt_write_vtu_float_array_start(vtu_unit,'length_total',io_status)
+    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+         (mt_visual_float(topology(ipoint)%length_total),ipoint=1,npoint)
+    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+
+    if (do_twist) then
+      call mt_write_vtu_float_array_start(vtu_unit,'twist_total',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_valid_float(topology(ipoint)%twist_total, &
+           topology(ipoint)%valid_twist),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
+
+    if (do_q) then
+      call mt_write_vtu_float_array_start(vtu_unit,'logQ',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_valid_float(q_results(ipoint)%logq0, &
+           q_results(ipoint)%valid_q0),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
+
+    if (do_qperp) then
+      call mt_write_vtu_float_array_start(vtu_unit,'logQperp',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_valid_float(qperp_results(ipoint)%logqperp, &
+           qperp_results(ipoint)%valid),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
+  end subroutine mt_write_vtu_spherical_minimal_pointdata
+
   subroutine mt_write_vtu_file_header(vtu_unit,npoint,ncell)
     integer, intent(in) :: vtu_unit,npoint,ncell
 
@@ -3921,66 +7387,79 @@ contains
   end subroutine mt_write_vtu_file_footer
 
   subroutine mt_write_vtu_product_pointdata(vtu_unit,length_results, &
-       twist_results,qperp_results,npoint,do_twist,do_qperp,io_status)
+       twist_results,q_results,qperp_results,npoint,do_twist,do_q, &
+       do_qperp,io_status,do_length)
     integer, intent(in) :: vtu_unit,npoint
     type(trace_length_result), intent(in) :: length_results(npoint)
     type(trace_twist_result), intent(in) :: twist_results(:)
+    type(trace_qperp_result), intent(in) :: q_results(:)
     type(trace_qperp_result), intent(in) :: qperp_results(:)
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
     integer, intent(inout) :: io_status
+    logical, intent(in), optional :: do_length
 
     integer :: ipoint
+    logical :: do_length_eff
 
     write(vtu_unit,'(a)',iostat=io_status) '<PointData>'
     if (io_status/=0) return
+    do_length_eff=.true.
+    if (present(do_length)) do_length_eff=do_length
 
     if (.not.mt_vtk_detail_is_full()) then
       call mt_write_vtu_product_minimal_pointdata(vtu_unit,length_results, &
-           twist_results,qperp_results,npoint,do_twist,do_qperp,io_status)
+           twist_results,q_results,qperp_results,npoint,do_twist,do_q, &
+           do_qperp,io_status,do_length=do_length_eff)
       if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) &
            '</PointData>'
       return
     endif
 
-    call mt_write_vtu_float_array_start(vtu_unit,'length_total',io_status)
-    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (length_results(ipoint)%total_length,ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
-    call mt_write_vtu_float_array_start(vtu_unit,'length_backward', &
-         io_status)
-    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (length_results(ipoint)%backward_length,ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
-    call mt_write_vtu_float_array_start(vtu_unit,'length_forward', &
-         io_status)
-    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (length_results(ipoint)%forward_length,ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    if (do_length_eff) then
+      call mt_write_vtu_float_array_start(vtu_unit,'length_total',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (length_results(ipoint)%total_length,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_float_array_start(vtu_unit,'length_backward', &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (length_results(ipoint)%backward_length,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_float_array_start(vtu_unit,'length_forward', &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (length_results(ipoint)%forward_length,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
 
-    call mt_write_vtu_int_array_start(vtu_unit,'nstep_backward_length', &
-         io_status)
-    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
-         (length_results(ipoint)%backward_nstep,ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
-    call mt_write_vtu_int_array_start(vtu_unit,'nstep_forward_length', &
-         io_status)
-    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
-         (length_results(ipoint)%forward_nstep,ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
-    call mt_write_vtu_int_array_start(vtu_unit,'status_backward_length', &
-         io_status)
-    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
-         (length_results(ipoint)%backward_status,ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
-    call mt_write_vtu_int_array_start(vtu_unit,'status_forward_length', &
-         io_status)
-    if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
-         (length_results(ipoint)%forward_status,ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'nstep_backward_length', &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (length_results(ipoint)%backward_nstep,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'nstep_forward_length', &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (length_results(ipoint)%forward_nstep,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'status_backward_length', &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (length_results(ipoint)%backward_status,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+      call mt_write_vtu_int_array_start(vtu_unit,'status_forward_length', &
+           io_status)
+      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
+           (length_results(ipoint)%forward_status,ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
 
     if (do_twist) then
       call mt_write_vtu_twist_pointdata(vtu_unit,twist_results,npoint, &
            io_status)
+    endif
+    if (do_q) then
+      call mt_write_vtu_q_product_pointdata(vtu_unit,q_results,npoint, &
+           .false.,io_status)
     endif
     if (do_qperp) then
       call mt_write_vtu_qperp_pointdata(vtu_unit,qperp_results,npoint, &
@@ -3991,22 +7470,30 @@ contains
   end subroutine mt_write_vtu_product_pointdata
 
   subroutine mt_write_vtu_product_minimal_pointdata(vtu_unit, &
-       length_results,twist_results,qperp_results,npoint,do_twist, &
-       do_qperp,io_status)
+       length_results,twist_results,q_results,qperp_results,npoint, &
+       do_twist,do_q,do_qperp,io_status,do_length)
     integer, intent(in) :: vtu_unit,npoint
     type(trace_length_result), intent(in) :: length_results(npoint)
     type(trace_twist_result), intent(in) :: twist_results(:)
+    type(trace_qperp_result), intent(in) :: q_results(:)
     type(trace_qperp_result), intent(in) :: qperp_results(:)
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_twist,do_q,do_qperp
     integer, intent(inout) :: io_status
+    logical, intent(in), optional :: do_length
 
     integer :: ipoint
+    logical :: do_length_eff
 
-    call mt_write_vtu_float_array_start(vtu_unit,'length_total',io_status)
-    if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
-         (mt_visual_float(length_results(ipoint)%total_length), &
-         ipoint=1,npoint)
-    call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    do_length_eff=.true.
+    if (present(do_length)) do_length_eff=do_length
+
+    if (do_length_eff) then
+      call mt_write_vtu_float_array_start(vtu_unit,'length_total',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))',iostat=io_status) &
+           (mt_visual_float(length_results(ipoint)%total_length), &
+           ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
 
     if (do_twist) then
       call mt_write_vtu_float_array_start(vtu_unit,'twist_total',io_status)
@@ -4017,22 +7504,21 @@ contains
       call mt_write_vtu_data_array_end(vtu_unit,io_status)
     endif
 
+    if (do_q) then
+      call mt_write_vtu_float_array_start(vtu_unit,'logQ',io_status)
+      if (io_status==0) write(vtu_unit,'(4(1pe24.16))', &
+           iostat=io_status) &
+           (mt_visual_valid_float(q_results(ipoint)%logq0, &
+           q_results(ipoint)%valid_q0),ipoint=1,npoint)
+      call mt_write_vtu_data_array_end(vtu_unit,io_status)
+    endif
+
     if (do_qperp) then
       call mt_write_vtu_float_array_start(vtu_unit,'logQperp',io_status)
       if (io_status==0) write(vtu_unit,'(4(1pe24.16))', &
            iostat=io_status) &
            (mt_visual_valid_float(qperp_results(ipoint)%logqperp, &
            qperp_results(ipoint)%valid),ipoint=1,npoint)
-      call mt_write_vtu_data_array_end(vtu_unit,io_status)
-      call mt_write_vtu_int_array_start(vtu_unit,'valid_Qperp', &
-           io_status)
-      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
-           (merge(1,0,qperp_results(ipoint)%valid),ipoint=1,npoint)
-      call mt_write_vtu_data_array_end(vtu_unit,io_status)
-      call mt_write_vtu_int_array_start(vtu_unit,'status_Qperp', &
-           io_status)
-      if (io_status==0) write(vtu_unit,'(12(i0,1x))',iostat=io_status) &
-           (qperp_results(ipoint)%status,ipoint=1,npoint)
       call mt_write_vtu_data_array_end(vtu_unit,io_status)
     endif
   end subroutine mt_write_vtu_product_minimal_pointdata
@@ -4208,31 +7694,37 @@ contains
     call mt_write_vtu_data_array_end(vtu_unit,io_status)
   end subroutine mt_write_vtu_qperp_int_pointdata
 
-  subroutine mt_write_vtu_empty_pointdata(vtu_unit,do_twist,do_qperp)
+  subroutine mt_write_vtu_empty_pointdata(vtu_unit,do_length,do_twist, &
+       do_q,do_qperp)
     integer, intent(in) :: vtu_unit
-    logical, intent(in) :: do_twist,do_qperp
+    logical, intent(in) :: do_length,do_twist,do_q,do_qperp
 
     write(vtu_unit,'(a)') '<PointData>'
     if (.not.mt_vtk_detail_is_full()) then
-      call mt_write_vtu_empty_float_array(vtu_unit,'length_total')
+      if (do_length) then
+        call mt_write_vtu_empty_float_array(vtu_unit,'length_total')
+      endif
       if (do_twist) then
         call mt_write_vtu_empty_float_array(vtu_unit,'twist_total')
       endif
+      if (do_q) then
+        call mt_write_vtu_empty_float_array(vtu_unit,'logQ')
+      endif
       if (do_qperp) then
         call mt_write_vtu_empty_float_array(vtu_unit,'logQperp')
-        call mt_write_vtu_empty_int_array(vtu_unit,'valid_Qperp')
-        call mt_write_vtu_empty_int_array(vtu_unit,'status_Qperp')
       endif
       write(vtu_unit,'(a)') '</PointData>'
       return
     endif
-    call mt_write_vtu_empty_float_array(vtu_unit,'length_total')
-    call mt_write_vtu_empty_float_array(vtu_unit,'length_backward')
-    call mt_write_vtu_empty_float_array(vtu_unit,'length_forward')
-    call mt_write_vtu_empty_int_array(vtu_unit,'nstep_backward_length')
-    call mt_write_vtu_empty_int_array(vtu_unit,'nstep_forward_length')
-    call mt_write_vtu_empty_int_array(vtu_unit,'status_backward_length')
-    call mt_write_vtu_empty_int_array(vtu_unit,'status_forward_length')
+    if (do_length) then
+      call mt_write_vtu_empty_float_array(vtu_unit,'length_total')
+      call mt_write_vtu_empty_float_array(vtu_unit,'length_backward')
+      call mt_write_vtu_empty_float_array(vtu_unit,'length_forward')
+      call mt_write_vtu_empty_int_array(vtu_unit,'nstep_backward_length')
+      call mt_write_vtu_empty_int_array(vtu_unit,'nstep_forward_length')
+      call mt_write_vtu_empty_int_array(vtu_unit,'status_backward_length')
+      call mt_write_vtu_empty_int_array(vtu_unit,'status_forward_length')
+    endif
     if (do_twist) then
       call mt_write_vtu_empty_float_array(vtu_unit,'twist_total')
       call mt_write_vtu_empty_float_array(vtu_unit,'twist_backward')
@@ -4241,6 +7733,23 @@ contains
       call mt_write_vtu_empty_int_array(vtu_unit,'nstep_forward_twist')
       call mt_write_vtu_empty_int_array(vtu_unit,'status_backward_twist')
       call mt_write_vtu_empty_int_array(vtu_unit,'status_forward_twist')
+    endif
+    if (do_q) then
+      call mt_write_vtu_empty_float_array(vtu_unit,'q')
+      call mt_write_vtu_empty_float_array(vtu_unit,'logQ')
+      call mt_write_vtu_empty_float_array(vtu_unit,'N2_q')
+      call mt_write_vtu_empty_float_array(vtu_unit,'bfactor_q')
+      call mt_write_vtu_empty_float_array(vtu_unit,'length_forward_q')
+      call mt_write_vtu_empty_float_array(vtu_unit,'length_backward_q')
+      call mt_write_vtu_empty_float_array(vtu_unit,'Bseed_norm_q')
+      call mt_write_vtu_empty_float_array(vtu_unit,'Bf_norm_q')
+      call mt_write_vtu_empty_float_array(vtu_unit,'Bb_norm_q')
+      call mt_write_vtu_empty_int_array(vtu_unit,'valid_Q')
+      call mt_write_vtu_empty_int_array(vtu_unit,'status_Q')
+      call mt_write_vtu_empty_int_array(vtu_unit,'face_forward_Q')
+      call mt_write_vtu_empty_int_array(vtu_unit,'face_backward_Q')
+      call mt_write_vtu_empty_int_array(vtu_unit,'status_forward_Q')
+      call mt_write_vtu_empty_int_array(vtu_unit,'status_backward_Q')
     endif
     if (do_qperp) then
       call mt_write_vtu_empty_float_array(vtu_unit,'qperp')
@@ -4328,8 +7837,7 @@ contains
            '<DataArray type="Float64" NumberOfComponents="3" format="ascii">'
     endif
     do ipoint=1,npoint
-      seed_xyz=0.d0
-      seed_xyz(1:ndim)=length_results(ipoint)%seed
+      call mt_vtu_point_from_coord(length_results(ipoint)%seed,seed_xyz)
       if (io_status==0) write(vtu_unit,'(3(1pe24.16))', &
            iostat=io_status) seed_xyz
     enddo
@@ -4337,6 +7845,54 @@ contains
          '</DataArray>'
     if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) '</Points>'
   end subroutine mt_write_vtu_points
+
+  subroutine mt_write_vtu_topology_points(vtu_unit,topology,npoint, &
+       io_status)
+    integer, intent(in) :: vtu_unit,npoint
+    type(trace_topology_result), intent(in) :: topology(npoint)
+    integer, intent(inout) :: io_status
+
+    double precision :: seed_xyz(3)
+    integer :: ipoint
+
+    write(vtu_unit,'(a)',iostat=io_status) '<Points>'
+    if (io_status==0) then
+      write(vtu_unit,'(a)',iostat=io_status) &
+           '<DataArray type="Float64" NumberOfComponents="3" format="ascii">'
+    endif
+    do ipoint=1,npoint
+      call mt_vtu_point_from_coord(topology(ipoint)%seed,seed_xyz)
+      if (io_status==0) write(vtu_unit,'(3(1pe24.16))', &
+           iostat=io_status) seed_xyz
+    enddo
+    if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) &
+         '</DataArray>'
+    if (io_status==0) write(vtu_unit,'(a)',iostat=io_status) '</Points>'
+  end subroutine mt_write_vtu_topology_points
+
+  subroutine mt_vtu_point_from_coord(coord,point_xyz)
+    double precision, intent(in) :: coord(ndim)
+    double precision, intent(out) :: point_xyz(3)
+
+    double precision :: r,theta,phi,sin_theta
+
+    point_xyz=0.d0
+    if (geo_coordinate==geo_spherical .and. ndim==3) then
+      {^IFTHREED
+      r=coord(1)
+      theta=coord(2)
+      phi=coord(3)
+      sin_theta=dsin(theta)
+      point_xyz(1)=r*sin_theta*dcos(phi)
+      point_xyz(2)=r*sin_theta*dsin(phi)
+      point_xyz(3)=r*dcos(theta)
+      }
+    else
+      point_xyz(1)=mt_vc(coord,1)
+      point_xyz(2)=mt_vc(coord,2)
+      point_xyz(3)=mt_vc(coord,3)
+    endif
+  end subroutine mt_vtu_point_from_coord
 
   subroutine mt_write_vtu_vertex_cells(vtu_unit,npoint,io_status)
     integer, intent(in) :: vtu_unit,npoint
@@ -4472,6 +8028,56 @@ contains
 
     close(csv_unit)
   end subroutine mt_write_twist_plane_csv
+
+  subroutine mt_write_q_plane_csv(results,n1,n2,csv_file,caller, &
+       index_header)
+    integer, intent(in) :: n1,n2
+    type(trace_qperp_result), intent(in) :: results(n1*n2)
+    character(len=*), intent(in) :: csv_file,caller,index_header
+
+    integer :: csv_unit,io_status,i,j,iseed
+
+    open(newunit=csv_unit,file=trim(csv_file),status='replace', &
+         action='write',form='formatted',iostat=io_status)
+    if (io_status/=0) then
+      call mpistop(trim(caller)//' could not open CSV file')
+    endif
+
+    write(csv_unit,'(a)',iostat=io_status) &
+         trim(index_header)//',seed_x,seed_y,seed_z,'// &
+         'logQ,valid_Q,status_Q,'// &
+         'face_forward_Q,face_backward_Q,'// &
+         'status_forward_Q,status_backward_Q,'// &
+         'length_forward_Q,length_backward_Q,'// &
+         'x_f_Q,y_f_Q,z_f_Q,x_b_Q,y_b_Q,z_b_Q'
+    if (io_status/=0) then
+      close(csv_unit)
+      call mpistop(trim(caller)//' could not write CSV header')
+    endif
+
+    do j=1,n2
+      do i=1,n1
+        iseed=(j-1)*n1+i
+        write(csv_unit, &
+             '(i0,",",i0,4(",",es24.16),",",l1,5(",",i0),'// &
+             '8(",",es24.16))',iostat=io_status) &
+             i,j,results(iseed)%seed, &
+             results(iseed)%logq0, &
+             results(iseed)%valid_q0,results(iseed)%status_q0, &
+             results(iseed)%forward_face,results(iseed)%backward_face, &
+             results(iseed)%forward_status,results(iseed)%backward_status, &
+             results(iseed)%forward_length,results(iseed)%backward_length, &
+             results(iseed)%forward_endpoint, &
+             results(iseed)%backward_endpoint
+        if (io_status/=0) then
+          close(csv_unit)
+          call mpistop(trim(caller)//' could not write CSV data')
+        endif
+      enddo
+    enddo
+
+    close(csv_unit)
+  end subroutine mt_write_q_plane_csv
 
   subroutine mt_write_qperp_plane_csv(results,n1,n2,csv_file,caller, &
        index_header)
