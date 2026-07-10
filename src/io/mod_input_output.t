@@ -291,10 +291,14 @@ contains
           filename_sxr,emin_sxr,emax_sxr,&
           LOS_theta,LOS_phi,image_rotate,x_origin,big_image,&
           spectrum_wl,location_slit,filename_spectrum,&
+          radiation_transfer,ray_method,emission_model,&
+          instrument_postprocess,&
+          radio_frequency,radio_beam_fwhm,radio_beam_pixel_size,&
+          radsyn_pixel_batch,radsyn_verbose,&
           spectrum_window_min,spectrum_window_max,&
           instrument_resolution_factor,activate_unit_arcsec,&
           filename_whitelight,whitelight_instrument,R_occultor,R_opt_thick,&
-          dat_resolution,direction_slit
+          dat_resolution,direction_slit,output_tau,output_absorption_fraction
 
     ! default maximum number of grid blocks in a processor
     max_blocks=4000
@@ -508,6 +512,15 @@ contains
     x_origin = 0.d0
     big_image = .false.
     location_slit = 0.d0
+    radiation_transfer = 'thin'
+    ray_method = 'legacy'
+    emission_model = 'auto'
+    instrument_postprocess=.false.
+    radio_frequency = 17.d9
+    radio_beam_fwhm = 0.d0
+    radio_beam_pixel_size = 0.d0
+    radsyn_pixel_batch = 128
+    radsyn_verbose = .false.
     direction_slit = -1
     instrument_resolution_factor=1.d0
     activate_unit_arcsec=.true.
@@ -515,6 +528,8 @@ contains
     R_occultor=-1.d0
     R_opt_thick=1.d0
     dat_resolution=.false.
+    output_tau=.false.
+    output_absorption_fraction=.false.
 
     allocate(flux_scheme(nlevelshi),typepred1(nlevelshi),flux_method(nlevelshi))
     allocate(limiter(nlevelshi),gradient_limiter(nlevelshi))

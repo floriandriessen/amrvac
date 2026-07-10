@@ -164,6 +164,24 @@ module mod_global_parameters
   double precision :: x_origin(1:3)
   !> Base file name for synthetic EUV spectrum output
   character(len=std_len) :: filename_spectrum
+  !> Synthetic emission transfer mode: thin or thick
+  character(len=std_len) :: radiation_transfer
+  !> Synthetic emission ray traversal method
+  character(len=std_len) :: ray_method
+  !> Synthetic emission physical model selector
+  character(len=std_len) :: emission_model
+  !> Post-process dat-resolution EUV images onto the instrument pixel grid
+  logical :: instrument_postprocess
+  !> Observing frequency for radio free-free synthesis in Hz
+  double precision :: radio_frequency
+  !> Gaussian radio beam full width at half maximum in arcsec
+  double precision :: radio_beam_fwhm
+  !> Output pixel size for radio beam post-processing in arcsec; <=0 uses FWHM/3
+  double precision :: radio_beam_pixel_size
+  !> Number of image pixels processed in one ray-segment MPI batch
+  integer :: radsyn_pixel_batch
+  !> Print synthetic-emission ray-tracing profiling counters
+  logical :: radsyn_verbose
   !> spectral window
   double precision :: spectrum_window_min,spectrum_window_max
   !> location of the slit
@@ -666,6 +684,10 @@ module mod_global_parameters
 
   !> resolution of the images
   logical :: dat_resolution
+  !> output optical-depth map for synthetic emission when available
+  logical :: output_tau
+  !> output absorption fraction for thick/thin EUV synthesis when available
+  logical :: output_absorption_fraction
 
   !> If collapse(DIM) is true, generate output integrated over DIM
   logical :: collapse(ndim)
