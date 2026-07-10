@@ -1,11 +1,12 @@
-! Native spherical top-down thick AIA 171 image.
-! This LOS looks along the local radial direction of the spherical patch.
+! Parallel-scaling benchmark: spherical uniform 256x192x256 snapshot.
+! Data-resolution, optically thick AIA 171 image from a cube-corner LOS.
+! Run after par_init/u256.par.
 
 &filelist
   convert=.true.
   autoconvert=.false.
   convert_type='EIvtiCCmpi'
-  restart_from_file='output/radsyn_sph_prom_0000.dat'
+  restart_from_file='output/radsyn_sph_prom_u256_0000.dat'
 /
 
 &savelist
@@ -35,6 +36,8 @@
 
 &meshlist
   refine_max_level=1
+  refine_criterion=3
+  max_blocks=2000
   block_nx1=32
   block_nx2=32
   block_nx3=32
@@ -60,11 +63,11 @@
 /
 
 &emissionlist
-  filename_euv='output/AIA171_sph_native_topdown_thick_'
+  filename_euv='output/benchmark/AIA171_spherical_corner45_thick_u256_'
   wavelength=171
-  LOS_theta=90.d0
-  LOS_phi=0.d0
-  dat_resolution=.false.
+  LOS_theta=54.735610317245346d0
+  LOS_phi=45.d0
+  dat_resolution=.true.
   radiation_transfer='thick'
   ray_method='spherical'
   emission_model='euv_aia'

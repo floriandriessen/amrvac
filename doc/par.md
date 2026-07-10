@@ -1201,39 +1201,49 @@ the region below 'R_opt_thick' (in solar radius, default value is 1) is treated 
 legacy EUV/SXR occultation check. Spherical EUV/SXR and white-light synthesis use the historical
 instrument-resolution projection: cells are sub-sampled in spherical coordinates, mapped to the
 image plane, and distributed with the corresponding instrument PSF. A native spherical
-ray/mesh-intersection path is available with `ray_method='sph_intersection'` for spherical
-instrument-resolution EUV images. It constructs ordered ray segments from `r/theta/phi` cell
-faces and integrates either thin emissivity or front-to-back thick EUV transfer along each LOS.
-This first native spherical version does not support spherical .dat-resolution EUV/SXR,
-spherical SXR, spherical white light, radio/pseudo-current spherical products, polar-axis-crossing
-domains, or phi-wrapping domains.
+ray/mesh-intersection path is available with `ray_method='spherical'` for spherical
+EUV images at instrument resolution or dat resolution. It constructs ordered ray segments from
+`r/theta/phi` cell faces and integrates either thin emissivity or front-to-back thick EUV transfer
+along each LOS. This first native spherical version does not support spherical SXR, spherical
+white light, radio/pseudo-current spherical products, polar-axis-crossing domains, or phi-wrapping
+domains.
 
 The radiation-transfer extension is controlled by 'radiation_transfer', 'ray_method', and
-'emission_model'. The default values are 'thin', 'legacy', and 'auto', which preserve the
-historical optically thin emission synthesis behavior.
+'emission_model'. The default values are 'thin', 'auto', and 'auto'. With
+`ray_method='auto'`, Cartesian dat-resolution EUV uses the native Cartesian ray
+tracer, spherical EUV uses the native spherical ray/mesh intersection, and
+products without a native path fall back to `legacy`.
 
 Recommended use:
 
-- Use the defaults for legacy optically thin EUV/SXR and spherical white-light products.
+- Use `ray_method='legacy'` to force the historical optically thin projection
+  path for EUV/SXR and spherical white-light products.
 - Use `dat_resolution=.true.` and `radiation_transfer='thick'` for Cartesian x/y/z-aligned
   optically thick EUV diagnostics.
-- Use `ray_method='cart_dda'` for Cartesian arbitrary-angle EUV/radio/pseudo-current images.
-  In thick mode, `cart_dda` routes ray segments by image-pixel batch to the owning MPI ranks,
+- Use `ray_method='cart'` for Cartesian arbitrary-angle EUV/radio/pseudo-current images.
+  In thick mode, `cart` routes ray segments by image-pixel batch to the owning MPI ranks,
   sorts same-pixel segments along the LOS, and then applies the ordered transfer.
-- Use `ray_method='sph_intersection'` only for spherical, instrument-resolution EUV images when
-  native ray/mesh intersections are preferred over legacy spherical deposition. It supports thin
-  and thick EUV transfer; thick mode uses the same H I / He I / He II opacity model as Cartesian
-  thick EUV and can output `tau` and `absorption_fraction`.
-- Use `instrument_postprocess=.true.` after Cartesian dat-resolution DDA products when an
+- Use `ray_method='spherical'` for spherical EUV images when native
+  ray/mesh intersections are preferred over legacy spherical deposition. It
+  supports arbitrary viewing angles for both instrument-resolution and
+  dat-resolution EUV images, including stretched spherical grids. Thick mode
+  uses the same H I / He I / He II opacity model as Cartesian thick EUV and can
+  output `tau` and `absorption_fraction`. Dat-resolution `spherical`
+  outputs AIA intensity only, plus those optional thick diagnostics; Doppler
+  and `instrument_postprocess` are not yet defined for this path.
+- The older names `ray_method='cart_dda'` and
+  `ray_method='sph_intersection'` are accepted as compatibility aliases for
+  `cart` and `spherical`.
+- Use `instrument_postprocess=.true.` after Cartesian native dat-resolution products when an
   observational image grid is desired. EUV AIA images use the existing AIA-style Gaussian PSF.
   Radio free-free images use an independent Gaussian beam controlled by `radio_beam_fwhm` and
   `radio_beam_pixel_size`, both in arcsec; if `radio_beam_pixel_size` is non-positive, it defaults
   to one third of the beam FWHM.
-- Use `radsyn_pixel_batch` to cap the number of image pixels processed in one DDA/native spherical
+- Use `radsyn_pixel_batch` to cap the number of image pixels processed in one native Cartesian/spherical
   thick-transfer segment batch. The default is 128. Set `radsyn_verbose=.true.` to print ray tests,
   segment counts, MPI volume, and sort-work counters for profiling.
-- Use VTU output for Cartesian stretched dat-resolution images because VTI assumes uniform image
-  spacing.
+- Use VTU output for non-uniform dat-resolution image grids. VTI is allowed
+  only when the emitted image-plane spacing is uniform.
 
 The first optically thick EUV model uses H I / He I / He II photoionization opacity and reduces to
 the thin result when opacity is zero. The flags 'output_tau' and 'output_absorption_fraction' add
@@ -1257,7 +1267,7 @@ thin transfer and labels the output variable 'pseudo_current'.
       emax_sxr= INTEGER
       filename_spectrum= CHARACTER
       radiation_transfer= 'thin' | 'thick'
-      ray_method= 'legacy' | 'cart_dda' | 'sph_intersection'
+      ray_method= 'auto' | 'legacy' | 'cart' | 'spherical'
       emission_model= 'auto' | 'euv_aia' | 'white_light' | 'radio_ff' | 'pseudo_current'
       instrument_postprocess=LOGICAL
       radio_frequency= DOUBLE

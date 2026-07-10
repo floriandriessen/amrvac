@@ -513,7 +513,7 @@ contains
     big_image = .false.
     location_slit = 0.d0
     radiation_transfer = 'thin'
-    ray_method = 'legacy'
+    ray_method = 'auto'
     emission_model = 'auto'
     instrument_postprocess=.false.
     radio_frequency = 17.d9

@@ -68,7 +68,7 @@
   LOS_phi=45.d0
   dat_resolution=.false.
   radiation_transfer='thick'
-  ray_method='sph_intersection'
+  ray_method='spherical'
   emission_model='euv_aia'
   output_tau=.true.
   output_absorption_fraction=.true.

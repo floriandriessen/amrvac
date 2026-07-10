@@ -1,11 +1,12 @@
-! Native spherical top-down thick AIA 171 image.
-! This LOS looks along the local radial direction of the spherical patch.
+! Parallel-scaling benchmark: Cartesian AMR base 128x96x128 level-4 snapshot.
+! Data-resolution, optically thick AIA 171 image from a cube-corner LOS.
+! Run after par_init/amr_l4.par. This case can be expensive.
 
 &filelist
   convert=.true.
   autoconvert=.false.
   convert_type='EIvtiCCmpi'
-  restart_from_file='output/radsyn_sph_prom_0000.dat'
+  restart_from_file='output/radsyn_tdm_prom_amr_l4_0000.dat'
 /
 
 &savelist
@@ -34,19 +35,21 @@
 /
 
 &meshlist
-  refine_max_level=1
+  refine_max_level=4
+  refine_criterion=1
+  max_blocks=12000
   block_nx1=32
   block_nx2=32
   block_nx3=32
-  domain_nx1=256
-  domain_nx2=192
-  domain_nx3=256
-  xprobmin1=69.61d0
-  xprobmax1=79.61d0
-  xprobmin2=0.2270568141714314d0
-  xprobmax2=0.2729431858285686d0
-  xprobmin3=-0.01718120494117723d0
-  xprobmax3= 0.01718120494117723d0
+  domain_nx1=128
+  domain_nx2=96
+  domain_nx3=128
+  xprobmin1=-10.d0
+  xprobmax1= 10.d0
+  xprobmin2=-7.5d0
+  xprobmax2= 7.5d0
+  xprobmin3= 0.d0
+  xprobmax3= 10.d0
 /
 
 &paramlist
@@ -60,13 +63,13 @@
 /
 
 &emissionlist
-  filename_euv='output/AIA171_sph_native_topdown_thick_'
+  filename_euv='output/benchmark/AIA171_cart_corner45_thick_amr_l4_'
   wavelength=171
-  LOS_theta=90.d0
-  LOS_phi=0.d0
-  dat_resolution=.false.
+  LOS_theta=54.735610317245346d0
+  LOS_phi=45.d0
+  dat_resolution=.true.
   radiation_transfer='thick'
-  ray_method='spherical'
+  ray_method='cart'
   emission_model='euv_aia'
   output_tau=.true.
   output_absorption_fraction=.true.

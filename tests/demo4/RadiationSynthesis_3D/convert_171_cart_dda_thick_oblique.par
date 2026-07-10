@@ -1,4 +1,4 @@
-! Oblique optically thick AIA 171 dat-resolution image using segment-sorted Cartesian DDA rays.
+! Oblique optically thick AIA 171 dat-resolution image using segment-sorted Cartesian native rays.
 
 &filelist
   convert=.true.
@@ -65,7 +65,7 @@
   LOS_phi=30.d0
   dat_resolution=.true.
   radiation_transfer='thick'
-  ray_method='cart_dda'
+  ray_method='cart'
   emission_model='euv_aia'
   output_tau=.true.
   output_absorption_fraction=.true.

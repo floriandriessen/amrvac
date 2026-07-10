@@ -416,6 +416,8 @@ module mod_thermal_emission
     logical :: has_pixels=.false.
   end type radsyn_euv_cache
 
+  character(len=std_len) :: ray_method_active='legacy'
+
 
   contains
 
@@ -428,10 +430,24 @@ module mod_thermal_emission
         call mpistop("bad radiation_transfer")
       endif
 
-      if (trim(ray_method) /= 'legacy' .and. trim(ray_method) /= 'cart_dda' .and. &
-          trim(ray_method) /= 'sph_intersection') then
+      select case(trim(ray_method))
+      case('auto','')
+        if (datatype=='image_euv' .and. coordinate==spherical) then
+          ray_method_active='spherical'
+        else if (datatype=='image_euv' .and. coordinate==cartesian .and. dat_resolution .and. slab) then
+          ray_method_active='cart'
+        else
+          ray_method_active='legacy'
+        endif
+      case('legacy')
+        ray_method_active='legacy'
+      case('cart','cart_dda')
+        ray_method_active='cart'
+      case('spherical','sph_intersection')
+        ray_method_active='spherical'
+      case default
         call mpistop("bad ray_method")
-      endif
+      end select
 
       if (trim(emission_model) /= 'auto' .and. trim(emission_model) /= 'euv_aia' .and. &
           trim(emission_model) /= 'white_light' .and. trim(emission_model) /= 'radio_ff' .and. &
@@ -450,6 +466,9 @@ module mod_thermal_emission
       if (instrument_postprocess) then
         if (datatype /= 'image_euv' .or. .not. dat_resolution) then
           call mpistop("instrument_postprocess currently needs dat-resolution EUV images")
+        endif
+        if (trim(ray_method_active) == 'spherical') then
+          call mpistop("instrument_postprocess is not yet supported for spherical rays")
         endif
         if (trim(emission_model) == 'pseudo_current') then
           call mpistop("instrument_postprocess currently supports only EUV AIA or radio_ff images")
@@ -486,31 +505,31 @@ module mod_thermal_emission
         endif
       end select
 
-      if (trim(ray_method) == 'cart_dda') then
+      if (trim(ray_method_active) == 'cart') then
         if (datatype /= 'image_euv' .or. .not. slab .or. .not. dat_resolution) then
-          call mpistop("cart_dda currently needs Cartesian dat-resolution EUV images")
+          call mpistop("ray_method=cart needs Cartesian dat-resolution EUV images")
         endif
       endif
-      if (trim(ray_method) == 'sph_intersection') then
+      if (trim(ray_method_active) == 'spherical') then
         {^IFONED
-        call mpistop("sph_intersection currently needs 3D spherical grids")
+        call mpistop("ray_method=spherical currently needs 3D spherical grids")
         }
         {^IFTWOD
-        call mpistop("sph_intersection currently needs 3D spherical grids")
+        call mpistop("ray_method=spherical currently needs 3D spherical grids")
         }
         {^IFTHREED
-        if (datatype /= 'image_euv' .or. coordinate /= spherical .or. dat_resolution .or. &
+        if (datatype /= 'image_euv' .or. coordinate /= spherical .or. &
             (trim(radiation_transfer) /= 'thin' .and. trim(radiation_transfer) /= 'thick')) then
-          call mpistop("bad sph_intersection mode")
+          call mpistop("bad ray_method=spherical mode")
         endif
         if (trim(emission_model) /= 'auto' .and. trim(emission_model) /= 'euv_aia') then
-          call mpistop("sph_intersection currently supports only EUV AIA emission")
+          call mpistop("ray_method=spherical currently supports only EUV AIA emission")
         endif
         if (xprobmin2<=1.d-10 .or. xprobmax2>=dpi-1.d-10) then
-          call mpistop("sph_intersection currently does not support polar-axis crossing domains")
+          call mpistop("ray_method=spherical does not support polar-axis crossing domains")
         endif
         if (xprobmax3<=xprobmin3 .or. xprobmax3-xprobmin3>=2.d0*dpi-1.d-10) then
-          call mpistop("sph_intersection currently does not support phi-wrapping domains")
+          call mpistop("ray_method=spherical does not support phi-wrapping domains")
         endif
         }
       endif
@@ -518,13 +537,13 @@ module mod_thermal_emission
         if (datatype /= 'image_euv') then
           call mpistop("thick transfer is only defined for EUV images")
         endif
-        if (trim(ray_method) == 'sph_intersection') then
+        if (trim(ray_method_active) == 'spherical') then
           continue
         else if (.not. slab .or. .not. dat_resolution) then
           call mpistop("thick EUV currently needs Cartesian dat_resolution output")
         endif
-        if (trim(ray_method) /= 'cart_dda' .and. &
-            trim(ray_method) /= 'sph_intersection' .and. &
+        if (trim(ray_method_active) /= 'cart' .and. &
+            trim(ray_method_active) /= 'spherical' .and. &
             .not. ((LOS_phi==0 .and. LOS_theta==90) .or. &
                    (LOS_phi==90 .and. LOS_theta==90) .or. LOS_theta==0)) then
           call mpistop("thick EUV currently needs x/y/z-aligned LOS")
@@ -1844,7 +1863,8 @@ module mod_thermal_emission
       endif
 
       if (dat_resolution) then
-        if (.not. slab) call MPISTOP('EUV synthesis: only cartesian is supported for .dat resolution!')
+        if (.not. slab .and. .not. (coordinate==spherical .and. trim(ray_method_active)=='spherical')) &
+          call MPISTOP('EUV dat-resolution needs Cartesian or spherical native rays')
         if (mype==0) then
           write(*,'(a,f7.1,a,f7.1,a,f5.1,a,f5.1,a)') ' Supposed Pixel: ',spaceRsl*725.0,' km x ',spaceRsl*725.0, & 
                                                      ' km  (', spaceRsl, ' arcsec x ', spaceRsl, ' arcsec)'
@@ -1854,7 +1874,9 @@ module mod_thermal_emission
             write(*,'(a,f8.1,a)') ' Unit of length: ',unit_length/1.d8,' Mm'
           endif
         endif
-        if (trim(ray_method)=='cart_dda') then
+        if (coordinate==spherical .and. trim(ray_method_active)=='spherical') then
+          call get_image_datresol(qunit,datatype,fl)
+        else if (trim(ray_method_active)=='cart') then
           call get_image_datresol(qunit,datatype,fl)
         else if (LOS_phi==0 .and. LOS_theta==90) then
           call get_image_datresol(qunit,datatype,fl)
@@ -2379,10 +2401,34 @@ module mod_thermal_emission
       numX2=domain_nx2*2**(refine_max_level-1)
       numX3=domain_nx3*2**(refine_max_level-1)
 
-      if (trim(ray_method)=='cart_dda') call init_vectors_cartesian()
+      if (trim(ray_method_active)=='cart') call init_vectors_cartesian()
+      if (coordinate==spherical .and. trim(ray_method_active)=='spherical') call init_vectors_spherical()
 
       ! parameters for creating table
-      if (trim(ray_method)=='cart_dda' .and. .not. &
+      if (coordinate==spherical .and. trim(ray_method_active)=='spherical') then
+        call get_sph_intersection_image_bounds(xIFmin1,xIFmax1,xIFmin2,xIFmax2)
+        call get_sph_intersection_datresol_spacing(dxDDA)
+        xIcent1=half*(xIFmin1+xIFmax1)
+        xIcent2=half*(xIFmin2+xIFmax2)
+        nXIF1=max(1,ceiling((xIFmax1-xIFmin1)/dxDDA))
+        nXIF2=max(1,ceiling((xIFmax2-xIFmin2)/dxDDA))
+        xIFmin1=xIcent1-half*dble(nXIF1)*dxDDA
+        xIFmax1=xIcent1+half*dble(nXIF1)*dxDDA
+        xIFmin2=xIcent2-half*dble(nXIF2)*dxDDA
+        xIFmax2=xIcent2+half*dble(nXIF2)*dxDDA
+        bnx1=1
+        bnx2=1
+        nbb1=nXIF1
+        nbb2=nXIF2
+        strtype1=0
+        strtype2=0
+        nstrb1=0
+        nstrb2=0
+        qs1=one
+        qs2=one
+        if (mype==0) write(*,'(a,1pe12.5,a,2(i8,1x))') &
+          ' spherical native dat-resolution image-plane dx: ',dxDDA,' n=',nXIF1,nXIF2
+      else if (trim(ray_method_active)=='cart' .and. .not. &
           ((LOS_phi==0 .and. LOS_theta==90) .or. &
            (LOS_phi==90 .and. LOS_theta==90) .or. LOS_theta==0)) then
         do ix1=1,2
@@ -2597,7 +2643,11 @@ module mod_thermal_emission
         else
           unitv=unit_velocity/1.0e5 ! km/s
         endif
-        if (trim(emission_model)=='pseudo_current' .or. trim(emission_model)=='radio_ff') then
+        if (coordinate==spherical .and. trim(ray_method_active)=='spherical') then
+          numWI=1
+          if (trim(radiation_transfer)=='thick' .and. output_tau) numWI=numWI+1
+          if (trim(radiation_transfer)=='thick' .and. output_absorption_fraction) numWI=numWI+1
+        else if (trim(emission_model)=='pseudo_current' .or. trim(emission_model)=='radio_ff') then
           numWI=1
           if (trim(emission_model)=='radio_ff' .and. trim(radiation_transfer)=='thick' .and. output_tau) numWI=numWI+1
           if (trim(emission_model)=='radio_ff' .and. trim(radiation_transfer)=='thick' .and. &
@@ -2611,12 +2661,16 @@ module mod_thermal_emission
         allocate(EUV(nXIF1,nXIF2),Dpl(nXIF1,nXIF2))
         if (trim(radiation_transfer)=='thick') then
           allocate(EUVthin(nXIF1,nXIF2),Tau(nXIF1,nXIF2))
-          if (trim(ray_method)=='cart_dda') then
+          if (coordinate==spherical .and. trim(ray_method_active)=='spherical') then
+            call integrate_EUV_sph_intersection_thick(nXIF1,nXIF2,xIF1,xIF2,dxIF1(1),fl,EUV,Tau,EUVthin)
+            Dpl=zero
+          else if (trim(ray_method_active)=='cart') then
             call integrate_EUV_cart_dda_thick_datresol(nXIF1,nXIF2,xIF1,xIF2,fl,EUV,Dpl,Tau,EUVthin)
           else
             call integrate_EUV_thick_datresol(nXIF1,nXIF2,fl,EUV,Dpl,Tau,EUVthin)
           endif
-          if (trim(emission_model)/='radio_ff') then
+          if (trim(emission_model)/='radio_ff' .and. &
+              .not. (coordinate==spherical .and. trim(ray_method_active)=='spherical')) then
             do ix1=1,nXIF1
               do ix2=1,nXIF2
                 if (EUV(ix1,ix2)<smalldouble) EUV(ix1,ix2)=zero
@@ -2635,7 +2689,13 @@ module mod_thermal_emission
           EUV=0.0d0
           Dpl=0.d0
           Dpls=0.d0
-          if (trim(ray_method)=='cart_dda') then
+          if (coordinate==spherical .and. trim(ray_method_active)=='spherical') then
+            call integrate_EUV_sph_intersection_thin(nXIF1,nXIF2,xIF1,xIF2,dxIF1(1),fl,EUV)
+            EUVs=EUV
+            numSI=nXIF1*nXIF2
+            call MPI_ALLREDUCE(EUVs,EUV,numSI,MPI_DOUBLE_PRECISION, &
+                               MPI_SUM,icomm,ierrmpi)
+          else if (trim(ray_method_active)=='cart') then
             call integrate_EUV_cart_dda_datresol(nXIF1,nXIF2,xIF1,xIF2,fl,EUV,Dpl)
           else
             do iigrid=1,igridstail; igrid=igrids(iigrid);
@@ -2647,7 +2707,8 @@ module mod_thermal_emission
             call MPI_ALLREDUCE(Dpls,Dpl,numSI,MPI_DOUBLE_PRECISION, &
                                MPI_SUM,icomm,ierrmpi)
           endif
-          if (trim(emission_model)/='pseudo_current' .and. trim(emission_model)/='radio_ff') then
+          if (trim(emission_model)/='pseudo_current' .and. trim(emission_model)/='radio_ff' .and. &
+              .not. (coordinate==spherical .and. trim(ray_method_active)=='spherical')) then
             do ix1=1,nXIF1
               do ix2=1,nXIF2
                 if (EUV(ix1,ix2)<smalldouble) EUV(ix1,ix2)=zero
@@ -2663,9 +2724,11 @@ module mod_thermal_emission
           deallocate(EUVs,Dpls)
         endif
         wI(:,:,1)=EUV(:,:)
-        if (trim(emission_model)/='pseudo_current' .and. trim(emission_model)/='radio_ff') wI(:,:,2)=Dpl(:,:)
+        if (trim(emission_model)/='pseudo_current' .and. trim(emission_model)/='radio_ff' .and. &
+            .not. (coordinate==spherical .and. trim(ray_method_active)=='spherical')) wI(:,:,2)=Dpl(:,:)
         if (trim(radiation_transfer)=='thick') then
-          if (trim(emission_model)=='radio_ff') then
+          if (trim(emission_model)=='radio_ff' .or. &
+              (coordinate==spherical .and. trim(ray_method_active)=='spherical')) then
             iw=1
           else
             iw=2
@@ -4618,6 +4681,7 @@ module mod_thermal_emission
       double precision :: profile_local(5),profile_global(5)
       double precision :: phys_max_local(2),phys_max_global(2),phys_sum_local(2),phys_sum_global(2)
       double precision, allocatable :: segments(:,:),segments_send(:,:),segments_recv(:,:)
+      double precision, allocatable :: image_reduce(:,:)
       logical :: has_pixels
       type(radsyn_euv_cache), allocatable :: cache(:)
 
@@ -4803,6 +4867,14 @@ module mod_thermal_emission
       deallocate(cache)
       deallocate(sendCounts,recvCounts,sendDispls,recvDispls,ownerSegCounts,ownerOffsets,&
                  bucketCounts,bucketOffsets,bucketFill)
+      allocate(image_reduce(numXI1,numXI2))
+      call MPI_ALLREDUCE(EUV,image_reduce,numXI1*numXI2,MPI_DOUBLE_PRECISION,MPI_SUM,icomm,ierrmpi)
+      EUV=image_reduce
+      call MPI_ALLREDUCE(Tau,image_reduce,numXI1*numXI2,MPI_DOUBLE_PRECISION,MPI_SUM,icomm,ierrmpi)
+      Tau=image_reduce
+      call MPI_ALLREDUCE(EUVthin,image_reduce,numXI1*numXI2,MPI_DOUBLE_PRECISION,MPI_SUM,icomm,ierrmpi)
+      EUVthin=image_reduce
+      deallocate(image_reduce)
       call MPI_ALLREDUCE(profile_local,profile_global,5,MPI_DOUBLE_PRECISION,MPI_SUM,icomm,ierrmpi)
       call MPI_ALLREDUCE(phys_max_local,phys_max_global,2,MPI_DOUBLE_PRECISION,MPI_MAX,icomm,ierrmpi)
       call MPI_ALLREDUCE(phys_sum_local,phys_sum_global,2,MPI_DOUBLE_PRECISION,MPI_SUM,icomm,ierrmpi)
@@ -4869,6 +4941,41 @@ module mod_thermal_emission
       endif
     end subroutine get_sph_intersection_image_bounds
 
+    subroutine get_sph_intersection_datresol_spacing(dxI)
+      double precision, intent(out) :: dxI
+
+      integer :: iigrid,igrid,ixI^L,ixO^L,ix^D
+      double precision :: local_min,global_min,dr,ds_theta,ds_phi,rval,theta
+
+      local_min=huge(one)
+      do iigrid=1,igridstail
+        igrid=igrids(iigrid)
+        ^D&ixOmin^D=ixmlo^D\
+        ^D&ixOmax^D=ixmhi^D\
+        ^D&ixImin^D=ixglo^D\
+        ^D&ixImax^D=ixghi^D\
+
+        do ix1=ixOmin1,ixOmax1
+          do ix2=ixOmin2,ixOmax2
+            do ix3=ixOmin3,ixOmax3
+              rval=max(smalldouble,ps(igrid)%x(ix^D,1))
+              theta=ps(igrid)%x(ix^D,2)
+              dr=ps(igrid)%dx(ix^D,1)
+              ds_theta=rval*ps(igrid)%dx(ix^D,2)
+              ds_phi=rval*max(smalldouble,sin(theta))*ps(igrid)%dx(ix^D,3)
+              local_min=min(local_min,dr,ds_theta,ds_phi)
+            enddo
+          enddo
+        enddo
+      enddo
+
+      call MPI_ALLREDUCE(local_min,global_min,1,MPI_DOUBLE_PRECISION,MPI_MIN,icomm,ierrmpi)
+      if (global_min<=zero .or. global_min>half*huge(one)) then
+        call mpistop("sph_intersection could not determine dat-resolution image spacing")
+      endif
+      dxI=global_min
+    end subroutine get_sph_intersection_datresol_spacing
+
     subroutine get_image(qunit,datatype,fl)
       ! integrate emission flux along line of sight (LOS) 
       ! in a 3D simulation box and get a 2D EUV image
@@ -4903,7 +5010,7 @@ module mod_thermal_emission
 
       ! calculate domain of the image
       if (coordinate==spherical) then
-        if (trim(ray_method)=='sph_intersection' .and. datatype=='image_euv') then
+        if (trim(ray_method_active)=='spherical' .and. datatype=='image_euv') then
           call get_sph_intersection_image_bounds(xImin1,xImax1,xImin2,xImax2)
         else
           xImin1=-abs(xprobmax1)
@@ -5013,7 +5120,7 @@ module mod_thermal_emission
       if (datatype=='image_euv' .or. datatype=='image_sxr') then
         numWI=1
         if (datatype=='image_euv' .and. coordinate==spherical .and. &
-            trim(ray_method)=='sph_intersection' .and. trim(radiation_transfer)=='thick') then
+            trim(ray_method_active)=='spherical' .and. trim(radiation_transfer)=='thick') then
           if (output_tau) numWI=numWI+1
           if (output_absorption_fraction) numWI=numWI+1
         endif
@@ -5022,7 +5129,7 @@ module mod_thermal_emission
         wIs=zero
         EM=zero
         if (datatype=='image_euv' .and. coordinate==spherical .and. &
-            trim(ray_method)=='sph_intersection' .and. trim(radiation_transfer)=='thick') then
+            trim(ray_method_active)=='spherical' .and. trim(radiation_transfer)=='thick') then
           allocate(Tau(numXI1,numXI2),EMthin(numXI1,numXI2))
           Tau=zero
           EMthin=zero
@@ -5031,7 +5138,7 @@ module mod_thermal_emission
           do iigrid=1,igridstail; igrid=igrids(iigrid);
             call integrate_emission_cartesian(igrid,numXI1,numXI2,xI1,xI2,dxI,fl,datatype,EM)
           enddo
-        else if (trim(ray_method) == 'sph_intersection' .and. datatype == 'image_euv') then
+        else if (trim(ray_method_active) == 'spherical' .and. datatype == 'image_euv') then
           if (trim(radiation_transfer) == 'thick') then
             call integrate_EUV_sph_intersection_thick(numXI1,numXI2,xI1,xI2,dxI,fl,EM,Tau,EMthin)
           else
@@ -5043,7 +5150,7 @@ module mod_thermal_emission
           enddo
         endif
         if (datatype=='image_euv' .and. coordinate==spherical .and. &
-            trim(ray_method)=='sph_intersection' .and. trim(radiation_transfer)=='thick') then
+            trim(ray_method_active)=='spherical' .and. trim(radiation_transfer)=='thick') then
           wIs(:,:,1)=EM(:,:)
           iw=2
           if (output_tau) then
@@ -5585,9 +5692,11 @@ module mod_thermal_emission
 
       integer :: nPiece,nP1,nP2,nC1,nC2,nWC
       integer :: piece_nmax1,piece_nmax2,ix1,ix2,j,ipc,ixc1,ixc2
+      double precision :: uniform_tol
       double precision, allocatable :: xC(:,:,:,:),wC(:,:,:,:),dxC(:,:,:,:)
 
       ! clean small values
+      uniform_tol=1.d-10
       do ix1=1,nxO1
         do ix2=1,nxO2
           do j=1,nWO
@@ -5667,8 +5776,10 @@ module mod_thermal_emission
           call write_image_vtuCC(qunit,xC,wC,dxC,nPiece,nC1,nC2,nWC,datatype)
           deallocate(xC,dxC,wC)
         case('EIvtiCCmpi','ESvtiCCmpi','SIvtiCCmpi','WIvtiCCmpi')
-          if (sum(stretch_type(:))>0 .and. dat_resolution) then
-            call mpistop("Error in synthesize emission: vti is not supported for dat resolution")
+          if (dat_resolution .and. &
+              (maxval(abs(dxO1(:)-dxO1(1)))>uniform_tol*max(one,abs(dxO1(1))) .or. &
+               maxval(abs(dxO2(:)-dxO2(1)))>uniform_tol*max(one,abs(dxO2(1))))) then
+            call mpistop("vti needs uniform dat-resolution image grids")
           else
             call write_image_vtiCC(qunit,xO1,xO2,dxO1,dxO2,wO,nXO1,nXO2,nWO,nC1,nC2)
           endif
@@ -5697,6 +5808,7 @@ module mod_thermal_emission
       logical :: fileopen
       character (70) :: subname,wname,vname,nameL,nameS
       character (len=std_len) :: filename
+      logical :: sph_datres_no_doppler
 
 
       origin(1)=xO1(1)-0.5d0*dxO1(1)
@@ -5708,6 +5820,7 @@ module mod_thermal_emission
       wholeExtent=0
       wholeExtent(2)=nXO1
       wholeExtent(4)=nXO2
+      sph_datres_no_doppler=dat_resolution .and. coordinate==spherical .and. trim(ray_method_active)=='spherical'
 
       if (mype==0) then
         inquire(qunit,opened=fileopen)
@@ -5756,20 +5869,25 @@ module mod_thermal_emission
             if (trim(emission_model)=='pseudo_current' .and. iw==1) vname='pseudo_current'
             if (trim(emission_model)=='radio_ff' .and. iw==1) vname='radio_brightness_temperature'
             if (trim(radiation_transfer)=='thick' .and. iw==1) vname=trim(vname)//'_thick'
-            if (iw==2 .and. dat_resolution .and. trim(emission_model)/='radio_ff' .and. &
+            if (iw==2 .and. dat_resolution .and. (.not. sph_datres_no_doppler) .and. &
+                trim(emission_model)/='radio_ff' .and. &
                 trim(emission_model)/='pseudo_current') vname='Doppler_velocity'
             if (output_tau .and. trim(radiation_transfer)=='thick' .and. &
                 ((trim(emission_model)=='radio_ff' .and. iw==2) .or. &
                  (trim(emission_model)/='radio_ff' .and. trim(emission_model)/='pseudo_current' .and. &
-                  ((dat_resolution .and. iw==3) .or. ((.not. dat_resolution) .and. iw==2))))) then
+                  ((dat_resolution .and. ((sph_datres_no_doppler .and. iw==2) .or. &
+                                          ((.not. sph_datres_no_doppler) .and. iw==3))) .or. &
+                   ((.not. dat_resolution) .and. iw==2))))) then
               vname='tau'
             endif
             if (output_absorption_fraction .and. trim(radiation_transfer)=='thick' .and. &
                 ((trim(emission_model)=='radio_ff' .and. ((output_tau .and. iw==3) .or. &
                                                          ((.not. output_tau) .and. iw==2))) .or. &
                  (trim(emission_model)/='radio_ff' .and. trim(emission_model)/='pseudo_current' .and. &
-                  ((dat_resolution .and. output_tau .and. iw==4) .or. &
-                   (dat_resolution .and. (.not. output_tau) .and. iw==3) .or. &
+                  ((dat_resolution .and. sph_datres_no_doppler .and. output_tau .and. iw==3) .or. &
+                   (dat_resolution .and. sph_datres_no_doppler .and. (.not. output_tau) .and. iw==2) .or. &
+                   (dat_resolution .and. (.not. sph_datres_no_doppler) .and. output_tau .and. iw==4) .or. &
+                   (dat_resolution .and. (.not. sph_datres_no_doppler) .and. (.not. output_tau) .and. iw==3) .or. &
                    ((.not. dat_resolution) .and. output_tau .and. iw==3) .or. &
                    ((.not. dat_resolution) .and. (.not. output_tau) .and. iw==2))))) then
               vname='absorption_fraction'
@@ -5825,11 +5943,13 @@ module mod_thermal_emission
       character (len=std_len) :: filename
       integer :: ixC1,ixC2,ixP,ix1,ix2,j
       integer :: nc,np,icel,VTK_type
+      logical :: sph_datres_no_doppler
 
       nP1=nC1+1
       nP2=nC2+1
       np=nP1*nP2
       nc=nC1*nC2
+      sph_datres_no_doppler=dat_resolution .and. coordinate==spherical .and. trim(ray_method_active)=='spherical'
       ! cell corner location     
       do ixP=1,nPiece
         do ix1=1,nP1
@@ -5887,20 +6007,25 @@ module mod_thermal_emission
                 if (trim(emission_model)=='radio_ff') vname='radio_brightness_temperature'
                 if (trim(radiation_transfer)=='thick') vname=trim(vname)//'_thick'
               endif
-              if (j==2 .and. dat_resolution .and. trim(emission_model)/='radio_ff' .and. &
+              if (j==2 .and. dat_resolution .and. (.not. sph_datres_no_doppler) .and. &
+                  trim(emission_model)/='radio_ff' .and. &
                   trim(emission_model)/='pseudo_current') vname='Doppler_velocity'
               if (output_tau .and. trim(radiation_transfer)=='thick' .and. &
                   ((trim(emission_model)=='radio_ff' .and. j==2) .or. &
                    (trim(emission_model)/='radio_ff' .and. trim(emission_model)/='pseudo_current' .and. &
-                    ((dat_resolution .and. j==3) .or. ((.not. dat_resolution) .and. j==2))))) then
+                    ((dat_resolution .and. ((sph_datres_no_doppler .and. j==2) .or. &
+                                            ((.not. sph_datres_no_doppler) .and. j==3))) .or. &
+                     ((.not. dat_resolution) .and. j==2))))) then
                 vname='tau'
               endif
               if (output_absorption_fraction .and. trim(radiation_transfer)=='thick' .and. &
                   ((trim(emission_model)=='radio_ff' .and. ((output_tau .and. j==3) .or. &
                                                            ((.not. output_tau) .and. j==2))) .or. &
                    (trim(emission_model)/='radio_ff' .and. trim(emission_model)/='pseudo_current' .and. &
-                    ((dat_resolution .and. output_tau .and. j==4) .or. &
-                     (dat_resolution .and. (.not. output_tau) .and. j==3) .or. &
+                    ((dat_resolution .and. sph_datres_no_doppler .and. output_tau .and. j==3) .or. &
+                     (dat_resolution .and. sph_datres_no_doppler .and. (.not. output_tau) .and. j==2) .or. &
+                     (dat_resolution .and. (.not. sph_datres_no_doppler) .and. output_tau .and. j==4) .or. &
+                     (dat_resolution .and. (.not. sph_datres_no_doppler) .and. (.not. output_tau) .and. j==3) .or. &
                      ((.not. dat_resolution) .and. output_tau .and. j==3) .or. &
                      ((.not. dat_resolution) .and. (.not. output_tau) .and. j==2))))) then
                 vname='absorption_fraction'
