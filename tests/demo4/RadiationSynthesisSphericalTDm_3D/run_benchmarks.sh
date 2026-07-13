@@ -8,7 +8,7 @@ Usage:
 
 Environment:
   CORE_LIST   MPI sizes to test. Default: "1 2 4 8 16 32 64"
-  INIT_NP     MPI size used to create missing snapshots. Default: 1
+  INIT_NP     MPI size used to create missing snapshots. Default: 16
   RUN_INIT    if-missing | always | skip. Default: if-missing
   MPIRUN      MPI launcher. Default: mpirun
   MAKE        Make command. Default: make
@@ -16,7 +16,7 @@ Environment:
 
 Examples:
   CORE_LIST="1 2 4 8" tests/demo4/RadiationSynthesisSphericalTDm_3D/run_benchmarks.sh
-  RUN_INIT=always INIT_NP=8 tests/demo4/RadiationSynthesisSphericalTDm_3D/run_benchmarks.sh
+  RUN_INIT=always INIT_NP=32 tests/demo4/RadiationSynthesisSphericalTDm_3D/run_benchmarks.sh
 EOF
 }
 
@@ -31,7 +31,7 @@ repo_root="${AMRVAC_DIR:-$(cd "${script_dir}/../../.." && pwd)}"
 export AMRVAC_DIR="${repo_root}"
 
 core_list="${CORE_LIST:-1 2 4 8 16 32 64}"
-init_np="${INIT_NP:-1}"
+init_np="${INIT_NP:-16}"
 run_init="${RUN_INIT:-if-missing}"
 mpirun_cmd="${MPIRUN:-mpirun}"
 make_cmd="${MAKE:-make}"
@@ -49,6 +49,9 @@ mkdir -p output/benchmark/logs
 if [[ ! -f output/benchmark/radsyn_benchmark_times.csv ]]; then
   printf 'suite,case,np,seconds,parfile,logfile\n' > output/benchmark/radsyn_benchmark_times.csv
 fi
+if [[ ! -f output/benchmark/radsyn_benchmark_failures.csv ]]; then
+  printf 'suite,case,np,seconds,parfile,logfile,exit_code\n' > output/benchmark/radsyn_benchmark_failures.csv
+fi
 
 for case_name in "${case_names[@]}"; do
   init_par="par_init/${case_name}.par"
@@ -58,7 +61,16 @@ for case_name in "${case_names[@]}"; do
   if [[ "${run_init}" == "always" || ( "${run_init}" == "if-missing" && ! -f "${snapshot}" ) ]]; then
     init_log="output/benchmark/logs/init_${case_name}_np${init_np}.log"
     echo "-- spherical/${case_name}: creating ${snapshot} with np=${init_np}"
-    "${mpirun_cmd}" -np "${init_np}" ./amrvac -i "${init_par}" > "${init_log}" 2>&1
+    if "${mpirun_cmd}" -np "${init_np}" ./amrvac -i "${init_par}" > "${init_log}" 2>&1; then
+      :
+    else
+      exit_code="$?"
+      echo "-- spherical/${case_name}: init failed with exit code ${exit_code}; see ${init_log}" >&2
+      printf '%s,%s,%s,%s,%s,%s,%s\n' \
+        "spherical" "${case_name}" "${init_np}" "0" "${init_par}" "${init_log}" "${exit_code}" \
+        >> output/benchmark/radsyn_benchmark_failures.csv
+      continue
+    fi
   elif [[ "${run_init}" == "skip" && ! -f "${snapshot}" ]]; then
     echo "Missing ${snapshot}; run without RUN_INIT=skip or create it manually." >&2
     exit 1
@@ -68,7 +80,18 @@ for case_name in "${case_names[@]}"; do
     log_file="output/benchmark/logs/spherical_${case_name}_np${np}.log"
     echo "-- spherical/${case_name}: convert np=${np}"
     start_ts="$(date +%s)"
-    "${mpirun_cmd}" -np "${np}" ./amrvac -i "${bench_par}" > "${log_file}" 2>&1
+    if "${mpirun_cmd}" -np "${np}" ./amrvac -i "${bench_par}" > "${log_file}" 2>&1; then
+      :
+    else
+      exit_code="$?"
+      end_ts="$(date +%s)"
+      elapsed="$((end_ts - start_ts))"
+      echo "-- spherical/${case_name}: convert np=${np} failed with exit code ${exit_code}; see ${log_file}" >&2
+      printf '%s,%s,%s,%s,%s,%s,%s\n' \
+        "spherical" "${case_name}" "${np}" "${elapsed}" "${bench_par}" "${log_file}" "${exit_code}" \
+        >> output/benchmark/radsyn_benchmark_failures.csv
+      continue
+    fi
     end_ts="$(date +%s)"
     elapsed="$((end_ts - start_ts))"
     printf '%s,%s,%s,%s,%s,%s\n' \

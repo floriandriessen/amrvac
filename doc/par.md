@@ -382,7 +382,7 @@ initialization, while u256 5-step tests showed less than 0.1% total runtime
 difference with batching enabled. The original communication pattern is still
 available by setting `ghostcell_comm_batched=F`. If the batched path remains
 stable in broader tests, the old path can be removed later. The default batch
-size is 128.
+size is 64.
 
 ### time_stepper, time_integrator, flux_scheme {#par_time_integrator}
 
@@ -1256,6 +1256,14 @@ Recommended use:
 - Use `radsyn_pixel_batch` to cap the number of image pixels processed in one native Cartesian/spherical
   thick-transfer segment batch. The default is 128. Set `radsyn_verbose=.true.` to print ray tests,
   segment counts, MPI volume, and sort-work counters for profiling.
+- Use `radsyn_segment_batch_factor` and `radsyn_segment_comm_factor` to tune native thick-transfer
+  segment batching. By default `radsyn_segment_batch_factor=256`, which allows up to
+  `256*radsyn_pixel_batch` ray segments in one image-pixel batch. Set
+  `radsyn_segment_batch_factor<=0` to choose the per-batch segment limit from
+  `radsyn_segment_memory_mb` instead. The default memory budget is 8 MiB per MPI rank, which is
+  conservative for the temporary segment, communication, and sorting arrays. Increasing
+  `radsyn_segment_comm_factor` allows more ray segments per segmented MPI all-to-all round; its
+  default is 16.
 - Use VTU output for non-uniform dat-resolution image grids. VTI is allowed
   only when the emitted image-plane spacing is uniform.
 
@@ -1288,6 +1296,9 @@ thin transfer and labels the output variable 'pseudo_current'.
       radio_beam_fwhm= DOUBLE
       radio_beam_pixel_size= DOUBLE
       radsyn_pixel_batch= INTEGER
+      radsyn_segment_batch_factor= INTEGER
+      radsyn_segment_memory_mb= DOUBLE
+      radsyn_segment_comm_factor= INTEGER
       radsyn_verbose= LOGICAL
       spectrum_wl= 1354 | 263 | 264| 192 | 255
       spectrum_window_min= DOUBLE

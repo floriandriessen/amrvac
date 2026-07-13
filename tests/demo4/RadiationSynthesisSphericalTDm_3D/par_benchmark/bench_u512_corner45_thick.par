@@ -37,7 +37,7 @@
 &meshlist
   refine_max_level=1
   refine_criterion=3
-  max_blocks=2000
+  max_blocks=4000
   block_nx1=32
   block_nx2=32
   block_nx3=32
@@ -69,7 +69,7 @@
   LOS_phi=45.d0
   dat_resolution=.true.
   radiation_transfer='thick'
-  ray_method='spherical'
+  ray_method='sph_dda'
   emission_model='euv_aia'
   output_tau=.true.
   output_absorption_fraction=.true.

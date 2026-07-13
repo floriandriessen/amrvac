@@ -8,7 +8,7 @@ Usage:
 
 Environment:
   CORE_LIST   MPI sizes to test. Default: "1 2 4 8 16 32 64"
-  INIT_NP     MPI size used to create missing snapshots. Default: 1
+  INIT_NP     MPI size used to create missing snapshots. Default: 16
   RUN_INIT    if-missing | always | skip. Default: if-missing
   MPIRUN      MPI launcher. Default: mpirun
   MAKE        Make command. Default: make
@@ -16,7 +16,7 @@ Environment:
 
 Examples:
   CORE_LIST="1 2 4 8" tests/demo4/RadiationSynthesis_3D/run_benchmarks.sh
-  RUN_INIT=always INIT_NP=8 tests/demo4/RadiationSynthesis_3D/run_benchmarks.sh
+  RUN_INIT=always INIT_NP=32 tests/demo4/RadiationSynthesis_3D/run_benchmarks.sh
 EOF
 }
 
@@ -31,7 +31,7 @@ repo_root="${AMRVAC_DIR:-$(cd "${script_dir}/../../.." && pwd)}"
 export AMRVAC_DIR="${repo_root}"
 
 core_list="${CORE_LIST:-1 2 4 8 16 32 64}"
-init_np="${INIT_NP:-1}"
+init_np="${INIT_NP:-16}"
 run_init="${RUN_INIT:-if-missing}"
 mpirun_cmd="${MPIRUN:-mpirun}"
 make_cmd="${MAKE:-make}"

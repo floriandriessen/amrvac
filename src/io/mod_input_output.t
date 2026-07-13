@@ -295,7 +295,9 @@ contains
           radiation_transfer,ray_method,emission_model,&
           instrument_postprocess,&
           radio_frequency,radio_beam_fwhm,radio_beam_pixel_size,&
-          radsyn_pixel_batch,radsyn_verbose,&
+          radsyn_pixel_batch,radsyn_segment_batch_factor,radsyn_segment_memory_mb,&
+          radsyn_segment_comm_factor,&
+          radsyn_verbose,&
           spectrum_window_min,spectrum_window_max,&
           instrument_resolution_factor,activate_unit_arcsec,&
           filename_whitelight,whitelight_instrument,R_occultor,R_opt_thick,&
@@ -521,6 +523,9 @@ contains
     radio_beam_fwhm = 0.d0
     radio_beam_pixel_size = 0.d0
     radsyn_pixel_batch = 128
+    radsyn_segment_batch_factor = 256
+    radsyn_segment_memory_mb = 8.d0
+    radsyn_segment_comm_factor = 16
     radsyn_verbose = .false.
     direction_slit = -1
     instrument_resolution_factor=1.d0

@@ -180,6 +180,13 @@ module mod_global_parameters
   double precision :: radio_beam_pixel_size
   !> Number of image pixels processed in one ray-segment MPI batch
   integer :: radsyn_pixel_batch
+  !> Maximum ray segments per pixel batch, as a factor of radsyn_pixel_batch; <=0 uses memory budget.
+  !> Default value is set from the best spherical u512 benchmark behavior seen so far.
+  integer :: radsyn_segment_batch_factor
+  !> Approximate per-rank temporary memory budget, in MiB, for automatic ray-segment batch sizing
+  double precision :: radsyn_segment_memory_mb
+  !> Maximum ray segments per segmented MPI all-to-all round, as a factor of radsyn_pixel_batch
+  integer :: radsyn_segment_comm_factor
   !> Print synthetic-emission ray-tracing profiling counters
   logical :: radsyn_verbose
   !> spectral window
@@ -687,7 +694,7 @@ module mod_global_parameters
   !> false; if batching remains stable in broader tests, the old path can be
   !> removed later.
   logical :: ghostcell_comm_batched=.true.
-  integer :: ghostcell_comm_batch_size=128
+  integer :: ghostcell_comm_batch_size=64
   !> True for record electric field
   logical :: record_electric_field=.false.
 
