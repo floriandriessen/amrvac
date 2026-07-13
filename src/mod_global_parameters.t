@@ -679,6 +679,15 @@ module mod_global_parameters
   logical :: reset_grid
   !> True for using stagger grid
   logical :: stagger_grid=.false.
+  !> Limit outstanding ghost-cell send requests to avoid MPI request pressure.
+  !> In large-scale MHD tests, the original all-at-once ghost-cell exchange could
+  !> stall during spherical u512 initialization. Batching avoids
+  !> that failure mode, while u256 5-step tests showed less than 0.1% total
+  !> runtime difference. The original path is still available by setting this to
+  !> false; if batching remains stable in broader tests, the old path can be
+  !> removed later.
+  logical :: ghostcell_comm_batched=.true.
+  integer :: ghostcell_comm_batch_size=128
   !> True for record electric field
   logical :: record_electric_field=.false.
 

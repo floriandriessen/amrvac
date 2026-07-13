@@ -270,7 +270,8 @@ contains
          rk2_alfa, imex222_lambda, ssprk_order, rk3_switch, imex_switch, &
          small_temperature, small_pressure, small_density, &
          small_values_method, small_values_daverage, fix_small_values, check_small_values, &
-         trace_small_values, small_values_fix_iw, minfip, maxfip
+         trace_small_values, small_values_fix_iw, minfip, maxfip, &
+         ghostcell_comm_batched, ghostcell_comm_batch_size
 
     namelist /boundlist/ nghostcells,ghost_copy,&
          internalboundary, typeboundary_^L, save_physical_boundary
@@ -692,6 +693,8 @@ contains
 
     if (small_pressure < 0.d0) call mpistop("small_pressure should be positive.")
     if (small_density < 0.d0) call mpistop("small_density should be positive.")
+    if (ghostcell_comm_batched .and. ghostcell_comm_batch_size < 1) &
+         call mpistop("ghostcell_comm_batch_size should be positive.")
     ! Give priority to non-zero small temperature
     if (small_temperature>0.d0) small_pressure=small_density*small_temperature
 
