@@ -5050,12 +5050,16 @@ module mod_thermal_emission
 
       integer :: ixO^L,ixI^L,ix^D
       integer :: iigrid,igrid,ixP1,ixP2,ixPmin1,ixPmax1,ixPmin2,ixPmax2
+      integer :: iseg,nseg,capacity,sphDdaFallbackLocal,sphDdaFallbackGlobal
       double precision :: ray_origin(1:3),profile_local(3),profile_global(3)
       double precision, allocatable :: source(:^D&)
       double precision, allocatable :: rface(:),thetaface(:),phiface(:)
-      logical :: has_pixels
+      double precision, allocatable :: rface2(:),theta_cos(:),phi_sin(:),phi_cos(:)
+      double precision, allocatable :: segments(:,:)
+      logical :: has_pixels,ddaFallback
 
       profile_local=zero
+      sphDdaFallbackLocal=0
       do iigrid=1,igridstail; igrid=igrids(iigrid);
         ^D&ixOmin^D=ixmlo^D\
         ^D&ixOmax^D=ixmhi^D\
@@ -5066,25 +5070,56 @@ module mod_thermal_emission
         call get_EUV(wavelength,ixI^L,ixO^L,ps(igrid)%w,ps(igrid)%x,fl,source)
         source(ixO^S)=source(ixO^S)/instrument_resolution_factor**2
         call build_sph_intersection_faces(ixI^L,ixO^L,ps(igrid)%x,ps(igrid)%dx,rface,thetaface,phiface)
+        if (sph_use_dda) then
+          allocate(rface2(ixOmin1:ixOmax1+1),theta_cos(ixOmin2:ixOmax2+1),&
+                   phi_sin(ixOmin3:ixOmax3+1),phi_cos(ixOmin3:ixOmax3+1))
+          rface2=rface**2
+          theta_cos=cos(thetaface)
+          phi_sin=sin(phiface)
+          phi_cos=cos(phiface)
+        endif
         call sph_block_pixel_range(rface,thetaface,phiface,ixO^L,numXI1,numXI2,xI1,xI2,dxI,&
                                    ixPmin1,ixPmax1,ixPmin2,ixPmax2,has_pixels)
         if (has_pixels) then
+          if (sph_use_dda) capacity=0
           do ixP1=ixPmin1,ixPmax1
             do ixP2=ixPmin2,ixPmax2
               ray_origin=xI1(ixP1)*vec_xI1+xI2(ixP2)*vec_xI2
               profile_local(1)=profile_local(1)+one
-              call acc_EUV_sph_intersection(ixI^L,ixO^L,source,ray_origin,xI1(ixP1),xI2(ixP2),&
-                                            rface,thetaface,phiface,EM(ixP1,ixP2))
+              if (sph_use_dda) then
+                nseg=0
+                call collect_EUV_sph_dda_segments(ixI^L,ixO^L,source,source,&
+                     1,ray_origin,xI1(ixP1),xI2(ixP2),rface,thetaface,phiface,&
+                     rface2,theta_cos,phi_sin,phi_cos,segments,nseg,capacity,ddaFallback)
+                if (ddaFallback) sphDdaFallbackLocal=sphDdaFallbackLocal+1
+                do iseg=1,nseg
+                  EM(ixP1,ixP2)=EM(ixP1,ixP2)+segments(3,iseg)
+                enddo
+              else
+                call acc_EUV_sph_intersection(ixI^L,ixO^L,source,ray_origin,xI1(ixP1),xI2(ixP2),&
+                                              rface,thetaface,phiface,EM(ixP1,ixP2))
+              endif
             enddo
           enddo
           profile_local(2)=profile_local(2)+dble((ixPmax1-ixPmin1+1)*(ixPmax2-ixPmin2+1))
         endif
+        if (allocated(segments)) deallocate(segments)
         profile_local(3)=profile_local(3)+one
+        if (allocated(rface2)) deallocate(rface2)
+        if (allocated(theta_cos)) deallocate(theta_cos)
+        if (allocated(phi_sin)) deallocate(phi_sin)
+        if (allocated(phi_cos)) deallocate(phi_cos)
         deallocate(source,rface,thetaface,phiface)
       enddo
       call MPI_ALLREDUCE(profile_local,profile_global,3,MPI_DOUBLE_PRECISION,MPI_SUM,icomm,ierrmpi)
+      call MPI_ALLREDUCE(sphDdaFallbackLocal,sphDdaFallbackGlobal,1,MPI_INTEGER,MPI_SUM,icomm,ierrmpi)
       if (radsyn_verbose .and. mype==0) then
-        write(*,'(a,3(es12.5,1x))') ' sph_intersection thin profile rays pixels blocks: ',profile_global
+        if (sph_use_dda) then
+          write(*,'(a,3(es12.5,1x))') ' sph_dda thin profile rays pixels blocks: ',profile_global
+          write(*,'(a,i0)') ' sph_dda thin fallback rays: ',sphDdaFallbackGlobal
+        else
+          write(*,'(a,3(es12.5,1x))') ' sph_intersection thin profile rays pixels blocks: ',profile_global
+        endif
       endif
     end subroutine integrate_EUV_sph_intersection_thin
 
