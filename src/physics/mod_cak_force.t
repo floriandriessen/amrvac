@@ -784,9 +784,6 @@ contains
     ! Broadcast what mype=0 read
     !===========================
     if (npe > 1) then
-      call MPI_BCAST(ntheta_point,1,MPI_INTEGER,0,icomm,ierrmpi)
-      call MPI_BCAST(nphi_point,1,MPI_INTEGER,0,icomm,ierrmpi)
-
       if (mype /= 0) then
         allocate(ay(ntheta_point))
         allocate(wy(ntheta_point))
