@@ -59,6 +59,18 @@ module mod_thermal_conduction
       double precision, intent(in) :: x(ixI^S,1:ndim)
       double precision, intent(out):: res(ixI^S)
     end subroutine get_var_subr
+
+    subroutine get_2var_subr(ixI^L, ixO^L, w, ne, nH)
+      use mod_global_parameters
+      integer, intent(in)          :: ixI^L, ixO^L
+      double precision, intent(in) :: w(ixI^S, nw)
+      double precision, intent(out):: ne(ixI^S), nH(ixI^S)
+    end subroutine get_2var_subr
+
+    !> Scalar EoS inverse, e.g. eint_nH_from_T(log_nH, log_T)
+    double precision function eos_scalar2_func(a, b)
+      double precision, intent(in) :: a, b
+    end function eos_scalar2_func
   end interface
 
   type tc_fluid
@@ -88,12 +100,32 @@ module mod_thermal_conduction
 
     !> Consider thermal conduction saturation effect (.true.) or not (.false.)
     logical :: tc_saturate=.false.
+
+    !> Patch cells where e_int < 0 during STS Chebyshev substeps by
+    !> neighbor-averaging the temperature. Prevents NaN from sqrt(T<0)
+    !> in the Spitzer conductivity when the RKL2 polynomial overshoots.
+    logical :: tc_patch_eint=.false.
+
+    !> Minimum temperature (code units) below which TRAC does not modify conductivity.
+    !> Below this T, the energy balance is dominated by optically thick radiation
+    !> and recombination, not optically thin cooling + Spitzer conduction, so TRAC's
+    !> broadening assumption does not apply. Read in Kelvin via tc_list (trac_T_floor),
+    !> converted to code units during init. Default 1e4 K.
+    double precision :: trac_T_floor=0.d0
     ! END the following are read from param file or set in tc_read_hd_params or tc_read_mhd_params
     procedure (get_var_subr), pointer, nopass :: get_rho => null()
     procedure (get_var_subr), pointer, nopass :: get_rho_equi => null()
     procedure(get_var_subr), pointer,nopass :: get_temperature_from_eint => null()
     procedure(get_var_subr), pointer,nopass :: get_temperature_from_conserved => null()
     procedure(get_var_subr), pointer,nopass :: get_temperature_equi => null()
+    procedure(get_2var_subr), pointer,nopass :: get_ne_nH => null()
+    procedure(get_var_subr), pointer,nopass :: get_var_Rfactor => null()
+    !> EoS snapshots + inverse accessor (set in bind_eos_to_source); let TC reach
+    !> thermodynamics only through this object, never mod_eos directly.
+    double precision :: inv_gamma_minus_1
+    double precision :: nH2rhoFactor
+    double precision :: log_T_floor
+    procedure(eos_scalar2_func), pointer, nopass :: eint_from_T => null()
   end type tc_fluid
 
   public :: tc_get_mhd_params
@@ -102,6 +134,7 @@ module mod_thermal_conduction
   public :: get_tc_dt_hd
   public :: sts_set_source_tc_mhd
   public :: sts_set_source_tc_hd
+  public :: tc_patch_negative_eint
 
 contains
 
@@ -202,80 +235,25 @@ contains
     double precision, intent(in) :: w(ixI^S,1:nw)
     double precision :: dtnew
 
-    double precision :: mf(ixO^S,1:ndim),Te(ixI^S),rho(ixI^S),gradT(ixI^S)
-    double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndir)
+    double precision :: mf(ixO^S,1:ndir),Te(ixI^S),rho(ixI^S),gradT(ixI^S)
+    double precision :: ne(ixI^S), nH_arr(ixI^S)
+    double precision :: tmp(ixO^S),hfs(ixO^S),blocal(1:ndir),Bmag
     double precision :: dtdiff_tcond,maxtmp2
     integer          :: idims,ix^D
+
 
     ! B
     if(allocated(iw_mag)) then
       if(B0field) then
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
           ^C&blocal(^C)=w({ix^D},iw_mag(^C))+block%B0({ix^D},^C,0)\
-         {^IFTWOD
-          if(blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(^CE&(blocal(^CE)/blocal(1))**2+))
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(^CF&(blocal(^CF)/blocal(2))**2+))
-          else
-            mf(ix^D,2)=0.d0
-          end if
-         }
-         {^IFTHREED
-          if(blocal(1)/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,blocal(1))/dsqrt(1.d0+(blocal(2)/blocal(1))**2+(blocal(3)/blocal(1))**2)
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(blocal(2)/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,blocal(2))/dsqrt(1.d0+(blocal(1)/blocal(2))**2+(blocal(3)/blocal(2))**2)
-          else
-            mf(ix^D,2)=0.d0
-          end if
-          if(blocal(3)/=0.d0) then
-            mf(ix^D,3)=sign(1.d0,blocal(3))/dsqrt(1.d0+(blocal(1)/blocal(3))**2+(blocal(2)/blocal(3))**2)
-          else
-            mf(ix^D,3)=0.d0
-          end if
-         }
+          Bmag=dsqrt(^C&blocal(^C)**2+)+smalldouble
+          ^C&mf(ix^D,^C)=blocal(^C)/Bmag\
        {end do\}
       else
        {do ix^DB=ixOmin^DB,ixOmax^DB\}
-         {^IFTWOD
-          if(w(ix^D,iw_mag(1))/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(^CE&(w(ix^D,iw_mag(^CE))/w(ix^D,iw_mag(1)))**2+))
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(w(ix^D,iw_mag(2))/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(^CF&(w(ix^D,iw_mag(^CF))/w(ix^D,iw_mag(2)))**2+))
-          else
-            mf(ix^D,2)=0.d0
-          end if
-         }
-         {^IFTHREED
-          if(w(ix^D,iw_mag(1))/=0.d0) then
-            mf(ix^D,1)=sign(1.d0,w(ix^D,iw_mag(1)))/dsqrt(1.d0+(w(ix^D,iw_mag(2))/w(ix^D,iw_mag(1)))**2+&
-              (w(ix^D,iw_mag(3))/w(ix^D,iw_mag(1)))**2)
-          else
-            mf(ix^D,1)=0.d0
-          end if
-          if(w(ix^D,iw_mag(2))/=0.d0) then
-            mf(ix^D,2)=sign(1.d0,w(ix^D,iw_mag(2)))/dsqrt(1.d0+(w(ix^D,iw_mag(1))/w(ix^D,iw_mag(2)))**2+&
-              (w(ix^D,iw_mag(3))/w(ix^D,iw_mag(2)))**2)
-          else
-            mf(ix^D,2)=0.d0
-          end if
-          if(w(ix^D,iw_mag(3))/=0.d0) then
-            mf(ix^D,3)=sign(1.d0,w(ix^D,iw_mag(3)))/dsqrt(1.d0+(w(ix^D,iw_mag(1))/w(ix^D,iw_mag(3)))**2+&
-              (w(ix^D,iw_mag(2))/w(ix^D,iw_mag(3)))**2)
-          else
-            mf(ix^D,3)=0.d0
-          end if
-         }
+          Bmag=dsqrt(^C&w(ix^D,iw_mag(^C))**2+)+smalldouble
+          ^C&mf(ix^D,^C)=w(ix^D,iw_mag(^C))/Bmag\
        {end do\}
       end if
     else
@@ -286,6 +264,7 @@ contains
     !temperature
     call fl%get_temperature_from_conserved(w,x,ixI^L,ixI^L,Te)
     call fl%get_rho(w,x,ixI^L,ixO^L,rho)
+    call fl%get_ne_nH(ixI^L, ixO^L, w, ne, nH_arr)
 
     !tc_k_para_i
     if(fl%tc_constant) then
@@ -293,13 +272,13 @@ contains
     else
       if(fl%tc_saturate) then
         ! Kannan 2016 MN 458, 410
-        ! 3^1.5*kB^2/(4*sqrt(pi)*e^4)
+        ! l_mfpe = 3^1.5*kB^2/(4*sqrt(pi)*e^4*lnLambda) * T^2/n_e
         if(SI_unit) then
-          ! l_mfpe=3.d0**1.5d0*kB_SI**2/(4.d0*sqrt(dpi)*e_SI**4*37.d0)=5.730205638843984d27
-          tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*5.730205638843984d27*unit_temperature**2/(unit_numberdensity*unit_length)
+          ! 5.730205638843984e27 = 3^1.5*kB_SI^2/(4*sqrt(pi)*e_SI^4*37)
+          tmp(ixO^S)=Te(ixO^S)**2/ne(ixO^S)*5.730205638843984d27*unit_temperature**2/(unit_numberdensity*unit_length)
         else
-          ! l_mfpe=3.d0**1.5d0*kB_cgs**2/(4.d0*sqrt(dpi)*e_cgs**4*37.d0)=7093.9239487765044d0
-          tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
+          ! 7093.9239487765044 = 3^1.5*kB_cgs^2/(4*sqrt(pi)*e_cgs^4*37)
+          tmp(ixO^S)=Te(ixO^S)**2/ne(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
         end if
         do idims=1,ndim
           call gradient(Te,ixI^L,ixO^L,idims,gradT)
@@ -310,10 +289,10 @@ contains
           end if
         end do
         ! kappa=kappa_Spitzer/(1+4.2*l_mfpe/(T/|gradT.b|))
-        tmp(ixO^S)=fl%tc_k_para*dsqrt(Te(ixO^S)**5)/(1.d0+4.2d0*tmp(ixO^S)*dabs(hfs(ixO^S))/Te(ixO^S))
+        tmp(ixO^S)=fl%tc_k_para*Te(ixO^S)*Te(ixO^S)*dsqrt(Te(ixO^S))/(1.d0+4.2d0*tmp(ixO^S)*dabs(hfs(ixO^S))/Te(ixO^S))
       else
         ! kappa=kappa_Spitzer
-        tmp(ixO^S)=fl%tc_k_para*dsqrt(Te(ixO^S)**5)
+        tmp(ixO^S)=fl%tc_k_para*Te(ixO^S)*Te(ixO^S)*dsqrt(Te(ixO^S))
       end if
     end if
 
@@ -336,7 +315,9 @@ contains
     use mod_fix_conserve
     integer, intent(in) :: ixI^L, ixO^L, igrid, nflux
     double precision, intent(in) ::  x(ixI^S,1:ndim)
-    double precision, intent(in) ::   w(ixI^S,1:nw)
+    ! intent(inout) so tc_patch_negative_eint can repair w(:, ie) in place
+    ! when tc_patch_eint = .true.; legacy path (patch off) leaves w untouched.
+    double precision, intent(inout) ::   w(ixI^S,1:nw)
     double precision, intent(inout) ::  wres(ixI^S,1:nw)
     double precision, intent(in) :: my_dt
     logical, intent(in) :: fix_conserve_at_step
@@ -361,6 +342,7 @@ contains
     dxinv=1.d0/dxlevel
 
     call fl%get_temperature_from_eint(w, x, ixI^L, ixI^L, Te)  !calculate Te in whole domain (+ghosts)
+    if (fl%tc_patch_eint) call tc_patch_negative_eint(w, x, ixI^L, ixI^L, Te, fl%e_, fl)
     call fl%get_rho(w, x, ixI^L, ixI^L, rho)  !calculate rho in whole domain (+ghosts)
     if(slab_uniform) then
       call set_source_tc_mhd(ixI^L,ixO^L,w,x,fl,qvec,rho,Te,alpha)
@@ -882,7 +864,6 @@ contains
       end if
     end do
   end subroutine set_source_tc_mhd
-
   subroutine set_source_tc_mhd_geo(ixI^L,ixO^L,w,x,fl,qvec,rho,Te,alpha)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
@@ -1147,7 +1128,7 @@ contains
                   +gradT(ix1,ix2,ix3+1,idims)*block%surfaceC(ix1,ix2,ix3+1,1)&
                 +gradT(ix1,ix2+1,ix3+1,idims)*block%surfaceC(ix1,ix2+1,ix3+1,1))/&
               (block%surfaceC(ix1,ix2,ix3,1)+block%surfaceC(ix1,ix2+1,ix3,1)&
-              +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1))
+              +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1)+smalldouble**2)
        {end do\}
       else if(idims==2) then
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
@@ -1156,7 +1137,7 @@ contains
                   +gradT(ix1,ix2,ix3+1,idims)*block%surfaceC(ix1,ix2,ix3+1,2)&
                 +gradT(ix1+1,ix2,ix3+1,idims)*block%surfaceC(ix1+1,ix2,ix3+1,2))/&
             (block%surfaceC(ix1,ix2,ix3,2)+block%surfaceC(ix1+1,ix2,ix3,2)&
-          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+1.d-300)
+          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+smalldouble**2)
        {end do\}
       else
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
@@ -1180,7 +1161,7 @@ contains
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
           qdd(ix^D)=(gradT(ix1,ix2,idims)*block%surfaceC(ix1,ix2,2)&
                   +gradT(ix1+1,ix2,idims)*block%surfaceC(ix1+1,ix2,2))/&
-               (block%surfaceC(ix1,ix2,2)+block%surfaceC(ix1+1,ix2,2)+1.d-300)
+               (block%surfaceC(ix1,ix2,2)+block%surfaceC(ix1+1,ix2,2)+smalldouble)
        {end do\}
       end if
      }
@@ -1424,25 +1405,27 @@ contains
     type(tc_fluid), intent(in) :: fl
     double precision :: dtnew
 
-    double precision :: tmp(ixO^S),Te(ixI^S),rho(ixI^S),hfs(ixO^S),gradT(ixI^S)
+    double precision :: tmp(ixO^S),tmp2(ixO^S),Te(ixI^S),rho(ixI^S),hfs(ixO^S),gradT(ixI^S)
+    double precision :: ne(ixI^S), nH_arr(ixI^S)
     double precision :: dtdiff_tcond,maxtmp2
     integer          :: idim
 
     call fl%get_temperature_from_conserved(w,x,ixI^L,ixI^L,Te)
     call fl%get_rho(w,x,ixI^L,ixO^L,rho)
+    call fl%get_ne_nH(ixI^L, ixO^L, w, ne, nH_arr)
 
     if(fl%tc_constant) then
       tmp(ixO^S)=fl%tc_k_para/rho(ixO^S)
     else
       if(fl%tc_saturate) then
         ! Kannan 2016 MN 458, 410
-        ! 3^1.5*kB^2/(4*sqrt(pi)*e^4)
+        ! l_mfpe = 3^1.5*kB^2/(4*sqrt(pi)*e^4*lnLambda) * T^2/n_e
         if(SI_unit) then
-          ! l_mfpe=3.d0**1.5d0*kB_SI**2/(4.d0*sqrt(dpi)*e_SI**4*37.d0)=5.730205638843984d27
-          tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*5.730205638843984d27*unit_temperature**2/(unit_numberdensity*unit_length)
+          ! 5.730205638843984e27 = 3^1.5*kB_SI^2/(4*sqrt(pi)*e_SI^4*37)
+          tmp2(ixO^S)=Te(ixO^S)**2/ne(ixO^S)*5.730205638843984d27*unit_temperature**2/(unit_numberdensity*unit_length)
         else
-          ! l_mfpe=3.d0**1.5d0*kB_cgs**2/(4.d0*sqrt(dpi)*e_cgs**4*37.d0)=7093.9239487765044d0
-          tmp(ixO^S)=Te(ixO^S)**2/rho(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
+          ! 7093.9239487765044 = 3^1.5*kB_cgs^2/(4*sqrt(pi)*e_cgs^4*37)
+          tmp2(ixO^S)=Te(ixO^S)**2/ne(ixO^S)*7093.9239487765044d0*unit_temperature**2/(unit_numberdensity*unit_length)
         end if
         hfs=0.d0
         do idim=1,ndim
@@ -1450,9 +1433,9 @@ contains
           hfs(ixO^S)=hfs(ixO^S)+gradT(ixO^S)**2
         end do
         ! kappa=kappa_Spitzer/(1+4.2*l_mfpe/(T/|gradT|))
-        tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/(rho(ixO^S)*(1.d0+4.2d0*tmp(ixO^S)*dsqrt(hfs(ixO^S))/Te(ixO^S)))
+        tmp(ixO^S)=fl%tc_k_para*Te(ixO^S)*Te(ixO^S)*dsqrt(Te(ixO^S))/(rho(ixO^S)*(1.d0+4.2d0*tmp2(ixO^S)*dsqrt(hfs(ixO^S))/Te(ixO^S)))
       else
-        tmp(ixO^S)=fl%tc_k_para*dsqrt((Te(ixO^S))**5)/rho(ixO^S)
+        tmp(ixO^S)=fl%tc_k_para*Te(ixO^S)*Te(ixO^S)*dsqrt(Te(ixO^S))/rho(ixO^S)
       end if
     end if
 
@@ -1474,7 +1457,9 @@ contains
 
     integer, intent(in) :: ixI^L, ixO^L, igrid, nflux
     double precision, intent(in) ::  x(ixI^S,1:ndim)
-    double precision, intent(in) ::  w(ixI^S,1:nw)
+    ! intent(inout) so tc_patch_negative_eint can repair w(:, ie) in place
+    ! when tc_patch_eint = .true.; legacy path (patch off) leaves w untouched.
+    double precision, intent(inout) ::  w(ixI^S,1:nw)
     double precision, intent(inout) ::  wres(ixI^S,1:nw)
     double precision, intent(in) :: my_dt
     logical, intent(in) :: fix_conserve_at_step
@@ -1486,12 +1471,15 @@ contains
     double precision :: fluxall(ixI^S,1,1:ndim)
 
     double precision :: dxinv(ndim)
-    integer :: idims,ixA^L
+    integer :: idims,ix^L,ixB^L,ixA^L
+
+    ix^L=ixO^L^LADD1;
 
     dxinv=1.d0/dxlevel
 
     !calculate Te in whole domain (+ghosts)
     call fl%get_temperature_from_eint(w, x, ixI^L, ixI^L, Te)
+    if (fl%tc_patch_eint) call tc_patch_negative_eint(w, x, ixI^L, ixI^L, Te, fl%e_, fl)
     call fl%get_rho(w, x, ixI^L, ixI^L, rho)
     if(slab_uniform) then
       call set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
@@ -1508,33 +1496,29 @@ contains
         call set_source_tc_hd_geo(ixI^L,ixO^L,w,x,fl,qvec_equi,rho,Te)
       end if
       do idims=1,ndim
+        ! operate only on the per-idims face range that set_source_tc_hd fills
+        ! (ixOmin-kr .. ixOmax); ix^S (=ixO+1) over-reaches into the
+        ! uninitialised ixOmax+1 layer -> snan/Inf -> SIGFPE. Matches tc_mhd.
         ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
-        qvec(ixA^S,idims)=qvec(ixA^S,idims)-qvec_equi(ixA^S,idims)
+        qvec(ixA^S,idims)=qvec(ixA^S,idims) - qvec_equi(ixA^S,idims)
       end do
       deallocate(qvec_equi)
     endif
 
+    qd=0.d0
     if(slab_uniform) then
       do idims=1,ndim
         ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
         qvec(ixA^S,idims)=dxinv(idims)*qvec(ixA^S,idims)
-        ixA^L=ixO^L-kr(idims,^D);
-        if(idims==1) then
-          qd(ixO^S)=qvec(ixO^S,idims)-qvec(ixA^S,idims)
-        else
-          qd(ixO^S)=qd(ixO^S)+qvec(ixO^S,idims)-qvec(ixA^S,idims)
-        end if
+        ixB^L=ixO^L-kr(idims,^D);
+        qd(ixO^S)=qd(ixO^S)+qvec(ixO^S,idims)-qvec(ixB^S,idims)
       end do
     else
       do idims=1,ndim
         ixAmax^D=ixOmax^D; ixAmin^D=ixOmin^D-kr(idims,^D);
         qvec(ixA^S,idims)=qvec(ixA^S,idims)*block%surfaceC(ixA^S,idims)
-        ixA^L=ixO^L-kr(idims,^D);
-        if(idims==1) then
-          qd(ixO^S)=qvec(ixO^S,idims)-qvec(ixA^S,idims)
-        else
-          qd(ixO^S)=qd(ixO^S)+qvec(ixO^S,idims)-qvec(ixA^S,idims)
-        end if
+        ixB^L=ixO^L-kr(idims,^D);
+        qd(ixO^S)=qd(ixO^S)+qvec(ixO^S,idims)-qvec(ixB^S,idims)
       end do
       qd(ixO^S)=qd(ixO^S)/block%dvolume(ixO^S)
     end if
@@ -1550,7 +1534,6 @@ contains
     wres(ixO^S,fl%e_)=qd(ixO^S)
   end subroutine sts_set_source_tc_hd
 
-  !> get HD thermal conduction source and flux in uniform Cartesian grid
   subroutine set_source_tc_hd(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
@@ -1699,8 +1682,6 @@ contains
       end if
     end do
   end subroutine set_source_tc_hd
-
-  !> get HD thermal conduction source and flux in non-uniform geometry grid
   subroutine set_source_tc_hd_geo(ixI^L,ixO^L,w,x,fl,qvec,rho,Te)
     use mod_global_parameters
     integer, intent(in) :: ixI^L, ixO^L
@@ -1730,7 +1711,7 @@ contains
                      +ke(ix1,ix2,ix3+1)*block%surfaceC(ix1,ix2,ix3+1,1)&
                    +ke(ix1,ix2+1,ix3+1)*block%surfaceC(ix1,ix2+1,ix3+1,1))/&
             (block%surfaceC(ix1,ix2,ix3,1)+block%surfaceC(ix1,ix2+1,ix3,1)&
-          +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1))
+          +block%surfaceC(ix1,ix2,ix3+1,1)+block%surfaceC(ix1,ix2+1,ix3+1,1)+smalldouble**2)
        {end do\}
       else if(idims==2) then
        {do ix^DB=ixCmin^DB,ixCmax^DB\}
@@ -1739,7 +1720,7 @@ contains
                      +ke(ix1,ix2,ix3+1)*block%surfaceC(ix1,ix2,ix3+1,2)&
                    +ke(ix1+1,ix2,ix3+1)*block%surfaceC(ix1+1,ix2,ix3+1,2))/&
             (block%surfaceC(ix1,ix2,ix3,2)+block%surfaceC(ix1+1,ix2,ix3,2)&
-          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+1.d-300)
+          +block%surfaceC(ix1,ix2,ix3+1,2)+block%surfaceC(ix1+1,ix2,ix3+1,2)+smalldouble**2)
           ! zero theta-normal surface area at pole axis
        {end do\}
       else
@@ -1868,5 +1849,127 @@ contains
       end if
     end do
   end subroutine set_source_tc_hd_geo
+
+  !> Patch cells where e_int <= 0 by neighbor-averaging the temperature
+  !> AND repairing the conserved internal energy w(:, ie) in place.
+  !> Called after get_temperature_from_eint in the TC source routines when
+  !> tc_patch_eint is .true.  During STS RKL2 Chebyshev substeps the
+  !> polynomial can overshoot e_int to negative values at low-density
+  !> coronal cells.  A negative T would produce NaN via sqrt(T) in the
+  !> Spitzer conductivity.  This routine replaces those cells' T with
+  !> the average of valid (e_int > 0) neighbors and writes the matching
+  !> e_int back to w(ix, ie) via the EoS inverse helper eint_nH_from_T,
+  !> so the next STS substep does not re-read negative w and amplify it.
+  subroutine tc_patch_negative_eint(w, x, ixI^L, ixO^L, Te, ie, fl)
+    use mod_global_parameters
+    integer, intent(in)             :: ixI^L, ixO^L, ie
+    double precision, intent(inout) :: w(ixI^S, 1:nw)
+    double precision, intent(in)    :: x(ixI^S, 1:ndim)
+    double precision, intent(inout) :: Te(ixI^S)
+    type(tc_fluid), intent(in)      :: fl
+
+    integer :: ix^D, count
+    integer :: ipatch(ixI^S)
+    double precision :: T_avg, T_use, rho_cell, nH_cell, log_nH, log_T
+    double precision :: eint_new, small_e_local, log_T_min, T_floor
+    double precision :: rho(ixI^S)
+
+    ipatch(ixI^S) = 0
+
+    ! Mark cells with negative e_int
+    {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        if (w(ix^D, ie) <= 0.0d0) ipatch(ix^D) = 1
+    {end do\}
+
+    ! Quick exit if no cells need patching
+    if (all(ipatch(ixO^S) == 0)) return
+
+    ! Need rho per-cell to back out e_int from a prescribed T via the EoS.
+    call fl%get_rho(w, x, ixI^L, ixI^L, rho)
+
+    ! Floor on log_T for the (rho, T) inverse table, from the EoS via the port
+    ! (eos_get_log_T_floor encapsulates the method->container choice; picking the
+    ! wrong container would leave var2_min=0 and clobber cold cells).
+    log_T_min = fl%log_T_floor
+
+    ! Local minimum e_int (code units): equivalent to small_pressure / (gamma-1).
+    small_e_local = small_pressure * fl%inv_gamma_minus_1
+
+    ! Fallback T (code units) for cells that have no valid neighbour.
+    T_floor = 1.0d0 / unit_temperature
+
+    ! Replace marked cells with neighbor-averaged T, then back out e_int
+    ! and floor w(:, ie) so subsequent STS substeps see a positive state.
+    {do ix^DB=ixOmin^DB+1,ixOmax^DB-1\}
+        if (ipatch(ix^D) == 1) then
+            T_avg = 0.0d0
+            count = 0
+            {^IFONED
+            if (ipatch(ix1-1)==0) then; T_avg=T_avg+Te(ix1-1); count=count+1; end if
+            if (ipatch(ix1+1)==0) then; T_avg=T_avg+Te(ix1+1); count=count+1; end if
+            }
+            {^IFTWOD
+            if (ipatch(ix1-1,ix2)==0) then; T_avg=T_avg+Te(ix1-1,ix2); count=count+1; end if
+            if (ipatch(ix1+1,ix2)==0) then; T_avg=T_avg+Te(ix1+1,ix2); count=count+1; end if
+            if (ipatch(ix1,ix2-1)==0) then; T_avg=T_avg+Te(ix1,ix2-1); count=count+1; end if
+            if (ipatch(ix1,ix2+1)==0) then; T_avg=T_avg+Te(ix1,ix2+1); count=count+1; end if
+            }
+            {^IFTHREED
+            if (ipatch(ix1-1,ix2,ix3)==0) then; T_avg=T_avg+Te(ix1-1,ix2,ix3); count=count+1; end if
+            if (ipatch(ix1+1,ix2,ix3)==0) then; T_avg=T_avg+Te(ix1+1,ix2,ix3); count=count+1; end if
+            if (ipatch(ix1,ix2-1,ix3)==0) then; T_avg=T_avg+Te(ix1,ix2-1,ix3); count=count+1; end if
+            if (ipatch(ix1,ix2+1,ix3)==0) then; T_avg=T_avg+Te(ix1,ix2+1,ix3); count=count+1; end if
+            if (ipatch(ix1,ix2,ix3-1)==0) then; T_avg=T_avg+Te(ix1,ix2,ix3-1); count=count+1; end if
+            if (ipatch(ix1,ix2,ix3+1)==0) then; T_avg=T_avg+Te(ix1,ix2,ix3+1); count=count+1; end if
+            }
+            if (count > 0) then
+                T_use = T_avg / dble(count)
+            else
+                T_use = T_floor
+            end if
+
+            ! Repair the conserved internal energy in place. Use the same
+            ! EoS-aware inverse used by hd/mhd_from_prolong_LTE: e_int =
+            ! nH * eint_nH_from_T(log_nH, log_T).  Floor with small_e.
+            rho_cell = max(rho(ix^D), small_density)
+            nH_cell  = rho_cell / fl%nH2rhoFactor
+            log_nH   = dlog10(max(nH_cell, smalldouble))
+            log_T    = dlog10(max(T_use, 10.0d0**log_T_min))
+            eint_new = nH_cell * fl%eint_from_T(log_nH, log_T)
+            w(ix^D, ie) = max(small_e_local, eint_new)
+
+            ! Keep Te consistent with the floored w(:, ie): if small_e
+            ! kicked in, the implied T is slightly different from T_use.
+            ! Use the prescribed T_use here (Te is only consumed within
+            ! this TC substep; the next call recomputes it from w).
+            Te(ix^D) = T_use
+
+            write(*,*) ' WARNING: tc_patch_eint it=', it, &
+                ' e_int=', w(ix^D, ie), &
+                ' pe=', mype, ' x=', x(ix^D, 1:ndim)
+            ipatch(ix^D) = 2  ! mark as handled
+        end if
+    {end do\}
+
+    ! Cells at the block boundary that the interior loop above skipped
+    ! (ixOmin/ixOmax edges).  Fall back to T = 1/unit_temperature and
+    ! repair w(:, ie) consistently so STS does not re-read negative e.
+    {do ix^DB=ixOmin^DB,ixOmax^DB\}
+        if (ipatch(ix^D) == 1) then
+            T_use    = T_floor
+            rho_cell = max(rho(ix^D), small_density)
+            nH_cell  = rho_cell / fl%nH2rhoFactor
+            log_nH   = dlog10(max(nH_cell, smalldouble))
+            log_T    = dlog10(max(T_use, 10.0d0**log_T_min))
+            eint_new = nH_cell * fl%eint_from_T(log_nH, log_T)
+            w(ix^D, ie) = max(small_e_local, eint_new)
+            Te(ix^D) = T_use
+            write(*,*) ' WARNING: tc_patch_eint it=', it, &
+                ' e_int=', w(ix^D, ie), &
+                ' pe=', mype, ' x=', x(ix^D, 1:ndim), ' (edge)'
+        end if
+    {end do\}
+
+  end subroutine tc_patch_negative_eint
 
 end module mod_thermal_conduction

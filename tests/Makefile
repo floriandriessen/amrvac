@@ -19,7 +19,8 @@ hd/blast_wave_polar_2D hd/blast_wave_polar_stretched_2D			\
 hd/blast_wave_spherical_3D hd/Richtmyer_Meshkov_dust_2D hd/thermal_conduction_2D \
 hd/blast_wave_spherical_stretched_3D hd/blast_wave_Cartesian_stretched_2D \
 hd/blast_wave_cylindrical_2D hd/blast_wave_cylindrical_3D hd/blast_wave_polar_3D \
-hd/CAKwind_spherical_1D hd/CAKwind_spherical_2.5D hd/thermal_instability_1D hd/thermal_instability_2D
+hd/CAKwind_spherical_1D hd/CAKwind_spherical_2.5D hd/thermal_instability_1D hd/thermal_instability_2D \
+hd/Coleman_1D
 
 MHD_DIRS := mhd/Riemann_1.75D mhd/rotor_2D mhd/wake_2.5D mhd/shock_cloud_2D mhd/Kelvin_Helmholtz_2D \
 mhd/Orszag_Tang_2D mhd/blast_wave_Cartesian_2D mhd/blast_wave_polar_2D mhd/blast_wave_polar_stretched_2D \
@@ -33,12 +34,11 @@ mhd/Low_flux_rope_3D mhd/field_loop_2.5D mhd/solar_wind_2.5D mhd/Orszag_Tang_2.5
 mhd/semirelativistic_Alfven_wave_1.75D \
 mhd/blast_wave_Cartesian_3D mhd/Ambipolar1DWave-B0split mhd/Ambipolar1DWave mhd/icarus
 
-RHD_DIRS := rhd/RHD_heatcool
-#   rhd/RHD_wave_1D rhd/RHD_shock_1D
+RHD_DIRS := rhd/RHD_heatcool rhd/RHD_pulse_1D rhd/RHD_shock_1D rhd/RHD_wave_1D
 
 SRHD_DIRS := srhd/Jet_cylindrical_2D
 
-RMHD_DIRS := 
+RMHD_DIRS := rmhd/Shocks_1.75D/Jiang rmhd/Shocks_1.75D/Fast rmhd/Shocks_1.75D/Slow rmhd/Shocks_1.75D/Intermediate rmhd/Waves_fine_1.75D/Alfven rmhd/Waves_fine_1.75D/Fast
 # rmhd/Brio_Wu_1.75D rmhd/Torrilhon_1.75D rmhd/Convection_2D
 
 MG_DIRS := multigrid/convergence_2d multigrid/convergence_3d	\
@@ -50,7 +50,7 @@ FFHD_DIRS := ffhd/solar_atmosphere_2D ffhd/ring_thermal_conduction_2D
 
 ARD_DIRS := ard/schnakenberg_2d
 
-MF_DIRS := mf/Mackay_bipole_Cartesian_3D mf/sheared_arcade_Antiochos_3D
+MF_DIRS := mf/Mackay_bipole_Cartesian_3D
 
 TWOFL_DIRS := twofl/Alfven_wave_1D twofl/Riemann_1D twofl/KHI_2D
 

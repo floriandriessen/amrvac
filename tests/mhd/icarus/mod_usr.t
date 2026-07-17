@@ -1,5 +1,6 @@
 module mod_usr
   use mod_mhd
+  use mod_eos, only: eos
   use mod_lookup_table
   use mod_bc_data
   !SI units, constants
@@ -60,8 +61,7 @@ module mod_usr
   integer             :: cme_exists
       public :: bc_data_get_3d
 
-   ! Additional variables
-  integer                     :: dr1_, dt1_, dp1_
+
 
 contains
 
@@ -119,10 +119,7 @@ contains
     usr_source          => specialsource
     usr_create_particles => generate_particles
     usr_particle_position => move_particle
-    particles_define_additional_gridvars => define_additional_gridvars_usr
-    particles_fill_additional_gridvars => fill_additional_gridvars_usr
-    usr_update_payload => update_payload_usr
-    usr_modify_output      => set_output_vars
+  
 
 
     call set_coordinate_system('spherical_3D')
@@ -130,9 +127,7 @@ contains
 
     call mhd_activate()
 
-    dr1_ = var_set_extravar("dr1","dr1")
-    dt1_  = var_set_extravar("dt1","dt1")
-    dp1_  = var_set_extravar("dp1","dp1")
+   
 
 
 
@@ -140,7 +135,7 @@ contains
     ! in subroutine mhd_phys_init (in mod_mhd_phys.t) which in turn calls
     ! subroutine mhd_physical_units (also in mod_mhd_phys.t)
     !  There, the parameters SI_unit, eq_state_units, mhd_partial_ionization enter
-    !  Sometime we use He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2
+    !  Sometime we use eos%He_abundance, H_ion_fr, He_ion_fr, He_ion_fr2
     !  Moreover, we use 3 out of
     !      unit_density, unit_numberdensity, unit_length, unit_time, unit_velocity,
     !      unit_pressure, unit_magneticfield, unit_temperature,
@@ -149,14 +144,13 @@ contains
     printsettingformat='(1x,A50,ES15.7)'
     if(mype==0) then
       write(*,*)'----------------PARAMETERS--   ----------------------'
-      write(*,printsettingformat) "mhd_gamma ",mhd_gamma
+      write(*,printsettingformat) "eos%gamma ",eos%gamma
       write(*,printsettingformat) "mhd_eta ",mhd_eta
       write(*,*)'----------------BEGIN UNITS  ------------------------'
       write(*,*)'----------------UNIT CONTROLS------------------------'
       write(*,*) "SI_unit",SI_unit
-      write(*,*) "eq_state_units",eq_state_units
-      write(*,*) "mhd_partial_ionization",mhd_partial_ionization
-      write(*,printsettingformat) "He_abundance",He_abundance
+      write(*,*) "eos_type",eos%eos_type
+      write(*,printsettingformat) "eos%He_abundance",eos%He_abundance
       write(*,printsettingformat) "H_ion_fr",H_ion_fr
       write(*,printsettingformat) "He_ion_fr",He_ion_fr
       write(*,printsettingformat) "He_ion_fr2",He_ion_fr2
@@ -285,7 +279,9 @@ contains
 
     end if
 
-    mhd_gamma= 3.0d0/2.0d0
+    !> gamma is set in the parfile (&eos_list gamma=1.5d0), read once at
+    !> eos_init so the derived gamma constants stay consistent. Do not set
+    !> eos%gamma from user code.
     call set_units(Lunit_in, Tunit_in, Rhounit_in, Vunit_in, Bunit_in, Eunit_in, Punit_in)
 
     w_convert_factor(rho_) = Rhounit_in ! in km/m^3
@@ -299,52 +295,7 @@ contains
 
   end subroutine initglobaldata_usr
 
-  subroutine define_additional_gridvars_usr(ngridvars)
-    use mod_global_parameters
-    integer, intent(inout) :: ngridvars
- 
-    ! three extra variables defined above as dr1_ dt1_ dp1_ already accounted for
-    ! no need to raise ngridvars here, unless additional payload is created
 
-  end subroutine define_additional_gridvars_usr
-
-  subroutine fill_additional_gridvars_usr
-    use mod_global_parameters
-    use mod_usr_methods, only: usr_particle_fields
-
-    integer :: igrid, iigrid
-    double precision :: pth(ixG^T)
-    double precision :: w(ixG^T,1:nw)
-
-! No need for what follows anymore: extravars already accounted for in nw array
-! Here we would only add ADDITIONAL payloads beyond nw array
-!    do iigrid=1,igridstail; igrid=igrids(iigrid);
-!      w(ixG^T,1:nw) = ps(igrid)%w(ixG^T,1:nw)
-!      gridvars(igrid)%w(ixG^T,dr1_)=block%dx(ixG^T,1)
-!      gridvars(igrid)%w(ixG^T,dt1_)=block%dx(ixG^T,2)
-!      gridvars(igrid)%w(ixG^T,dp1_)=block%dx(ixG^T,3)
-!    end do
-
-  end subroutine fill_additional_gridvars_usr
-
-  subroutine update_payload_usr(igrid,xpart,upart,qpart,mpart,mypayload,mynpayload,particle_time)
-    use mod_global_parameters
-    integer, intent(in)           :: igrid,mynpayload
-    double precision, intent(in)  :: xpart(1:ndir),upart(1:ndir),qpart,mpart,particle_time
-    double precision, intent(out) :: mypayload(mynpayload)
-    double precision              :: xgrid(ixG^T,1:ndim)
-
-! No need for what follows anymore: extravars already accounted for in nw array
-! Here we would only handle ADDITIONAL payloads beyond nw array
-    !xgrid = ps(igrid)%x
-    ! put the solution at particle_time for comparison
-    !if (npayload > 0) then
-    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dr1_),xgrid,xpart,mypayload(1))
-    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dt1_),xgrid,xpart,mypayload(2))
-    !  call interpolate_var(igrid,ixG^LL,ixM^LL,gridvars(igrid)%w(ixG^T,dp1_),xgrid,xpart,mypayload(3))
-    !end if
-
-  end subroutine update_payload_usr
 
   subroutine generate_particles(n_particles, x, v, q, m, follow)
     use mod_particles
@@ -576,7 +527,7 @@ contains
   end do
 
     !Convert to conserved values
-    call mhd_to_conserved(ixG^L,ix^L,w,x)
+    call eos%to_conserved(ixG^L,ix^L,w,x)
 
     if(mhd_n_tracer ==  1) then
        w(ix^S, tracer(1)) = 0.0d0
@@ -616,40 +567,19 @@ contains
     call divvector(momentum,ixI^L,ixO^L,divmom)
     w(ixO^S,nw+3)=divmom(ixO^S)
 
-    w(ixO^S,nw+4)=block%dx(ixO^S,1)
-    w(ixO^S,nw+5)=block%dx(ixO^S,2)
-    w(ixO^S,nw+6)=block%dx(ixO^S,3)
 
-    r_boundary   = xprobmin1 !in R_sun
-
-    r    = x(ixO^S, 1)
-    theta = x(ixO^S, 2)
-    sin_theta = sin(theta)
-    w(ixO^S,nw+7) = (v(ixO^S,3) + &
-    omega_frame*(r)* sin_theta)*unit_velocity*1d-3 ! the unit in km/s
+   ! w(ixO^S,nw+4) = (v(ixO^S,3) + &
+   ! omega_frame*(r)* sin_theta)*unit_velocity*1d-3 ! the unit in km/s
 
   end subroutine specialvar_output
 
   subroutine specialvarnames_output(varnames)
     character(len=*) :: varnames
 
-    varnames='divB divV div_mom dr dt dp v3I'
+    varnames='divB divV div_mom'
   end subroutine specialvarnames_output
 
-subroutine set_output_vars(ixI^L,ixO^L,qt,w,x)
-use mod_global_parameters
 
-    integer, intent(in)             :: ixI^L,ixO^L
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
-    double precision, intent(inout) :: w(ixI^S,nw)
-
-
-    w(ixO^S,dr1_) = block%dx(ixO^S,1)
-    w(ixO^S,dt1_) = block%dx(ixO^S,2)
-    w(ixO^S,dp1_) = block%dx(ixO^S,3)
-
-   
-end subroutine set_output_vars
   
 
   subroutine specialsource(qdt,ixI^L,ixO^L,iw^LIM,qtC,wCT,qt,w,x)
@@ -832,10 +762,10 @@ end subroutine set_output_vars
     end if
   end subroutine mask_cap
 
-  subroutine specialbound_usr(qt,ixI^L,ixO^L,iB,w,x)
+  subroutine specialbound_usr(qdt,qt,ixI^L,ixO^L,iB,w,x)
     use mod_global_parameters
     integer, intent(in)             :: ixI^L, ixO^L, iB
-    double precision, intent(in)    :: qt, x(ixI^S,1:ndim)
+    double precision, intent(in) :: qdt,qt, x(ixI^S,1:ndim)
     double precision, intent(inout) :: w(ixI^S,1:nw)
     integer             :: ix3,ix2
     double precision    :: vr_bc, vt_bc, vp_bc, br_bc, bt_bc, bp_bc, md_bc,rho_bc, temp_bc, p_bc, theta, phi
@@ -862,7 +792,7 @@ end subroutine set_output_vars
 ! Should we want a radial velocity in the inertial frame, we need to set v3 = -omega_frame * r  and B3 = -omega_frame * r * sin\theta / v1
 ! we cannot use asymm BC for v3 and B3 in the par file, since that will kill any component in the corot-frame
       
-      call mhd_to_primitive(ixI^L,ixO^L,w,x)
+      call eos%to_primitive(ixI^L,ixO^L,w,x)
       do ix3 = ixOmin3, ixOmax3
           do ix2 = ixOmin2,ixOmax2
             ! bc_data_set() has already filled ghost cells; keep its value at the
@@ -884,7 +814,7 @@ end subroutine set_output_vars
               ! w(i,ix2,ix3,p_) = p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )
 
               ! (B) polytropic:
-              w(i,ix2,ix3,p_)  =  p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )**mhd_gamma
+              w(i,ix2,ix3,p_)  =  p_bc * ( w(i,ix2,ix3,rho_) / rho_bc )**eos%gamma
 
             end do
 
@@ -977,7 +907,7 @@ end subroutine set_output_vars
         end do
 
         ! convert back to conserved values
-        call mhd_to_conserved(ixI^L, ixO^L, w, x)
+        call eos%to_conserved(ixI^L, ixO^L, w, x)
     end select
   end subroutine specialbound_usr
 

@@ -119,7 +119,6 @@ contains
 
     ! unused physics options
     phys_internal_e = .false.
-    phys_partial_ionization=.false.
     phys_trac=.false.
 
     use_particles = srhd_particles

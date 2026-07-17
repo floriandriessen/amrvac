@@ -25,6 +25,7 @@
 module mod_supertimestepping
   use mod_geometry
   use mod_comm_lib, only: mpistop
+  use mod_eos_container, only: eos   !> PI temperature cache refresh via eos%update_eos
   implicit none
   private
 
@@ -34,6 +35,15 @@ module mod_supertimestepping
   public :: sts_add_source
   public :: set_dt_sts_ncycles
   public :: sourcetype_sts, sourcetype_sts_prior, sourcetype_sts_after, sourcetype_sts_split
+
+  !> Per-rank TC/STS compute accumulator for lb_diagnose. Sums the wall time
+  !> spent inside the iigrid block-loops that call sts_set_sources (the
+  !> per-block parabolic-conduction kernel) plus the per-block STS hooks
+  !> (before_first_cycle, after_last_cycle, sts_handle_errors,
+  !> phys_update_temperature). Excludes inter-rank ghostcell exchanges
+  !> (getbc) and flux-conservation collectives. Reset by mod_advance::advance
+  !> at the start of each step.
+  double precision, public :: lb_tc_accum = 0.0d0
 
   ! input parameters from parameter file
   !> the coefficient that multiplies the sts dt
@@ -476,7 +486,7 @@ contains
         do iigrid=1,igridstail; igrid=igrids(iigrid);
           ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
           block=>ps(igrid)
-          call temp%sts_before_first_cycle(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)  
+          call temp%sts_before_first_cycle(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)
         end do
       end if
 
@@ -615,11 +625,11 @@ contains
 
     bcphys=.true.
 
-    if(phys_partial_ionization) then
+    if(eos%eos_type == 'PI') then
       ! update temperature variable in w
       !$OMP PARALLEL DO PRIVATE(igrid)
       do iigrid=1,igridstail; igrid=igrids(iigrid);
-        call phys_update_temperature(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%w,ps(igrid)%x)
+        call eos%update_eos(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)
       end do
       !$OMP END PARALLEL DO
     end if
@@ -641,6 +651,7 @@ contains
     double precision :: omega1,cmu,cmut,cnu,cnut,one_mu_nu
     double precision, allocatable :: bj(:)
     integer:: iigrid, igrid, j, ixC^L, ixGext^L
+    double precision :: lb_t0_tc, lb_t0_block
     logical :: evenstep, stagger_flag=.false., prolong_flag=.false., coarsen_flag=.false., total_energy_flag=.true.
     type(sts_term), pointer  :: temp
     type(state), dimension(:), pointer :: tmpPs1, tmpPs2
@@ -751,9 +762,11 @@ contains
         temp%types_initialized = .true.
       end if
       dtj = cmut*my_dt
+      if (lb_diagnose) lb_t0_tc = MPI_WTIME()
       if(stagger_grid) then
-        !$OMP PARALLEL DO PRIVATE(igrid)
+        !$OMP PARALLEL DO PRIVATE(igrid,lb_t0_block)
         do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
+          if (lb_automatic) lb_t0_block = MPI_WTIME()
           ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
           block=>ps(igrid)
           ps4(igrid)%w=zero
@@ -765,11 +778,13 @@ contains
           end if
           ps1(igrid)%ws(ixC^S,1:nws) = ps1(igrid)%ws(ixC^S,1:nws) + cmut * ps3(igrid)%w(ixC^S,iw_mag(1:nws))
           call phys_face_to_center(ixM^LL,ps1(igrid))
+          if (lb_automatic) block_cost(igrid) = block_cost(igrid) + (MPI_WTIME() - lb_t0_block)
         end do
         !$OMP END PARALLEL DO
       else
-        !$OMP PARALLEL DO PRIVATE(igrid)
+        !$OMP PARALLEL DO PRIVATE(igrid,lb_t0_block)
         do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
+          if (lb_automatic) lb_t0_block = MPI_WTIME()
           ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
           block=>ps(igrid)
           call temp%sts_set_sources(ixG^LL,ixM^LL,ps(igrid)%w,ps(igrid)%x,ps4(igrid)%w,fix_conserve_at_step,dtj,igrid,temp%nflux)
@@ -777,9 +792,11 @@ contains
           ps3(igrid)%w(ixM^T,temp%startVar:temp%endVar) = my_dt * ps4(igrid)%w(ixM^T,temp%startVar:temp%endVar)
           ps1(igrid)%w(ixM^T,temp%startVar:temp%endVar) = ps1(igrid)%w(ixM^T,temp%startVar:temp%endVar) + &
             cmut * ps3(igrid)%w(ixM^T,temp%startVar:temp%endVar)
+          if (lb_automatic) block_cost(igrid) = block_cost(igrid) + (MPI_WTIME() - lb_t0_block)
         end do
         !$OMP END PARALLEL DO
       end if
+      if (lb_diagnose) lb_tc_accum = lb_tc_accum + (MPI_WTIME() - lb_t0_tc)
       if(fix_conserve_at_step) then
         call recvflux(1,ndim)
         call sendflux(1,ndim)
@@ -838,6 +855,7 @@ contains
         end if
 
         dtj = cmut*my_dt
+        if (lb_diagnose) lb_t0_tc = MPI_WTIME()
         if(stagger_grid) then
           !$OMP PARALLEL DO PRIVATE(igrid)
           do iigrid=1,igridstail_active; igrid=igrids_active(iigrid);
@@ -873,6 +891,7 @@ contains
           end do
           !$OMP END PARALLEL DO
         end if
+        if (lb_diagnose) lb_tc_accum = lb_tc_accum + (MPI_WTIME() - lb_t0_tc)
         if(fix_conserve_at_step) then
           call recvflux(1,ndim)
           call sendflux(1,ndim)
@@ -896,6 +915,7 @@ contains
           end do
         !$OMP END PARALLEL DO
         end if
+
         if(temp%nflux>temp%nwbc.and.temp%s==j) then
           ! include the changed no-need-ghost-update variables in the last getbc
           type_send_srl=>temp%type_send_srl_sts_2
@@ -912,6 +932,7 @@ contains
       end do
 
       if(associated(temp%sts_after_last_cycle)) then
+        if (lb_diagnose) lb_t0_tc = MPI_WTIME()
         !$OMP PARALLEL DO PRIVATE(igrid)
         do iigrid=1,igridstail; igrid=igrids(iigrid);
           ^D&dxlevel(^D)=rnode(rpdx^D_,igrid);
@@ -920,6 +941,7 @@ contains
           call temp%sts_after_last_cycle(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)
         end do
         !$OMP END PARALLEL DO
+        if (lb_diagnose) lb_tc_accum = lb_tc_accum + (MPI_WTIME() - lb_t0_tc)
         phys_total_energy=total_energy_flag
         prolongprimitive  = prolong_flag
         coarsenprimitive = coarsen_flag
@@ -962,11 +984,11 @@ contains
 
     bcphys=.true.
 
-    if(phys_partial_ionization) then
+    if(eos%eos_type == 'PI') then
       ! update temperature variable in w
       !$OMP PARALLEL DO PRIVATE(igrid)
       do iigrid=1,igridstail; igrid=igrids(iigrid);
-        call phys_update_temperature(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%w,ps(igrid)%x)
+        call eos%update_eos(ixG^LL,ixG^LL,ps(igrid)%w,ps(igrid)%x)
       end do
       !$OMP END PARALLEL DO
     end if

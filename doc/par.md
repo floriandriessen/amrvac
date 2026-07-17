@@ -364,11 +364,25 @@ without changing time, set `reset_it=T`.
     fix_small_values= F | T
     trace_small_values= F | T
     small_values_fix_iw= LOGICAL, LOGICAL, LOGICAL, ...
+    ghostcell_comm_batched= F | T
+    ghostcell_comm_batch_size= INTEGER
 
     typegrad = 'central' | 'limited'
     typediv = 'central' | 'limited'
     typecurl = 'central' | 'Gaussbased' | 'Stokesbased'
     /
+
+### Ghost-cell communication batching {#par_ghostcell_comm}
+
+The `ghostcell_comm_batched` switch limits the number of outstanding ghost-cell
+send requests by waiting after every `ghostcell_comm_batch_size` sends. The
+default is `ghostcell_comm_batched=T`. In large-scale MHD tests, the original
+all-at-once ghost-cell exchange could stall during spherical u512
+initialization, while u256 5-step tests showed less than 0.1% total runtime
+difference with batching enabled. The original communication pattern is still
+available by setting `ghostcell_comm_batched=F`. If the batched path remains
+stable in broader tests, the old path can be removed later. The default batch
+size is 64.
 
 ### time_stepper, time_integrator, flux_scheme {#par_time_integrator}
 
@@ -748,7 +762,9 @@ The computational domain is set by specifying the minimal and maximal
 coordinate value per direction in the _xprob^L_ settings. When cylindrical or
 spherical coordinates are selected, the angle ranges (for phi in
 the cylindrical case, and for both theta and phi in the spherical case) are to
-be given in 2 pi units.
+be given in 2 pi rad units. After initialization, e.g., inside the user module 
+_mod_usr.t_, the angle range parameters _xprobmin^D_ and _xprobmax^D_ are
+changed to be in rad units.
 
 The base grid resolution (i.e. on the coarsest level 1) is best specified by
 providing _domain_nx^D_, the number of grid cells per dimension, to cover the full
@@ -1194,8 +1210,71 @@ For example, we can double the spatial resolution by setting 'instrument_resolut
 The default unit of length for the outputed image is arcsec and the related variables in .par file, 
 but user can set 'activate_unit_arcsec' to F to use the simulation length unit.
 
-Only Cartesian and spherical coordinate system are supported currently. In spherical coordinate,
-region below 'R_opt_thick' (in solar radius, default value is 1) is assumed as not transparent.
+Only Cartesian and spherical coordinate systems are supported currently. In spherical coordinate,
+the region below 'R_opt_thick' (in solar radius, default value is 1) is treated as opaque for the
+legacy EUV/SXR occultation check. Spherical EUV/SXR and white-light synthesis use the historical
+instrument-resolution projection: cells are sub-sampled in spherical coordinates, mapped to the
+image plane, and distributed with the corresponding instrument PSF. A native spherical
+ray/mesh-intersection path is available with `ray_method='spherical'` for spherical
+EUV images at instrument resolution or dat resolution. It constructs ordered ray segments from
+`r/theta/phi` cell faces and integrates either thin emissivity or front-to-back thick EUV transfer
+along each LOS. This first native spherical version does not support spherical SXR, spherical
+white light, radio/pseudo-current spherical products, polar-axis-crossing domains, or phi-wrapping
+domains.
+
+The radiation-transfer extension is controlled by 'radiation_transfer', 'ray_method', and
+'emission_model'. The default values are 'thin', 'auto', and 'auto'. With
+`ray_method='auto'`, Cartesian dat-resolution EUV uses the native Cartesian ray
+tracer, spherical EUV uses the native spherical ray/mesh intersection, and
+products without a native path fall back to `legacy`.
+
+Recommended use:
+
+- Use `ray_method='legacy'` to force the historical optically thin projection
+  path for EUV/SXR and spherical white-light products.
+- Use `dat_resolution=.true.` and `radiation_transfer='thick'` for Cartesian x/y/z-aligned
+  optically thick EUV diagnostics.
+- Use `ray_method='cart'` for Cartesian arbitrary-angle EUV/radio/pseudo-current images.
+  In thick mode, `cart` routes ray segments by image-pixel batch to the owning MPI ranks,
+  sorts same-pixel segments along the LOS, and then applies the ordered transfer.
+- Use `ray_method='spherical'` for spherical EUV images when native
+  ray/mesh intersections are preferred over legacy spherical deposition. It
+  supports arbitrary viewing angles for both instrument-resolution and
+  dat-resolution EUV images, including stretched spherical grids. Thick mode
+  uses the same H I / He I / He II opacity model as Cartesian thick EUV and can
+  output `tau` and `absorption_fraction`. Dat-resolution `spherical`
+  outputs AIA intensity only, plus those optional thick diagnostics; Doppler
+  and `instrument_postprocess` are not yet defined for this path.
+- The older names `ray_method='cart_dda'` and
+  `ray_method='sph_intersection'` are accepted as compatibility aliases for
+  `cart` and `spherical`.
+- Use `instrument_postprocess=.true.` after Cartesian native dat-resolution products when an
+  observational image grid is desired. EUV AIA images use the existing AIA-style Gaussian PSF.
+  Radio free-free images use an independent Gaussian beam controlled by `radio_beam_fwhm` and
+  `radio_beam_pixel_size`, both in arcsec; if `radio_beam_pixel_size` is non-positive, it defaults
+  to one third of the beam FWHM.
+- Use `radsyn_pixel_batch` to cap the number of image pixels processed in one native Cartesian/spherical
+  thick-transfer segment batch. The default is 128. Set `radsyn_verbose=.true.` to print ray tests,
+  segment counts, MPI volume, and sort-work counters for profiling.
+- Use `radsyn_segment_batch_factor` and `radsyn_segment_comm_factor` to tune native thick-transfer
+  segment batching. By default `radsyn_segment_batch_factor=256`, which allows up to
+  `256*radsyn_pixel_batch` ray segments in one image-pixel batch. Set
+  `radsyn_segment_batch_factor<=0` to choose the per-batch segment limit from
+  `radsyn_segment_memory_mb` instead. The default memory budget is 8 MiB per MPI rank, which is
+  conservative for the temporary segment, communication, and sorting arrays. Increasing
+  `radsyn_segment_comm_factor` allows more ray segments per segmented MPI all-to-all round; its
+  default is 16.
+- Use VTU output for non-uniform dat-resolution image grids. VTI is allowed
+  only when the emitted image-plane spacing is uniform.
+
+The first optically thick EUV model uses H I / He I / He II photoionization opacity and reduces to
+the thin result when opacity is zero. The flags 'output_tau' and 'output_absorption_fraction' add
+diagnostic maps for thick EUV and radio products. The model 'radio_ff' reuses the EUV image convert
+types for thermal free-free radio synthesis. It uses the observing frequency 'radio_frequency' in
+Hz and outputs brightness temperature as 'radio_brightness_temperature' or
+'radio_brightness_temperature_thick'. The model 'pseudo_current' reuses the EUV image convert types
+as a magnetic-structure visualization mode: it integrates |curl B|^2 along the LOS with optically
+thin transfer and labels the output variable 'pseudo_current'.
 
     &emissionlist
       filename_euv= CHARACTER
@@ -1209,6 +1288,18 @@ region below 'R_opt_thick' (in solar radius, default value is 1) is assumed as n
       emin_sxr= INTEGER
       emax_sxr= INTEGER
       filename_spectrum= CHARACTER
+      radiation_transfer= 'thin' | 'thick'
+      ray_method= 'auto' | 'legacy' | 'cart' | 'spherical'
+      emission_model= 'auto' | 'euv_aia' | 'white_light' | 'radio_ff' | 'pseudo_current'
+      instrument_postprocess=LOGICAL
+      radio_frequency= DOUBLE
+      radio_beam_fwhm= DOUBLE
+      radio_beam_pixel_size= DOUBLE
+      radsyn_pixel_batch= INTEGER
+      radsyn_segment_batch_factor= INTEGER
+      radsyn_segment_memory_mb= DOUBLE
+      radsyn_segment_comm_factor= INTEGER
+      radsyn_verbose= LOGICAL
       spectrum_wl= 1354 | 263 | 264| 192 | 255
       spectrum_window_min= DOUBLE
       spectrum_window_max= DOUBLE
@@ -1219,6 +1310,8 @@ region below 'R_opt_thick' (in solar radius, default value is 1) is assumed as n
       R_opt_thick= DOUBLE
       activate_unit_arcsec= LOGICAL
       dat_resolution=LOGICAL
+      output_tau=LOGICAL
+      output_absorption_fraction=LOGICAL
       instrument_resolution_factor=INTEGER
     /
 
@@ -1228,8 +1321,7 @@ region below 'R_opt_thick' (in solar radius, default value is 1) is assumed as n
 set 
 ```
 
-        has_equi_pe0 = .true.
-        has_equi_rho0 = .true.
+        has_equi_rho_and_p = .true.
 
 ```
 to true in ***mhd\_list***
@@ -1261,4 +1353,3 @@ and implement usr\_set\_equi\_vars in mod\_ust.t file
   end subroutine special_set_equi_vars
 
 ```
-

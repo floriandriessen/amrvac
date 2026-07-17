@@ -21,6 +21,7 @@ contains
     use mod_bc_data, only: bc_data_init
     use mod_init_datafromfile, only: read_data_init
     use mod_comm_lib, only: init_comm_types
+    use mod_eos, only: eos
 
     if (initialized_already) return
 
@@ -39,6 +40,16 @@ contains
     if(associated(usr_set_parameters)) call usr_set_parameters()
 
     call phys_check_params()
+
+    !> Lock (runs just after usr_set_parameters): gamma must be set via the parfile
+    !> (&eos_list gamma=) so eos_init refreshes the cached derived constants. A direct
+    !> eos%gamma assignment in user code leaves inv_gamma_minus_1 stale. Kept here, out
+    !> of the hot physics modules, so this guard never perturbs flux-routine codegen.
+    if (eos%gamma > 0.0d0 .and. eos%gamma /= 1.0d0) then
+       if (abs(eos%inv_gamma_minus_1*(eos%gamma-1.0d0) - 1.0d0) > 1.0d-10) &
+            call mpistop("eos%gamma derived constants are stale: set gamma via "// &
+                 "&eos_list gamma= in the parfile, not by assigning eos%gamma directly")
+    end if
 
     initialized_already = .true.
   end subroutine initialize_amrvac
@@ -159,6 +170,15 @@ contains
     allocate(igrid_to_sfc(max_blocks))
 
     sfc=0
+    ! Cost-weighted load balancer arrays. costlist is global Morton-indexed
+    ! (sized to max_blocks*npe, the upper bound on nleafs); cold-start to 1.0
+    ! so the first partition equals the equal-block-count cut. block_cost is
+    ! the per-step scratch accumulator (per-rank, per-igrid), reset every
+    ! advance.
+    allocate(costlist(max_blocks*npe))
+    allocate(block_cost(max_blocks))
+    costlist   = 1.0d0
+    block_cost = 0.0d0
     allocate(Morton_start(0:npe-1),Morton_stop(0:npe-1))
     allocate(Morton_sub_start(0:npe-1),Morton_sub_stop(0:npe-1))
 

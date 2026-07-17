@@ -111,6 +111,17 @@ module mod_ghostcells_update
     double precision, dimension(:^D&,:), allocatable :: w
   end type wbuffer
 
+  abstract interface
+    subroutine update_eos_bc_sub(ixI^L, ixO^L, w, x)
+      use mod_global_parameters
+      integer, intent(in)             :: ixI^L, ixO^L
+      double precision, intent(inout) :: w(ixI^S, nw)
+      double precision, intent(in)    :: x(ixI^S, 1:ndim)
+    end subroutine update_eos_bc_sub
+  end interface
+
+  procedure(update_eos_bc_sub), pointer     :: update_eos_4_bc      => null()
+
 contains
 
   subroutine init_bc()
@@ -350,6 +361,7 @@ contains
   subroutine getbc(time,qdt,psb,nwstart,nwbc)
     use mod_global_parameters
     use mod_physics
+    use mod_usr_methods, only: usr_prepare_boundary
     use mod_coarsen, only: coarsen_grid
     use mod_boundary_conditions, only: getintbc, bc_phys
     use mod_comm_lib, only: mpistop
@@ -363,6 +375,7 @@ contains
     integer :: nwhead, nwtail
     integer :: iigrid, igrid, isizes, i^D
     integer :: isend_buf(npwbuf), ipwbuf, nghostcellsco
+    integer :: flushed_send_c, flushed_send_srl, flushed_send_r, flushed_send_p
     ! index pointer for buffer arrays as a start for a segment
     integer :: ibuf_start, ibuf_next
     ! shapes of reshape
@@ -376,7 +389,7 @@ contains
 
     ! fill internal physical boundary
     if (internalboundary) then 
-       call getintbc(time,ixG^LL)
+       call getintbc(time,qdt,ixG^LL)
     end if
 
     ! prepare coarse values to send to coarser neighbors
@@ -391,6 +404,10 @@ contains
     ! default : no singular axis
     irecv_c=0
     isend_c=0
+    flushed_send_c=0
+    flushed_send_srl=0
+    flushed_send_r=0
+    flushed_send_p=0
     isend_buf=0
     ipwbuf=1
 
@@ -437,13 +454,13 @@ contains
       {end do\}
     end do
 
-    call MPI_WAITALL(irecv_c,recvrequest_c_sr,recvstatus_c_sr,ierrmpi)
-    call MPI_WAITALL(isend_c,sendrequest_c_sr,sendstatus_c_sr,ierrmpi)
+    call waitall_limited(irecv_c,recvrequest_c_sr,recvstatus_c_sr)
+    call waitall_pending(isend_c,flushed_send_c,sendrequest_c_sr,sendstatus_c_sr)
     if(stagger_grid) then
-      call MPI_WAITALL(nrecv_bc_srl,recvrequest_srl,recvstatus_srl,ierrmpi)
-      call MPI_WAITALL(nsend_bc_srl,sendrequest_srl,sendstatus_srl,ierrmpi)
-      call MPI_WAITALL(nrecv_bc_r,recvrequest_r,recvstatus_r,ierrmpi)
-      call MPI_WAITALL(nsend_bc_r,sendrequest_r,sendstatus_r,ierrmpi)
+      call waitall_limited(nrecv_bc_srl,recvrequest_srl,recvstatus_srl)
+      call waitall_pending(nsend_bc_srl,flushed_send_srl,sendrequest_srl,sendstatus_srl)
+      call waitall_limited(nrecv_bc_r,recvrequest_r,recvstatus_r)
+      call waitall_pending(nsend_bc_r,flushed_send_r,sendrequest_r,sendstatus_r)
     end if
 
     do ipwbuf=1,npwbuf
@@ -483,6 +500,8 @@ contains
 
     irecv_c=0
     isend_c=0
+    flushed_send_c=0
+    flushed_send_p=0
     isend_buf=0
     ipwbuf=1
 
@@ -503,12 +522,12 @@ contains
       {end do\}
     end do
 
-    call MPI_WAITALL(irecv_c,recvrequest_c_p,recvstatus_c_p,ierrmpi)
-    call MPI_WAITALL(isend_c,sendrequest_c_p,sendstatus_c_p,ierrmpi)
+    call waitall_limited(irecv_c,recvrequest_c_p,recvstatus_c_p)
+    call waitall_pending(isend_c,flushed_send_c,sendrequest_c_p,sendstatus_c_p)
 
     if(stagger_grid) then
-      call MPI_WAITALL(nrecv_bc_p,recvrequest_p,recvstatus_p,ierrmpi)
-      call MPI_WAITALL(nsend_bc_p,sendrequest_p,sendstatus_p,ierrmpi)
+      call waitall_limited(nrecv_bc_p,recvrequest_p,recvstatus_p)
+      call waitall_pending(nsend_bc_p,flushed_send_p,sendrequest_p,sendstatus_p)
     end if
 
     do ipwbuf=1,npwbuf
@@ -544,6 +563,9 @@ contains
 
     ! fill physical boundary ghost cells after internal ghost-cell values exchange
     if(bcphys) then
+      if(associated(usr_prepare_boundary)) then
+        call usr_prepare_boundary(time, qdt)
+      endif
       !$OMP PARALLEL DO SCHEDULE(dynamic) PRIVATE(igrid)
       do iigrid=1,igridstail; igrid=igrids(iigrid);
         if(.not.phyboundblock(igrid)) cycle
@@ -565,6 +587,62 @@ contains
     time_bc=time_bc+(MPI_WTIME()-time_bcin)
     
     contains
+
+      subroutine waitall_limited(nrequest,requests,statuses)
+        integer, intent(in) :: nrequest
+        integer, intent(inout) :: requests(:)
+        integer, intent(inout) :: statuses(:,:)
+
+        if (ghostcell_comm_batched) then
+          call waitall_range(1,nrequest,requests,statuses)
+        else
+          call MPI_WAITALL(nrequest,requests,statuses,ierrmpi)
+        end if
+      end subroutine waitall_limited
+
+      subroutine waitall_range(ifirst,ilast,requests,statuses)
+        integer, intent(in) :: ifirst, ilast
+        integer, intent(inout) :: requests(:)
+        integer, intent(inout) :: statuses(:,:)
+
+        integer :: irequest,nwait
+
+        do irequest=ifirst,ilast,ghostcell_comm_batch_size
+          nwait=min(ghostcell_comm_batch_size,ilast-irequest+1)
+          call MPI_WAITALL(nwait,requests(irequest:irequest+nwait-1),&
+                           statuses(:,irequest:irequest+nwait-1),ierrmpi)
+        end do
+      end subroutine waitall_range
+
+      subroutine waitall_pending(nrequest,nwaited,requests,statuses)
+        integer, intent(in) :: nrequest
+        integer, intent(inout) :: nwaited
+        integer, intent(inout) :: requests(:)
+        integer, intent(inout) :: statuses(:,:)
+
+        if (nrequest>nwaited) then
+          if (ghostcell_comm_batched) then
+            call waitall_range(nwaited+1,nrequest,requests,statuses)
+          else
+            call MPI_WAITALL(nrequest-nwaited,requests(nwaited+1:nrequest),&
+                             statuses(:,nwaited+1:nrequest),ierrmpi)
+          end if
+          nwaited=nrequest
+        end if
+      end subroutine waitall_pending
+
+      subroutine wait_send_batch(nrequest,nwaited,requests,statuses)
+        integer, intent(in) :: nrequest
+        integer, intent(inout) :: nwaited
+        integer, intent(inout) :: requests(:)
+        integer, intent(inout) :: statuses(:,:)
+
+        if (ghostcell_comm_batched .and. &
+            nrequest-nwaited >= ghostcell_comm_batch_size) then
+          call waitall_range(nwaited+1,nrequest,requests,statuses)
+          nwaited=nrequest
+        end if
+      end subroutine wait_send_batch
 
       logical function skip_direction(dir)
         integer, intent(in) :: dir(^ND)
@@ -608,6 +686,10 @@ contains
             else 
               if (neighbor_type(i^D,igrid) /= neighbor_boundary) cycle
             end if
+            !> Refresh the EoS-derived ghost fields before extrapolation; the hook
+            !> is set (in amrvac.t) only when the EoS needs it, e.g. LTE.
+            if (associated(update_eos_4_bc)) &
+               call update_eos_4_bc(ixG^LL,ixM^LL,psb(igrid)%w,psb(igrid)%x)
             call bc_phys(iside,idims,time,qdt,psb(igrid),ixG^LL,ixB^L)
           end do
         end do
@@ -678,6 +760,7 @@ contains
             itag=(3**^ND+4**^ND)*(ineighbor-1)+{(n_i^D+1)*3**(^D-1)+}
             call MPI_ISEND(psb(igrid)%w,1,type_send_srl(i^D), &
                            ipe_neighbor,itag,icomm,sendrequest_c_sr(isend_c),ierrmpi)
+            call wait_send_batch(isend_c,flushed_send_c,sendrequest_c_sr,sendstatus_c_sr)
             if(stagger_grid) then
               ibuf_start=ibuf_send_srl
               do idir=1,ndim
@@ -691,6 +774,7 @@ contains
               isend_srl=isend_srl+1
               call MPI_ISEND(sendbuffer_srl(ibuf_send_srl),sizes_srl_send_total(i^D),&
                 MPI_DOUBLE_PRECISION, ipe_neighbor,itag,icomm,sendrequest_srl(isend_srl),ierrmpi)
+              call wait_send_batch(isend_srl,flushed_send_srl,sendrequest_srl,sendstatus_srl)
               ibuf_send_srl=ibuf_next
             end if
           else
@@ -712,6 +796,7 @@ contains
             isizes={(ixSmax^D-ixSmin^D+1)*}*nwbc
             call MPI_ISEND(pwbuf(ipwbuf)%w,isizes,MPI_DOUBLE_PRECISION, &
                            ipe_neighbor,itag,icomm,sendrequest_c_sr(isend_c),ierrmpi)
+            call wait_send_batch(isend_c,flushed_send_c,sendrequest_c_sr,sendstatus_c_sr)
             ipwbuf=1+modulo(ipwbuf,npwbuf)
             if(stagger_grid) then
               ibuf_start=ibuf_send_srl
@@ -726,6 +811,7 @@ contains
               isend_srl=isend_srl+1
               call MPI_ISEND(sendbuffer_srl(ibuf_send_srl),sizes_srl_send_total(i^D),&
                 MPI_DOUBLE_PRECISION, ipe_neighbor,itag,icomm,sendrequest_srl(isend_srl),ierrmpi)
+              call wait_send_batch(isend_srl,flushed_send_srl,sendrequest_srl,sendstatus_srl)
               ibuf_send_srl=ibuf_next
             end if
           end if
@@ -751,6 +837,7 @@ contains
             itag=(3**^ND+4**^ND)*(ineighbor-1)+3**^ND+{n_inc^D*4**(^D-1)+}
             call MPI_ISEND(psc(igrid)%w,1,type_send_r(i^D), &
                            ipe_neighbor,itag,icomm,sendrequest_c_sr(isend_c),ierrmpi)
+            call wait_send_batch(isend_c,flushed_send_c,sendrequest_c_sr,sendstatus_c_sr)
             if(stagger_grid) then 
               ibuf_start=ibuf_send_r
               do idir=1,ndim
@@ -765,6 +852,7 @@ contains
               call MPI_ISEND(sendbuffer_r(ibuf_send_r),sizes_r_send_total(i^D),&
                              MPI_DOUBLE_PRECISION,ipe_neighbor,itag, &
                              icomm,sendrequest_r(isend_r),ierrmpi)
+              call wait_send_batch(isend_r,flushed_send_r,sendrequest_r,sendstatus_r)
               ibuf_send_r=ibuf_next
             end if
           else
@@ -786,6 +874,7 @@ contains
             isizes={(ixSmax^D-ixSmin^D+1)*}*nwbc
             call MPI_ISEND(pwbuf(ipwbuf)%w,isizes,MPI_DOUBLE_PRECISION, &
                            ipe_neighbor,itag,icomm,sendrequest_c_sr(isend_c),ierrmpi)
+            call wait_send_batch(isend_c,flushed_send_c,sendrequest_c_sr,sendstatus_c_sr)
             ipwbuf=1+modulo(ipwbuf,npwbuf)
             if(stagger_grid) then 
               ibuf_start=ibuf_send_r
@@ -801,6 +890,7 @@ contains
               call MPI_ISEND(sendbuffer_r(ibuf_send_r),sizes_r_send_total(i^D),&
                              MPI_DOUBLE_PRECISION,ipe_neighbor,itag, &
                              icomm,sendrequest_r(isend_r),ierrmpi)
+              call wait_send_batch(isend_r,flushed_send_r,sendrequest_r,sendstatus_r)
               ibuf_send_r=ibuf_next
             end if
           end if
@@ -1041,6 +1131,7 @@ contains
                itag=(3**^ND+4**^ND)*(ineighbor-1)+3**^ND+{n_inc^D*4**(^D-1)+}
                call MPI_ISEND(psb(igrid)%w,1,type_send_p(inc^D), &
                               ipe_neighbor,itag,icomm,sendrequest_c_p(isend_c),ierrmpi)
+               call wait_send_batch(isend_c,flushed_send_c,sendrequest_c_p,sendstatus_c_p)
                if(stagger_grid) then 
                  ibuf_start=ibuf_send_p
                  do idir=1,ndim
@@ -1055,6 +1146,7 @@ contains
                  call MPI_ISEND(sendbuffer_p(ibuf_send_p),sizes_p_send_total(inc^D),&
                                 MPI_DOUBLE_PRECISION,ipe_neighbor,itag, &
                                 icomm,sendrequest_p(isend_p),ierrmpi)
+                 call wait_send_batch(isend_p,flushed_send_p,sendrequest_p,sendstatus_p)
                  ibuf_send_p=ibuf_next
                end if
              else
@@ -1076,6 +1168,7 @@ contains
                isizes={(ixSmax^D-ixSmin^D+1)*}*nwbc
                call MPI_ISEND(pwbuf(ipwbuf)%w,isizes,MPI_DOUBLE_PRECISION, &
                               ipe_neighbor,itag,icomm,sendrequest_c_p(isend_c),ierrmpi)
+               call wait_send_batch(isend_c,flushed_send_c,sendrequest_c_p,sendstatus_c_p)
                ipwbuf=1+modulo(ipwbuf,npwbuf)
                if(stagger_grid) then 
                  ibuf_start=ibuf_send_p
@@ -1091,6 +1184,7 @@ contains
                  call MPI_ISEND(sendbuffer_p(ibuf_send_p),sizes_p_send_total(inc^D),&
                                 MPI_DOUBLE_PRECISION,ipe_neighbor,itag, &
                                 icomm,sendrequest_p(isend_p),ierrmpi)
+                 call wait_send_batch(isend_p,flushed_send_p,sendrequest_p,sendstatus_p)
                  ibuf_send_p=ibuf_next
                end if
              end if
@@ -1259,7 +1353,8 @@ contains
 
       !> do prolongation for fine blocks after receipt data from coarse neighbors
       subroutine bc_prolong(igrid,i^D)
-        use mod_physics, only: phys_to_primitive, phys_to_conserved
+        use mod_physics, only: phys_to_primitive, phys_to_conserved, &
+             phys_to_prolong, phys_from_prolong
 
         double precision :: dxFi^D, dxCo^D, xFimin^D, xComin^D, invdxCo^D
         integer :: i^D,igrid
@@ -1314,11 +1409,6 @@ contains
         end if
 
         if(prolongprimitive) then
-          ! following line again assumes equidistant grid, but 
-          ! just computes indices, so also ok for stretched case
-          ! reason for +1-1 and +1+1: the coarse representation has 
-          ! also nghostcells at each side. During
-          ! prolongation, we need cells to left and right, hence -1/+1
           block=>psc(igrid)
           ixComin^D=int((xFimin^D+(dble(ixFimin^D)-half)*dxFi^D-xComin^D)*invdxCo^D)+1-1;
           ixComax^D=int((xFimin^D+(dble(ixFimax^D)-half)*dxFi^D-xComin^D)*invdxCo^D)+1+1;

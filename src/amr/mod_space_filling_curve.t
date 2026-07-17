@@ -245,4 +245,109 @@ contains
 
   end subroutine get_Morton_range_active
 
+  !> Cost-weighted SFC partition. Reduces the per-rank block_cost array
+  !> into a global Morton-indexed cost, EWMA-blends with the persistent
+  !> costlist, and partitions the Morton order so each rank's cumulative
+  !> cost is balanced. Falls back to equal-block-count if all costs are
+  !> zero (cold start before the first measured step).
+  subroutine get_Morton_range_costed
+    use mod_forest
+    use mod_global_parameters
+
+    integer :: ipe, Morton_no, igrid, ix
+    double precision :: cost_total, cost_target, cost_cum
+    double precision :: maxcount, mincount, maxcost, meancost
+    double precision, allocatable :: cost_local(:)
+    integer :: nblocks_per(0:npe-1)
+
+    if (allocated(sfc_to_igrid)) deallocate(sfc_to_igrid)
+    {#IFDEF EVOLVINGBOUNDARY
+    if (allocated(sfc_phybound)) deallocate(sfc_phybound)
+    }
+
+    ! 1. Each rank fills its measured per-step block cost into the
+    !    Morton-indexed cost_local at its own slots, zeros elsewhere.
+    !    Morton numbering is invariant across load_balance migration, so
+    !    costlist values built up via EWMA below stay meaningful when
+    !    blocks change rank. Refinement events insert/remove Morton
+    !    indices; the EWMA recovers within ~5 cycles for affected entries.
+    allocate(cost_local(nleafs))
+    cost_local = 0.0d0
+    do Morton_no = 1, nleafs
+      if (sfc(2,Morton_no) == mype) then
+        igrid = sfc(1,Morton_no)
+        if (igrid > 0 .and. igrid <= max_blocks) then
+          cost_local(Morton_no) = block_cost(igrid)
+        end if
+      end if
+    end do
+
+    ! 2. Reduce so every rank has the global per-Morton cost vector. Since
+    !    each Morton index is owned by exactly one rank in the pre-balance
+    !    state, the SUM is just the value contributed by that one rank.
+    if (npe > 1) then
+      call MPI_ALLREDUCE(MPI_IN_PLACE, cost_local, nleafs, &
+                         MPI_DOUBLE_PRECISION, MPI_SUM, icomm, ierrmpi)
+    end if
+
+    ! 3. EWMA blend the measurement into the persistent global costlist.
+    !    Skip slots with zero measurement (block didn't run advect this
+    !    cycle for some reason — keep the prior estimate). This blend at
+    !    the GLOBAL Morton level (not per-igrid) is what makes the
+    !    partition migration-safe.
+    do Morton_no = 1, nleafs
+      if (cost_local(Morton_no) > 0.0d0) then
+        costlist(Morton_no) = lb_alpha * costlist(Morton_no) &
+                            + (1.0d0 - lb_alpha) * cost_local(Morton_no)
+      end if
+    end do
+    deallocate(cost_local)
+
+    cost_total = sum(costlist(1:nleafs))
+    if (cost_total <= 0.0d0) then
+      ! Fully cold: fall back to equal-block partition.
+      call get_Morton_range
+      return
+    end if
+
+    ! 4. Greedy cumulative-cost cut along the Morton-sorted leaves. Aim for
+    !    each rank to receive cost_total / npe of cumulative work; cut at
+    !    the leaf where the running sum first exceeds the per-rank target.
+    nblocks_per = 0
+    ipe = 0
+    cost_cum = 0.0d0
+    Morton_start(0) = 1
+    do Morton_no = 1, nleafs
+      cost_cum = cost_cum + costlist(Morton_no)
+      cost_target = (dble(ipe) + 1.0d0) * cost_total / dble(npe)
+      nblocks_per(ipe) = nblocks_per(ipe) + 1
+      if (cost_cum >= cost_target .and. ipe < npe-1) then
+        Morton_stop(ipe) = Morton_no
+        ipe = ipe + 1
+        Morton_start(ipe) = Morton_no + 1
+      end if
+    end do
+    Morton_stop(npe-1) = nleafs
+
+    ! 5. Diagnostics (also drive the existing log columns Xload/Xmemory).
+    maxcount = dble(maxval(nblocks_per))
+    mincount = dble(max(1,minval(nblocks_per)))
+    Xmemory = maxcount / mincount
+    maxcost  = 0.0d0
+    do ix = 0, npe-1
+      maxcost = max(maxcost, sum(costlist(Morton_start(ix):Morton_stop(ix))))
+    end do
+    meancost = cost_total / dble(npe)
+    Xload    = maxcost / max(meancost, tiny(1.0d0))
+
+    if (Morton_stop(mype) >= Morton_start(mype)) then
+      allocate(sfc_to_igrid(Morton_start(mype):Morton_stop(mype)))
+      {#IFDEF EVOLVINGBOUNDARY
+      allocate(sfc_phybound(nleafs))
+      sfc_phybound = 0
+      }
+    end if
+
+  end subroutine get_Morton_range_costed
+
 end module mod_space_filling_curve

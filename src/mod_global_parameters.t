@@ -120,6 +120,8 @@ module mod_global_parameters
   double precision :: small_temperature,small_pressure,small_density,small_e,small_r_e
   double precision :: phys_trac_mask
 
+  double precision :: minfip=1.d0, maxfip=4.d0
+
   !> amplitude of background dipolar, quadrupolar, octupolar, user's field
   double precision :: Bdip=0.d0
   double precision :: Bquad=0.d0
@@ -162,6 +164,31 @@ module mod_global_parameters
   double precision :: x_origin(1:3)
   !> Base file name for synthetic EUV spectrum output
   character(len=std_len) :: filename_spectrum
+  !> Synthetic emission transfer mode: thin or thick
+  character(len=std_len) :: radiation_transfer
+  !> Synthetic emission ray traversal method
+  character(len=std_len) :: ray_method
+  !> Synthetic emission physical model selector
+  character(len=std_len) :: emission_model
+  !> Post-process dat-resolution EUV images onto the instrument pixel grid
+  logical :: instrument_postprocess
+  !> Observing frequency for radio free-free synthesis in Hz
+  double precision :: radio_frequency
+  !> Gaussian radio beam full width at half maximum in arcsec
+  double precision :: radio_beam_fwhm
+  !> Output pixel size for radio beam post-processing in arcsec; <=0 uses FWHM/3
+  double precision :: radio_beam_pixel_size
+  !> Number of image pixels processed in one ray-segment MPI batch
+  integer :: radsyn_pixel_batch
+  !> Maximum ray segments per pixel batch, as a factor of radsyn_pixel_batch; <=0 uses memory budget.
+  !> Default value is set from the best spherical u512 benchmark behavior seen so far.
+  integer :: radsyn_segment_batch_factor
+  !> Approximate per-rank temporary memory budget, in MiB, for automatic ray-segment batch sizing
+  double precision :: radsyn_segment_memory_mb
+  !> Maximum ray segments per segmented MPI all-to-all round, as a factor of radsyn_pixel_batch
+  integer :: radsyn_segment_comm_factor
+  !> Print synthetic-emission ray-tracing profiling counters
+  logical :: radsyn_verbose
   !> spectral window
   double precision :: spectrum_window_min,spectrum_window_max
   !> location of the slit
@@ -231,6 +258,38 @@ module mod_global_parameters
 
   !> A global MPI error return code
   integer :: ierrmpi
+
+  !> Per-rank load-balance timing diagnostic toggle (off by default).
+  !> When .true., per-rank wall times are gathered every step and written
+  !> to <basename>_rank_timing.log.
+  logical :: lb_diagnose = .false.
+
+  !> Cost-weighted automatic load balancer toggle (off by default).
+  !> When .true., the SFC partitioner cuts on cumulative measured per-block
+  !> cost rather than on equal block counts.
+  logical :: lb_automatic = .false.
+
+  !> Rebalance every lb_interval cycles when lb_automatic is on.
+  integer :: lb_interval = 10
+
+  !> Exponential-moving-average decay for the per-block cost.
+  !> costlist <- lb_alpha*costlist + (1-lb_alpha)*measured.
+  !> 0 = no memory (volatile), 1 = no update.
+  double precision :: lb_alpha = 0.9d0
+
+  !> Per-step per-block (per-rank, indexed by igrid) cost accumulator.
+  !> Reset at start of each advance call; filled inside iigrid loops by the
+  !> per-block timer wrappers in mod_advance.t and mod_supertimestepping.t.
+  double precision, dimension(:), allocatable :: block_cost
+
+  !> Persistent global per-Morton-leaf EWMA cost. Sized to max_blocks*npe
+  !> (the upper bound on nleafs); only the first nleafs entries are
+  !> meaningful. Morton numbering is invariant across load_balance
+  !> migration, so costlist values are correctly preserved when blocks
+  !> change rank. Refinement events insert/remove Morton indices, after
+  !> which the EWMA recovers over ~5 cycles. Indexed 1..nleafs. Updated
+  !> by EWMA blend inside get_Morton_range_costed.
+  double precision, dimension(:), allocatable :: costlist
 
   !> MPI file handle for logfile
   integer :: log_fh
@@ -393,6 +452,8 @@ module mod_global_parameters
 
   integer :: phys_trac_type=1
   integer :: phys_trac_finegrid=4
+  integer :: phys_trac_nzones=1
+  double precision :: phys_trac_zone_splits(10)=-1.d0
 
   !> integer switchers for type courant
   integer, parameter :: type_maxsum=1
@@ -625,11 +686,24 @@ module mod_global_parameters
   logical :: reset_grid
   !> True for using stagger grid
   logical :: stagger_grid=.false.
+  !> Limit outstanding ghost-cell send requests to avoid MPI request pressure.
+  !> In large-scale MHD tests, the original all-at-once ghost-cell exchange could
+  !> stall during spherical u512 initialization. Batching avoids
+  !> that failure mode, while u256 5-step tests showed less than 0.1% total
+  !> runtime difference. The original path is still available by setting this to
+  !> false; if batching remains stable in broader tests, the old path can be
+  !> removed later.
+  logical :: ghostcell_comm_batched=.true.
+  integer :: ghostcell_comm_batch_size=64
   !> True for record electric field
   logical :: record_electric_field=.false.
 
   !> resolution of the images
   logical :: dat_resolution
+  !> output optical-depth map for synthetic emission when available
+  logical :: output_tau
+  !> output absorption fraction for thick/thin EUV synthesis when available
+  logical :: output_absorption_fraction
 
   !> If collapse(DIM) is true, generate output integrated over DIM
   logical :: collapse(ndim)
@@ -666,9 +740,15 @@ module mod_global_parameters
   !> Use TRAC for MHD or 1D HD
   logical :: phys_trac=.false.
 
+  !> Use escape probability for radiative cooling modification
+  logical :: phys_escape_prob=.false.
+
   !> Whether to apply flux conservation at refinement boundaries
   logical :: fix_conserve_global = .true.
   logical :: flux_adaptive_diffusion
+  double precision :: flux_adaptive_diffusion_min
+  double precision :: flux_adaptive_diffusion_scale
+  logical :: flux_energy_only
   logical :: flathllc,flatcd,flatsh
   !> Use split or unsplit way to add user's source terms, default: unsplit
   logical :: source_split_usr

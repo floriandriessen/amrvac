@@ -1527,7 +1527,7 @@ contains
           open(unit=unitparticles, file=filename)
           write(unitparticles,"(a)") trim(csv_header)
         else
-          open(unit=unitparticles, file=filename, access='append')
+          open(unit=unitparticles, file=filename, position='append')
         end if
 
       else ! Ensemble file
@@ -1581,7 +1581,7 @@ contains
           open(unit=unitparticles, file=filename)
           write(unitparticles,"(a)") trim(csv_header)
         else
-          open(unit=unitparticles, file=filename, access='append')
+          open(unit=unitparticles, file=filename, position='append')
         end if
 
         call output_particle(particle(ipart)%self,&

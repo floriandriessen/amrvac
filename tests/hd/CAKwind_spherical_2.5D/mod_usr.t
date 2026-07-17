@@ -24,6 +24,7 @@ module mod_usr
 
   ! Include a physics module
   use mod_hd
+  use mod_eos, only: eos
   
   ! Get access to some CAK radiation functionality
   use mod_cak_force, only: set_cak_force_norm, cak_alpha, gayley_qbar, &
@@ -35,7 +36,7 @@ module mod_usr
   real(8) :: mstar_sol, rstar_sol, twind_cgs, rhobound_cgs, beta, Wrot
 
   ! Dimensionless variables needed throughout computations
-  real(8) :: mstar, rstar, rhobound, mdot, vinf, asound, Ggrav, vrot, kappae
+  real(8) :: mstar, rstar, twind, rhobound, mdot, vinf, asound, Ggrav, vrot
 
 contains
 
@@ -57,7 +58,7 @@ contains
     usr_special_bc     => special_bound
     usr_gravity        => stellar_gravity
 
-    call HD_activate()
+    call hd_activate()
     
   end subroutine usr_init
 
@@ -90,7 +91,7 @@ contains
 
     real(8) :: mstar_cgs, rstar_cgs, lstar_cgs, mumol, vesc_cgs, gammae
     real(8) :: logg_cgs, logge_cgs, heff_cgs, vrotc_cgs, vinf_cgs, asound_cgs
-    real(8) :: mdot_cgs, vrot_cgs, pthbound, twind
+    real(8) :: mdot_cgs, vrot_cgs, pthbound, kappae
 
     mstar_cgs = mstar_sol * const_MSun
     rstar_cgs = rstar_sol * const_RSun
@@ -100,7 +101,7 @@ contains
     gammae     = kappae_cgs * lstar_cgs / (4.0d0*dpi * const_G * mstar_cgs * const_c)
     logg_cgs   = log10(const_G * mstar_cgs/rstar_cgs**2.0d0)
     logge_cgs  = logg_cgs + log10(1.0d0 - gammae)
-    mumol      = (1.0d0 + 4.0d0*He_abundance)/(2.0d0 + 3.0d0*He_abundance)
+    mumol      = (1.0d0 + 4.0d0*eos%He_abundance)/(2.0d0 + 3.0d0*eos%He_abundance)
     asound_cgs = sqrt(twind_cgs * kB_cgs/(mumol * mp_cgs))
     heff_cgs   = asound_cgs**2.0d0 / 10.0d0**logge_cgs
     vrotc_cgs  = sqrt(const_G * mstar_cgs*(1.0d0 - gammae)/rstar_cgs)
@@ -164,7 +165,7 @@ contains
     kappae   = kappae_cgs / unit_opacity
 
     ! Give AMRVAC correct adiabatic index
-    hd_adiab = pthbound / rhobound**hd_gamma
+    hd_adiab = pthbound / rhobound**eos%gamma
 
     if (mype == 0) then
       print*, '========================================'
@@ -180,7 +181,6 @@ contains
       print*, 'vinf     = ', vinf
       print*, 'vrot     = ', vrot
       print*, 'Ggrav    = ', Ggrav
-      print*, 'hd_gamma = ', hd_gamma
       print*, 'hd_adiab = ', hd_adiab
     endif
 
@@ -225,28 +225,25 @@ contains
       w(ixO^S,mom(3)) = vrot * sin(x(ixO^S,2)) * rstar**2.0d0 / x(ixO^S,1)
     endif
 
-    ! Isothermal initial condition
-    if (hd_energy) w(ixO^S,p_) = w(ixO^S,rho_)
+    ! Isothermal condition
+    if (hd_energy) w(ixO^S,p_) = w(ixO^S,rho_) * twind
 
-    call hd_to_conserved(ixI^L,ixO^L,w,x)
-
-    ! Initialise extra vars at 0
-    w(ixO^S,nw-nwextra+1:nw) = 0.0d0
+    call eos%to_conserved(ixI^L,ixO^L,w,x)
 
   end subroutine initial_conditions
 
   !============================================================================
   ! Special user boundary conditions at inner radial boundary:
   !   vr (extrapolated); rho, vtheta, vphi (fixed)
-  !============================================================================
-  subroutine special_bound(qt,ixI^L,ixB^L,iB,w,x)
+  !=============================================================================
+  subroutine special_bound(qdt,qt,ixI^L,ixB^L,iB,w,x)
 
     ! Subroutine arguments
     integer, intent(in)    :: ixI^L, ixB^L, iB
-    real(8), intent(in)    :: qt, x(ixI^S,1:ndim)
+    real(8), intent(in)    :: qdt, qt, x(ixI^S,1:ndim)
     real(8), intent(inout) :: w(ixI^S,1:nw)
 
-    ! Local variable
+    ! Local variables
     integer :: ir, ixE^L
 
     select case (iB)
@@ -281,9 +278,9 @@ contains
       w(ixB^S,mom(1)) = min(w(ixB^S,mom(1)), asound)
       w(ixB^S,mom(1)) = max(w(ixB^S,mom(1)), -asound)
 
-      if (hd_energy) w(ixB^S,p_) = hd_adiab * w(ixB^S,rho_)**hd_gamma
+      if (hd_energy) w(ixB^S,p_) = hd_adiab * w(ixB^S,rho_)**eos%gamma
 
-      call hd_to_conserved(ixI^L,ixE^L,w,x)
+      call eos%to_conserved(ixI^L,ixE^L,w,x)
 
     case default
       call mpistop("BC not specified")

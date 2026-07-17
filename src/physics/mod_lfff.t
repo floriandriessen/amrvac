@@ -147,7 +147,9 @@ contains
         g=(zk*cos_ar*r-cos_az)*bigr
         dgdz=(cos_ar*(r-zk**2*r3)-alpha*zk**2*sin_ar*r2+alpha*sin_az)*bigr
         do idim=1,ndim
-          if(present(idir).and.idim/=idir) cycle
+          if(present(idir)) then
+            if(idim/=idir) cycle
+          end if
           select case(idim)
           case(1)
             Bf(ixO^S,1)=Bf(ixO^S,1)+Bz0(ixp1,ixp2)*((x(ixO^S,1)-xa1(ixp1))*dgdz(ixO^S)&

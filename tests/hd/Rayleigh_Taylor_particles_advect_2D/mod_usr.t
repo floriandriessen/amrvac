@@ -1,5 +1,6 @@
 module mod_usr
   use mod_hd
+  use mod_eos, only: eos
   use mod_particles
 
   implicit none
@@ -77,7 +78,7 @@ contains
     pint=one
     if(hd_energy) then
       w(ixO^S,e_)=pint-w(ixO^S,rho_)*(x(ixO^S,2)-y0)
-      w(ixO^S,e_)=w(ixO^S,e_)/(hd_gamma-one)
+      w(ixO^S,e_)=w(ixO^S,e_)/(eos%gamma-one)
     end if
   end subroutine initonegrid_usr
 

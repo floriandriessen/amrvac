@@ -190,11 +190,12 @@ contains
 
   end subroutine dust_check_params
 
-  subroutine dust_check_w(ixI^L,ixO^L,w,flag)
+  subroutine dust_check_w(ixI^L,ixO^L,w,x,flag)
     use mod_global_parameters
     
     integer, intent(in)         :: ixI^L,ixO^L
     double precision, intent(in):: w(ixI^S,1:nw)
+    double precision, intent(in):: x(ixI^S, 1:ndim)
     logical, intent(inout)      :: flag(ixI^S,1:nw)
     integer                     :: n
 

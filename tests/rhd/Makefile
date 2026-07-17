@@ -1,6 +1,4 @@
-TEST_DIRS := RHD_heatcool
-
-##TEST_DIRS := RHD_wave_1D RHD_shock_1D RHD_pulse_1D RHD_heatcool
+TEST_DIRS := RHD_heatcool RHD_pulse_1D RHD_shock_1D RHD_wave_1D
 
 # Directories with altered names (useful for cleaning)
 CLEAN_TEST := $(TEST_DIRS:%=clean-%)

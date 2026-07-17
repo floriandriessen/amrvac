@@ -63,10 +63,10 @@ contains
     use mod_geometry
     use mod_usr_methods, only: usr_set_surface
     use mod_physics, only: phys_set_equi_vars
-    use mod_b0, only: set_B0_grid 
- 
+    use mod_b0, only: set_B0_grid
+
     integer, intent(in) :: igrid
-  
+
     double precision :: dx^D, summeddx, sizeuniformpart^D
     double precision :: xext(ixGlo^D-1:ixGhi^D+1,1:ndim)
     double precision :: delx_ext(ixGlo1-1:ixGhi1+1)
@@ -76,7 +76,12 @@ contains
     integer :: level, ig^D, ign^D, ixCoG^L, ix, i^D
     integer :: imin, imax, index, igCo^D, ixshift, offset, ifirst
     integer :: icase, ixGext^L
-  
+
+    ! Cost-weighted load-balance bookkeeping: clear the per-step
+    ! scratch accumulator for the freshly-allocated igrid so its first
+    ! measurement isn't contaminated by a previous tenant.
+    if (allocated(block_cost)) block_cost(igrid) = 0.0d0
+
     ixCoGmin^D=1;
     ixCoGmax^D=(ixGhi^D-2*nghostcells)/2+2*nghostcells;
   

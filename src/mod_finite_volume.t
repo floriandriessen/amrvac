@@ -353,29 +353,41 @@ contains
 
       fac(ixC^S) = -0.5d0*tvdlfeps*cmaxC(ixC^S,ii)
       do iw=iws,iwe
-         fC(ixC^S,iw,idims)=0.5d0*(fLC(ixC^S, iw)+fRC(ixC^S, iw))
-         ! Add TVDLF dissipation to the flux
-         if(flux_type(idims, iw) /= flux_no_dissipation) then
-           if(flux_adaptive_diffusion) then
-            {do ix^DB=ixCmin^DB,ixCmax^DB\}
-               jx^D=ix^D+kr(idims,^D)\
-               !> adaptive diffusion from Rempel et al. 2009, see also Rempel et al. 2014
-               !> the previous version is adopt
-               if(((wRC(ix^D,iw)-wLC(ix^D,iw))*(sCT%w(jx^D,iw)-sCT%w(ix^D,iw))) .gt. 1.e-18) then
-                 phi=min((wRC(ix^D,iw)-wLC(ix^D,iw))**2/((sCT%w(jx^D,iw)-sCT%w(ix^D,iw))**2+1.e-18),one)
-               else
-                 phi=1.d0
-               end if
-               fC(ix^D,iw,idims)=fC(ix^D,iw,idims)+fac(ix^D)*(wRC(ix^D,iw)-wLC(ix^D,iw))*phi
-            {end do\}
-           else
-            {do ix^DB=ixCmin^DB,ixCmax^DB\}
-               fC(ix^D,iw,idims)=fC(ix^D,iw,idims)+fac(ix^D)*(wRC(ix^D,iw)-wLC(ix^D,iw))
-            {end do\}
+         if(flux_energy_only .and. iw /= iw_e) then
+           fC(ixC^S,iw,idims)=zero
+         else
+           fC(ixC^S,iw,idims)=0.5d0*(fLC(ixC^S, iw)+fRC(ixC^S, iw))
+           ! Add TVDLF dissipation to the flux
+           if(flux_type(idims, iw) /= flux_no_dissipation) then
+             if(flux_adaptive_diffusion) then
+              {do ix^DB=ixCmin^DB,ixCmax^DB\}
+                 jx^D=ix^D+kr(idims,^D)\
+                 !> adaptive diffusion from Rempel et al. 2009, see also Rempel et al. 2014
+                 !> the previous version is adopt
+                 !if(((wRC(ix^D,iw)-wLC(ix^D,iw))*(sCT%w(jx^D,iw)-sCT%w(ix^D,iw))) .gt. 1.e-18) then
+                 !  phi=min((wRC(ix^D,iw)-wLC(ix^D,iw))**2/((sCT%w(jx^D,iw)-sCT%w(ix^D,iw))**2+1.e-18),one)
+                 !else
+                 !  phi=1.d0
+                 !end if
+                 phi = flux_adaptive_diffusion_min
+                 if(((wRC(ix^D,iw)-wLC(ix^D,iw))*(sCT%w(jx^D,iw)-sCT%w(ix^D,iw))) .gt. 1.d-18) then
+                   phi = max(flux_adaptive_diffusion_min, &
+                        min(flux_adaptive_diffusion_scale * &
+                            (wRC(ix^D,iw)-wLC(ix^D,iw))**2 / &
+                            ((sCT%w(jx^D,iw)-sCT%w(ix^D,iw))**2 + 1.d-18), one))
+                 else
+                   phi = one
+                 end if
+                 fC(ix^D,iw,idims)=fC(ix^D,iw,idims)+fac(ix^D)*(wRC(ix^D,iw)-wLC(ix^D,iw))*phi
+              {end do\}
+             else
+              {do ix^DB=ixCmin^DB,ixCmax^DB\}
+                 fC(ix^D,iw,idims)=fC(ix^D,iw,idims)+fac(ix^D)*(wRC(ix^D,iw)-wLC(ix^D,iw))
+              {end do\}
+             end if
            end if
          end if
       end do
-
     end subroutine get_Riemann_flux_tvdlf
 
     subroutine get_Riemann_flux_hll(iws,iwe)
@@ -1112,6 +1124,7 @@ contains
     use mod_global_parameters
     use mod_limiter
     use mod_comm_lib, only: mpistop
+    use mod_timing, only: time_wb_transform, time_wb_inverse, time_wb_recon
 
     integer, intent(in) :: ixI^L, ixL^L, ixR^L, idims
     double precision, intent(in) :: dxdim
@@ -1123,9 +1136,24 @@ contains
     double precision, dimension(ixI^S,1:nw) :: wLp, wRp
     double precision, dimension(ixI^S,1:ndim) :: x
 
-    integer            :: jxR^L, ixC^L, jxC^L, iw
+    integer            :: jxR^L, ixC^L, jxC^L, ixO^L, iw
     double precision   :: ldw(ixI^S), rdw(ixI^S), dwC(ixI^S)
+    double precision   :: wb_phi(ixI^S), wb_phi_face(ixI^S), wb_T(ixI^S)
+    double precision   :: wb_t0
 
+    ! Well-balanced transform: subtract local HSE from pressure before limiting
+    wb_t0 = MPI_WTIME()
+    if (associated(phys_wb_transform)) then
+      call phys_wb_transform(ixI^L, ixI^L, idims, w, x, wb_phi, &
+           wb_phi_face, wb_T)
+      ! Re-initialise wLp/wRp to transformed cell-centre values.
+      jxR^L=ixR^L+kr(idims,^D);
+      wLp(ixL^S, 1:nwflux) = w(ixL^S, 1:nwflux)
+      wRp(ixR^S, 1:nwflux) = w(jxR^S, 1:nwflux)
+    end if
+    time_wb_transform = time_wb_transform + (MPI_WTIME() - wb_t0)
+
+    wb_t0 = MPI_WTIME()
     select case (type_limiter(block%level))
     case (limiter_mp5)
        call MP5limiter(ixI^L,ixL^L,idims,w,wLp,wRp)
@@ -1196,11 +1224,20 @@ contains
           call phys_handle_small_values(.true.,wRp,x,ixI^L,ixR^L,'reconstruct right')
        end if
     end select
+    time_wb_recon = time_wb_recon + (MPI_WTIME() - wb_t0)
+
+    ! Well-balanced inverse: add back HSE at interface positions
+    wb_t0 = MPI_WTIME()
+    if (associated(phys_wb_inverse)) then
+      call phys_wb_inverse(ixI^L, ixL^L, ixR^L, idims, wLp, wRp, w, &
+           wb_phi, wb_phi_face, wb_T)
+    end if
 
    wLC(ixL^S,1:nwflux)=wLp(ixL^S,1:nwflux)
    wRC(ixR^S,1:nwflux)=wRp(ixR^S,1:nwflux)
    call phys_to_conserved(ixI^L,ixL^L,wLC,x)
    call phys_to_conserved(ixI^L,ixR^L,wRC,x)
+   time_wb_inverse = time_wb_inverse + (MPI_WTIME() - wb_t0)
    if(nwaux>0)then
       wLp(ixL^S,nwflux+1:nwflux+nwaux)=wLC(ixL^S,nwflux+1:nwflux+nwaux)
       wRp(ixR^S,nwflux+1:nwflux+nwaux)=wRC(ixR^S,nwflux+1:nwflux+nwaux)
